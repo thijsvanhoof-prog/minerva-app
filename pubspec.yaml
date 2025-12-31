@@ -1,0 +1,30 @@
+name: minerva_app
+description: Minerva verenigingsapp
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.10.4 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  http: ^1.2.0
+
+  cupertino_icons: ^1.0.8
+  supabase_flutter: ^2.9.0
+  onesignal_flutter: ^5.2.2
+  flutter_dotenv: ^5.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  # HIER staat nu je .env als asset
+  assets:
+    - assets/.env
