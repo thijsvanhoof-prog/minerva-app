@@ -57,16 +57,19 @@ Future<void> main() async {
     // #endregion
 
     // Load environment variables
-    // flutter_dotenv expects the path relative to assets folder, so just '.env'
+    // flutter_dotenv: load .env file from root (declared in pubspec.yaml)
     String? envLoadError;
+    bool envLoaded = false;
     try {
       await dotenv.load(fileName: '.env');
+      envLoaded = true;
       print('DEBUG: .env file loaded successfully');
       // #region agent log
       await _debugLog('main.dart:57', '.env file loaded successfully', {});
       // #endregion
     } catch (e, stackTrace) {
       envLoadError = '${e.toString()}\nStack: ${stackTrace.toString()}';
+      envLoaded = false;
       print('DEBUG ERROR: .env load failed: $e');
       print('DEBUG ERROR: Stack: $stackTrace');
       // #region agent log
@@ -78,8 +81,9 @@ Future<void> main() async {
     }
 
     // #region agent log
-    final supabaseUrl = dotenv.env['SUPABASE_URL'] ?? '';
-    final supabaseKey = dotenv.env['SUPABASE_ANON_KEY'] ?? '';
+    // Only access dotenv.env if it was successfully loaded
+    final supabaseUrl = envLoaded ? (dotenv.env['SUPABASE_URL'] ?? '') : '';
+    final supabaseKey = envLoaded ? (dotenv.env['SUPABASE_ANON_KEY'] ?? '') : '';
     print('DEBUG: After loading .env - URL: ${supabaseUrl.isNotEmpty ? "LOADED" : "EMPTY"}, KEY: ${supabaseKey.isNotEmpty ? "LOADED" : "EMPTY"}');
     await _debugLog('main.dart:72', 'After loading .env', {
       'url': supabaseUrl.isNotEmpty ? '${supabaseUrl.substring(0, 20)}...' : 'EMPTY',
@@ -99,8 +103,8 @@ Future<void> main() async {
       });
       // #endregion
       final errorMsg = envLoadError != null
-          ? 'Kon .env bestand niet laden: $envLoadError\n\nMaak assets/.env aan met:\nSUPABASE_URL=...\nSUPABASE_ANON_KEY=...'
-          : 'SUPABASE_URL en SUPABASE_ANON_KEY moeten zijn ingesteld in assets/.env bestand';
+          ? 'Kon .env bestand niet laden: $envLoadError\n\nMaak .env aan in de root van het project met:\nSUPABASE_URL=...\nSUPABASE_ANON_KEY=...'
+          : 'SUPABASE_URL en SUPABASE_ANON_KEY moeten zijn ingesteld in .env bestand';
       throw Exception(errorMsg);
     }
 

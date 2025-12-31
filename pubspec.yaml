@@ -27,4 +27,4 @@ flutter:
 
   # HIER staat nu je .env als asset
   assets:
-    - assets/.env
+    - .env
