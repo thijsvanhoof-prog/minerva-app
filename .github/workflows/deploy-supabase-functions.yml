@@ -27,7 +27,7 @@ jobs:
       - name: Ensure required secrets exist
         run: |
           supabase secrets set \
-            SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
             --project-ref "$SUPABASE_PROJECT_REF"
 
       - name: Deploy Edge Function
