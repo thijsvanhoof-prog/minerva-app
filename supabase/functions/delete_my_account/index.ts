@@ -26,6 +26,7 @@ serve(async (req) => {
     }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     // Note: Supabase CLI blocks Edge Function secrets starting with "SUPABASE_".
     // Use SERVICE_ROLE_KEY as the primary secret name, but keep a fallback for older setups.
     const supabaseServiceRoleKey =
@@ -36,17 +37,33 @@ serve(async (req) => {
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey);
+    if (!supabaseAnonKey) {
+      return new Response(
+        JSON.stringify({ error: "Missing SUPABASE_ANON_KEY" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
-    const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
+    // Use a user-scoped client to resolve the user from the JWT.
+    // This helps distinguish auth/JWT problems from service-role problems.
+    const supabaseUser = createClient(
+      supabaseUrl,
+      supabaseAnonKey,
+      {
+        global: { headers: { Authorization: authHeader } },
+        auth: { persistSession: false },
+      },
+    );
+
+    const { data: { user }, error: userError } = await supabaseUser.auth.getUser();
     if (userError || !user) {
       return new Response(
-        JSON.stringify({ error: "Invalid or expired token" }),
+        JSON.stringify({ error: userError?.message ?? "Invalid or expired token" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey);
     const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(user.id);
     if (deleteError) {
       return new Response(
