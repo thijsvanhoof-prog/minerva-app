@@ -1,7 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:minerva_app/ui/components/app_logo_title.dart';
+import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/primary_button.dart';
+import 'package:minerva_app/ui/auth/register_page.dart';
+import 'package:minerva_app/ui/branded_background.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../app_colors.dart';
+import 'package:minerva_app/ui/app_colors.dart';
 
 class AuthPage extends StatefulWidget {
   const AuthPage({super.key});
@@ -42,39 +48,11 @@ class _AuthPageState extends State<AuthPage> {
     } on AuthException catch (e) {
       if (!mounted) return;
 
+      final msg = e.message.toLowerCase().contains('invalid login credentials')
+          ? 'Email en wachtwoord komen niet overeen'
+          : e.message;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message)),
-      );
-    } catch (e) {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Onbekende fout: $e')),
-      );
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _signUp() async {
-    setState(() => _loading = true);
-
-    try {
-      await _client.auth.signUp(
-        email: _emailCtrl.text.trim(),
-        password: _passCtrl.text,
-      );
-
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Account aangemaakt. Check je mail.')),
-      );
-    } on AuthException catch (e) {
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message)),
+        SnackBar(content: Text(msg)),
       );
     } catch (e) {
       if (!mounted) return;
@@ -110,80 +88,91 @@ class _AuthPageState extends State<AuthPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(title: const Text('Inloggen')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            color: AppColors.card,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(AppColors.cardRadius),
-              side: BorderSide(
-                color: AppColors.primary.withValues(alpha: 0.55),
-                width: AppColors.cardBorderWidth,
-              ),
+    final topPadding = MediaQuery.paddingOf(context).top + kToolbarHeight;
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarIconBrightness: Brightness.dark,
+      ),
+      child: Scaffold(
+        extendBodyBehindAppBar: true,
+        backgroundColor: Colors.transparent,
+        appBar: AppBar(
+          title: const AppLogoTitle(),
+          backgroundColor: Colors.transparent,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          forceMaterialTransparency: true,
+        ),
+        body: BrandedBackground(
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: EdgeInsets.fromLTRB(
+              16,
+              topPadding,
+              16,
+              16 + MediaQuery.paddingOf(context).bottom,
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(
-                children: [
-                  TextField(
-                    controller: _emailCtrl,
-                    keyboardType: TextInputType.emailAddress,
-                    style: const TextStyle(color: AppColors.onBackground),
-                    decoration: _dec('E-mail'),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _passCtrl,
-                    obscureText: true,
-                    style: const TextStyle(color: AppColors.onBackground),
-                    decoration: _dec('Wachtwoord'),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.primary,
-                            foregroundColor: AppColors.background,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                          ),
-                          onPressed: _loading ? null : _signIn,
-                          child: _loading
-                              ? const SizedBox(
-                                  height: 18,
-                                  width: 18,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Text('Inloggen'),
-                        ),
+            children: [
+            GlassCard(
+            child: Column(
+              children: [
+                TextField(
+                  controller: _emailCtrl,
+                  keyboardType: TextInputType.emailAddress,
+                  style: const TextStyle(color: AppColors.onBackground),
+                  decoration: _dec('E-mail'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _passCtrl,
+                  obscureText: true,
+                  style: const TextStyle(color: AppColors.onBackground),
+                  decoration: _dec('Wachtwoord'),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: PrimaryButton(
+                        onPressed: _loading ? null : _signIn,
+                        loading: _loading,
+                        child: const Text('Inloggen'),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: OutlinedButton(
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: AppColors.onBackground,
-                            side: BorderSide(
-                              color: AppColors.primary.withValues(alpha: 0.55),
-                              width: AppColors.cardBorderWidth,
-                            ),
-                            padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.onBackground,
+                          side: BorderSide(
+                            color: AppColors.primary.withValues(alpha: 0.55),
+                            width: AppColors.cardBorderWidth,
                           ),
-                          onPressed: _loading ? null : _signUp,
-                          child: const Text('Registreren'),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
                         ),
+                        onPressed: _loading
+                            ? null
+                            : () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => const RegisterPage(),
+                                  ),
+                                );
+                              },
+                        child: const Text('Registreren'),
                       ),
-                    ],
-                  ),
-                ],
-              ),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
         ],
+          ),
+        ),
       ),
     );
   }

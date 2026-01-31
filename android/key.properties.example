@@ -1,0 +1,11 @@
+## Android release signing (Play Console upload key)
+#
+# Copy this file to `android/key.properties` and fill in your values.
+# Do NOT commit android/key.properties (it contains secrets).
+#
+# storeFile is relative to android/ (or use an absolute path)
+storeFile=upload-keystore.jks
+storePassword=YOUR_STORE_PASSWORD
+keyAlias=upload
+keyPassword=YOUR_KEY_PASSWORD
+

@@ -1,179 +1,66 @@
-import 'dart:convert';
-import 'dart:io';
+import 'dart:async';
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import 'ui/app_ui.dart';
-import 'ui/auth/auth_gate.dart';
-
-// #region agent log
-Future<void> _debugLog(String location, String message, Map<String, dynamic> data) async {
-  try {
-    final logEntry = jsonEncode({
-      'location': location,
-      'message': message,
-      'data': data,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
-      'sessionId': 'debug-session',
-      'runId': 'run1',
-    });
-    // Also print for immediate visibility
-    print('DEBUG: $message - $data');
-    final file = File('/Users/bonk/Development/minerva_app/.cursor/debug.log');
-    final dir = file.parent;
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
-    }
-    await file.writeAsString('$logEntry\n', mode: FileMode.append);
-  } catch (e) {
-    // Fallback to print if file logging fails
-    print('DEBUG_LOG_ERROR: $e');
-    print('DEBUG: $message - $data');
-  }
-}
-// #endregion
+import 'package:minerva_app/ui/app_ui.dart';
+import 'package:minerva_app/ui/auth/auth_gate.dart';
+import 'package:minerva_app/ui/notifications/notification_service.dart';
+import 'package:minerva_app/ui/user_app_bootstrap.dart';
 
 Future<void> main() async {
-  // Immediate print for debugging
-  print('=== MINERVA APP STARTING ===');
-  
-  // #region agent log
-  await _debugLog('main.dart:37', 'App starting', {'step': 'main() entry'});
-  // #endregion
-  
-  try {
-    print('DEBUG: Before WidgetsFlutterBinding');
-    // #region agent log
-    await _debugLog('main.dart:43', 'Before WidgetsFlutterBinding', {});
-    // #endregion
-    
+  return runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
-    print('DEBUG: WidgetsFlutterBinding initialized');
 
-    print('DEBUG: Loading .env file');
-    // #region agent log
-    await _debugLog('main.dart:50', 'Loading .env file', {});
-    // #endregion
+    FlutterError.onError = (details) {
+      FlutterError.presentError(details);
+      debugPrint('FlutterError: ${details.exceptionAsString()}');
+      if (details.stack != null) {
+        debugPrint(details.stack.toString());
+      }
+    };
 
-    // Load environment variables
-    // flutter_dotenv: load .env file from root (declared in pubspec.yaml)
-    String? envLoadError;
-    bool envLoaded = false;
+    PlatformDispatcher.instance.onError = (error, stack) {
+      debugPrint('PlatformDispatcher error: $error');
+      debugPrint('$stack');
+      return true;
+    };
+
     try {
       await dotenv.load(fileName: '.env');
-      envLoaded = true;
-      print('DEBUG: .env file loaded successfully');
-      // #region agent log
-      await _debugLog('main.dart:57', '.env file loaded successfully', {});
-      // #endregion
-    } catch (e, stackTrace) {
-      envLoadError = '${e.toString()}\nStack: ${stackTrace.toString()}';
-      envLoaded = false;
-      print('DEBUG ERROR: .env load failed: $e');
-      print('DEBUG ERROR: Stack: $stackTrace');
-      // #region agent log
-      await _debugLog('main.dart:65', '.env file load failed', {
-        'error': e.toString(),
-        'errorType': e.runtimeType.toString(),
-      });
-      // #endregion
-    }
 
-    // #region agent log
-    // Only access dotenv.env if it was successfully loaded
-    final supabaseUrl = envLoaded ? (dotenv.env['SUPABASE_URL'] ?? '') : '';
-    final supabaseKey = envLoaded ? (dotenv.env['SUPABASE_ANON_KEY'] ?? '') : '';
-    print('DEBUG: After loading .env - URL: ${supabaseUrl.isNotEmpty ? "LOADED" : "EMPTY"}, KEY: ${supabaseKey.isNotEmpty ? "LOADED" : "EMPTY"}');
-    await _debugLog('main.dart:72', 'After loading .env', {
-      'url': supabaseUrl.isNotEmpty ? '${supabaseUrl.substring(0, 20)}...' : 'EMPTY',
-      'key': supabaseKey.isNotEmpty ? '${supabaseKey.substring(0, 20)}...' : 'EMPTY',
-      'urlLoaded': supabaseUrl.isNotEmpty,
-      'keyLoaded': supabaseKey.isNotEmpty,
-      'envLoadError': envLoadError,
-    });
-    // #endregion
+      final supabaseUrl = dotenv.env['SUPABASE_URL'] ?? '';
+      final supabaseKey = dotenv.env['SUPABASE_ANON_KEY'] ?? '';
 
-    if (supabaseUrl.isEmpty || supabaseKey.isEmpty) {
-      // #region agent log
-      await _debugLog('main.dart:72', 'Missing Supabase credentials', {
-        'urlEmpty': supabaseUrl.isEmpty,
-        'keyEmpty': supabaseKey.isEmpty,
-        'envLoadError': envLoadError,
-      });
-      // #endregion
-      final errorMsg = envLoadError != null
-          ? 'Kon .env bestand niet laden: $envLoadError\n\nMaak .env aan in de root van het project met:\nSUPABASE_URL=...\nSUPABASE_ANON_KEY=...'
-          : 'SUPABASE_URL en SUPABASE_ANON_KEY moeten zijn ingesteld in .env bestand';
-      throw Exception(errorMsg);
-    }
-
-    // #region agent log
-    await _debugLog('main.dart:65', 'Before Supabase.initialize', {
-      'urlLength': supabaseUrl.length,
-      'keyLength': supabaseKey.length,
-    });
-    // #endregion
-
-      try {
-        await Supabase.initialize(
-          url: supabaseUrl,
-          anonKey: supabaseKey,
+      if (supabaseUrl.isEmpty || supabaseKey.isEmpty) {
+        throw Exception(
+          'SUPABASE_URL en SUPABASE_ANON_KEY moeten zijn ingesteld in .env',
         );
-        
-        // #region agent log
-        await _debugLog('main.dart:87', 'Supabase.initialize succeeded', {
-          'status': 'initialized',
-        });
-        // #endregion
-      } catch (e, stackTrace) {
-        // #region agent log
-        await _debugLog('main.dart:92', 'Supabase.initialize failed', {
-          'error': e.toString(),
-          'stackTrace': stackTrace.toString(),
-        });
-        // #endregion
-        rethrow;
       }
 
-    // #region agent log
-    await _debugLog('main.dart:68', 'Calling runApp', {});
-    // #endregion
+      await Supabase.initialize(
+        url: supabaseUrl,
+        anonKey: supabaseKey,
+      );
 
-    print('DEBUG: About to call runApp');
-    runApp(const MinervaApp());
-    print('DEBUG: runApp called successfully');
-  } catch (e, stackTrace) {
-    print('=== FATAL ERROR IN MAIN() ===');
-    print('Error: $e');
-    print('Stack: $stackTrace');
-    // #region agent log
-    await _debugLog('main.dart:133', 'Fatal error in main()', {
-      'error': e.toString(),
-      'stackTrace': stackTrace.toString(),
-    });
-    // #endregion
-    // Don't rethrow - show error in UI instead
-    runApp(MaterialApp(
-      home: Scaffold(
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Text('Fout bij opstarten app:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 16),
-                Text('$e', style: const TextStyle(fontSize: 14)),
-                const SizedBox(height: 8),
-                Text('$stackTrace', style: const TextStyle(fontSize: 10)),
-              ],
-            ),
-          ),
-        ),
-      ),
-    ));
-  }
+      runApp(const MinervaApp());
+
+      // OneSignal init after first frame (safer on cold-start iOS).
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        final oneSignalAppId = dotenv.env['ONESIGNAL_APP_ID'] ?? '';
+        await NotificationService.initialize(oneSignalAppId: oneSignalAppId);
+      });
+    } catch (e, stackTrace) {
+      debugPrint('Startup error: $e');
+      debugPrint('$stackTrace');
+      runApp(_StartupErrorApp(error: e, stackTrace: stackTrace));
+    }
+  }, (error, stack) {
+    debugPrint('Zone error: $error');
+    debugPrint('$stack');
+  });
 }
 
 class MinervaApp extends StatelessWidget {
@@ -188,8 +75,55 @@ class MinervaApp extends StatelessWidget {
       // 🔶 Centrale styling (cards, kleuren, iconen, tekst)
       theme: AppUI.theme(),
 
+      // ✅ Zorg dat AppUserContext beschikbaar is voor ALLE routes/dialogs.
+      builder: (context, child) {
+        return UserAppBootstrap(child: child ?? const SizedBox.shrink());
+      },
+
       // 🔐 Auth bepaalt automatisch of je login of app ziet
       home: const AuthGate(),
+    );
+  }
+}
+
+class _StartupErrorApp extends StatelessWidget {
+  final Object error;
+  final StackTrace stackTrace;
+
+  const _StartupErrorApp({
+    required this.error,
+    required this.stackTrace,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: AppUI.theme(),
+      home: Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Fout bij opstarten app',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '$error',
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

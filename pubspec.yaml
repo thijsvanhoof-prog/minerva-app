@@ -1,7 +1,7 @@
 name: minerva_app
 description: Minerva verenigingsapp
 publish_to: "none"
-version: 1.0.0+1
+version: 1.0.0+2
 
 environment:
   sdk: ">=3.10.4 <4.0.0"
@@ -21,10 +21,22 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
 
 flutter:
   uses-material-design: true
 
   # HIER staat nu je .env als asset
   assets:
+    - assets/branding/
     - .env
+
+flutter_launcher_icons:
+  image_path: assets/branding/app_icon.png
+  android: true
+  ios: true
+  web:
+    generate: true
+    background_color: "#1A2B4A"
+    theme_color: "#1A2B4A"
+  min_sdk_android: 21

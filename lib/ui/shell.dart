@@ -2,12 +2,14 @@
 import 'package:flutter/material.dart';
 
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/branded_background.dart';
 
 import 'package:minerva_app/ui/home/home_tab.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/trainingen_wedstrijden_tab.dart';
 import 'package:minerva_app/ui/tasks/my_tasks_tab.dart';
 import 'package:minerva_app/ui/info/info_tab.dart';
 import 'package:minerva_app/profiel/profiel_tab.dart';
+import 'package:minerva_app/ui/tc/tc_tab.dart';
 
 class Shell extends StatefulWidget {
   const Shell({super.key});
@@ -19,6 +21,66 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> {
   int _index = 0;
 
+  // Helper to keep nav structure in one place.
+  List<_NavItem> _buildNavItems({
+    required List<TeamMembership> manageableTeams,
+    required bool showTc,
+  }) {
+    final items = <_NavItem>[
+      _NavItem(
+        page: const HomeTab(),
+        destination: const NavigationDestination(
+          icon: Icon(Icons.home_outlined),
+          selectedIcon: Icon(Icons.home),
+          label: 'Home',
+        ),
+      ),
+      _NavItem(
+        page: TrainingenWedstrijdenTab(manageableTeams: manageableTeams),
+        destination: const NavigationDestination(
+          icon: Icon(Icons.emoji_events_outlined),
+          selectedIcon: Icon(Icons.emoji_events),
+          label: 'Sport',
+        ),
+      ),
+      if (showTc)
+        _NavItem(
+          page: const TcTab(),
+          destination: const NavigationDestination(
+            icon: Icon(Icons.settings_suggest_outlined),
+            selectedIcon: Icon(Icons.settings_suggest),
+            label: 'TC',
+          ),
+        ),
+      _NavItem(
+        page: const MyTasksTab(),
+        destination: const NavigationDestination(
+          icon: Icon(Icons.checklist_outlined),
+          selectedIcon: Icon(Icons.checklist),
+          label: 'Taken',
+        ),
+      ),
+      _NavItem(
+        page: const InfoTab(),
+        destination: const NavigationDestination(
+          icon: Icon(Icons.info_outline),
+          selectedIcon: Icon(Icons.info),
+          label: 'Info',
+        ),
+      ),
+      _NavItem(
+        page: const ProfielTab(),
+        destination: const NavigationDestination(
+          icon: Icon(Icons.person_outline),
+          selectedIcon: Icon(Icons.person),
+          label: 'Ik',
+        ),
+      ),
+    ];
+
+    return items;
+  }
+
   @override
   Widget build(BuildContext context) {
     final userContext = AppUserContext.of(context);
@@ -28,52 +90,54 @@ class _ShellState extends State<Shell> {
         .where((m) => m.canManageTeam)
         .toList();
 
-    final pages = <Widget>[
-      const HomeTab(),
-      TrainingenWedstrijdenTab(
-        manageableTeams: manageableTeams,
-      ),
-      const MyTasksTab(),
-      const InfoTab(),
-      const ProfielTab(),
-    ];
+    final showTc = userContext.hasFullAdminRights || userContext.isInTechnischeCommissie;
+    final navItems = _buildNavItems(
+      manageableTeams: manageableTeams,
+      showTc: showTc,
+    );
+
+    final selectedIndex = _index.clamp(0, navItems.length - 1);
+    final pages = navItems.map((i) => i.page).toList();
+    final destinations = navItems.map((i) => i.destination).toList();
 
     return Scaffold(
-      body: IndexedStack(
-        index: _index,
-        children: pages,
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.fitness_center_outlined),
-            selectedIcon: Icon(Icons.fitness_center),
-            label: 'Train/Wed',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.checklist_outlined),
-            selectedIcon: Icon(Icons.checklist),
-            label: 'Taken',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.info_outline),
-            selectedIcon: Icon(Icons.info),
-            label: 'Info',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outline),
-            selectedIcon: Icon(Icons.person),
-            label: 'Profiel',
+      backgroundColor: Colors.transparent,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          BrandedBackground(child: const SizedBox.shrink()),
+          SafeArea(
+            top: true,
+            bottom: true,
+            child: Column(
+              children: [
+                Expanded(
+                  child: IndexedStack(
+                    index: selectedIndex,
+                    children: pages,
+                  ),
+                ),
+                NavigationBar(
+                  selectedIndex: selectedIndex,
+                  onDestinationSelected: (i) => setState(() => _index = i),
+                  labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
+                  destinations: destinations,
+                ),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
+}
+
+class _NavItem {
+  final Widget page;
+  final NavigationDestination destination;
+
+  const _NavItem({
+    required this.page,
+    required this.destination,
+  });
 }

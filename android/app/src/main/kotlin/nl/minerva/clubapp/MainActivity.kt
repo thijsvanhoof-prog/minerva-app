@@ -1,5 +1,6 @@
-package com.example.minerva_app
+package nl.minerva.clubapp
 
 import io.flutter.embedding.android.FlutterActivity
 
 class MainActivity : FlutterActivity()
+

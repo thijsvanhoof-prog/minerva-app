@@ -4,27 +4,30 @@ import 'package:flutter/material.dart';
 class AppColors {
   /* ===================== BASIS ===================== */
 
-  /// App-achtergrond
-  static const Color background = Color(0xFF07101A);
+  /// App-achtergrond (wit)
+  static const Color background = Color(0xFFFFFFFF);
+  
+  /// Donkerblauw voor diagonale strepen
+  static const Color darkBlue = Color(0xFF1A2B4A);
 
-  /// Kaarten / widgets
-  static const Color card = Color(0xFF0E1B2A);
+  /// Kaarten / widgets (licht wit met subtiele donkerblauwe tint)
+  static const Color card = Color(0xFFFFFFFF);
 
   /// Primaire clubkleur (oranje)
   static const Color primary = Color(0xFFFF8A00);
 
   /* ===================== TEKST ===================== */
 
-  /// Hoofdtekst op donkere achtergrond
-  static const Color onBackground = Color(0xFFEAF1FF);
+  /// Hoofdtekst op lichte achtergrond (donkerblauw)
+  static const Color onBackground = Color(0xFF1A2B4A);
 
   /// Secundaire tekst (subtitles, hints)
-  static const Color textSecondary = Color(0xFFB7C3D6);
+  static const Color textSecondary = Color(0xFF5A6B7C);
 
   /* ===================== ICONEN ===================== */
 
   /// Inactieve / gedempte iconen
-  static const Color iconMuted = Color(0xFF8FA1B8);
+  static const Color iconMuted = Color(0xFF8A9BA8);
 
   /* ===================== STATUSKLEUREN ===================== */
 

@@ -1,5 +1,61 @@
 import 'package:flutter/material.dart';
 
+/// Gekoppeld kind-profiel voor ouder-kind account.
+class LinkedChild {
+  final String profileId;
+  final String displayName;
+
+  const LinkedChild({required this.profileId, required this.displayName});
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LinkedChild &&
+          profileId == other.profileId &&
+          displayName == other.displayName;
+
+  @override
+  int get hashCode => Object.hash(profileId, displayName);
+}
+
+/// State voor "Bekijk als kind": gekoppelde kinderen en actief gekozen kind.
+class OuderKindNotifier extends ChangeNotifier {
+  List<LinkedChild> linkedChildren = const [];
+  String? viewingAsProfileId;
+  String? viewingAsDisplayName;
+
+  void setChildren(List<LinkedChild> children) {
+    if (_listEquals(linkedChildren, children)) return;
+    linkedChildren = children;
+    // Als het gekozen kind niet meer in de lijst zit, reset
+    if (viewingAsProfileId != null &&
+        !children.any((c) => c.profileId == viewingAsProfileId)) {
+      viewingAsProfileId = null;
+      viewingAsDisplayName = null;
+    }
+    notifyListeners();
+  }
+
+  void setViewingAs(String? profileId, String? displayName) {
+    if (viewingAsProfileId == profileId && viewingAsDisplayName == displayName) return;
+    viewingAsProfileId = profileId;
+    viewingAsDisplayName = displayName;
+    notifyListeners();
+  }
+
+  void clearViewingAs() => setViewingAs(null, null);
+
+  bool get isViewingAsChild => viewingAsProfileId != null;
+
+  static bool _listEquals<T>(List<T> a, List<T> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+}
+
 class TeamMembership {
   final int teamId;
   final String role;
@@ -11,15 +67,27 @@ class TeamMembership {
     required this.teamName,
   });
 
-  bool get canManageTeam =>
-      role == 'admin' || role == 'trainer' || role == 'coach';
+  bool get canManageTeam {
+    final r = role.trim().toLowerCase();
+    return r == 'trainer' || r == 'coach';
+  }
 }
 
 class AppUserContext extends InheritedWidget {
+  /// Effectieve profile id (voor data: ouder of gekozen kind).
   final String profileId;
   final String email;
   final bool isGlobalAdmin;
   final List<TeamMembership> memberships;
+  final List<String> committees;
+
+  /// Ouder-kind: id van de ingelogde user (ouder).
+  final String loggedInProfileId;
+  /// Ouder-kind: als je "als kind" kijkt, de kind-profile-id en -naam.
+  final String? viewingAsProfileId;
+  final String? viewingAsDisplayName;
+  final List<LinkedChild> linkedChildProfiles;
+  final OuderKindNotifier? ouderKindNotifier;
 
   const AppUserContext({
     super.key,
@@ -27,8 +95,46 @@ class AppUserContext extends InheritedWidget {
     required this.email,
     required this.isGlobalAdmin,
     required this.memberships,
+    required this.committees,
+    required this.loggedInProfileId,
+    this.viewingAsProfileId,
+    this.viewingAsDisplayName,
+    this.linkedChildProfiles = const [],
+    this.ouderKindNotifier,
     required super.child,
   });
+
+  /// True als de gebruiker nu "als kind" kijkt.
+  bool get isViewingAsChild => viewingAsProfileId != null;
+
+  bool get hasFullAdminRights => isGlobalAdmin;
+
+  bool isInCommittee(String name) {
+    final needle = name.trim().toLowerCase();
+    return committees.any((c) => c.trim().toLowerCase() == needle);
+  }
+
+  bool get isInBestuur => isInCommittee('bestuur');
+  bool get isInTechnischeCommissie =>
+      isInCommittee('technische-commissie') || isInCommittee('tc');
+  bool get isInCommunicatie => isInCommittee('communicatie');
+  bool get isInWedstrijdzaken => isInCommittee('wedstrijdzaken');
+
+  /// Central place for feature permissions (can be reused across the app).
+  bool get canManageAgenda =>
+      hasFullAdminRights || isInBestuur || isInCommunicatie;
+  bool get canViewAgendaRsvps =>
+      hasFullAdminRights || isInBestuur || isInCommunicatie;
+  bool get canManageNews =>
+      hasFullAdminRights || isInBestuur || isInCommunicatie;
+  bool get canManageHighlights =>
+      hasFullAdminRights || isInBestuur || isInCommunicatie;
+  bool get canManageTeams => hasFullAdminRights || isInTechnischeCommissie;
+  bool get canManageMatches => hasFullAdminRights || isInWedstrijdzaken;
+
+  // Tasks
+  bool get canViewAllTasks => hasFullAdminRights || isInBestuur || isInWedstrijdzaken;
+  bool get canManageTasks => hasFullAdminRights || isInWedstrijdzaken;
 
   static AppUserContext of(BuildContext context) {
     final result =
@@ -47,6 +153,11 @@ class AppUserContext extends InheritedWidget {
     return profileId != oldWidget.profileId ||
         email != oldWidget.email ||
         isGlobalAdmin != oldWidget.isGlobalAdmin ||
-        memberships != oldWidget.memberships;
+        memberships != oldWidget.memberships ||
+        committees != oldWidget.committees ||
+        loggedInProfileId != oldWidget.loggedInProfileId ||
+        viewingAsProfileId != oldWidget.viewingAsProfileId ||
+        viewingAsDisplayName != oldWidget.viewingAsDisplayName ||
+        linkedChildProfiles != oldWidget.linkedChildProfiles;
   }
 }
