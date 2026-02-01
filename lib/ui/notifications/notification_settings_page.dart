@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:minerva_app/ui/components/app_logo_title.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/branded_background.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:onesignal_flutter/onesignal_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
@@ -78,21 +78,15 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
     try {
       await OneSignal.User.addTags(tags);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Notificatievoorkeuren opgeslagen')),
-      );
+      showTopMessage(context, 'Notificatievoorkeuren opgeslagen');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Opslaan mislukt: $e')),
-      );
+      showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
     }
   }
 
   Widget _toggle(String label, bool value, ValueChanged<bool> onChanged) {
     return SwitchListTile.adaptive(
-      activeTrackColor: AppColors.primary.withValues(alpha: 0.45),
-      activeThumbColor: AppColors.primary,
       title: Text(
         label,
         style: const TextStyle(color: AppColors.onBackground),
@@ -110,19 +104,26 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
-      appBar: AppBar(
-        title: const AppLogoTitle(),
-        backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-      ),
       body: BrandedBackground(
         child: _loading
             ? const Center(
                 child: CircularProgressIndicator(color: AppColors.primary),
               )
             : ListView(
-                padding: const EdgeInsets.all(16),
+                padding: EdgeInsets.fromLTRB(
+                  16,
+                  16 + MediaQuery.paddingOf(context).top,
+                  16,
+                  16 + MediaQuery.paddingOf(context).bottom,
+                ),
                 children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.arrow_back),
+                  ),
+                ),
                 if (!NotificationService.pushSupported)
                   const GlassCard(
                     child: Text(

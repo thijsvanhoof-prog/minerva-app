@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:minerva_app/ui/components/app_logo_title.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/profiel/ouder_kind_koppel_page.dart';
 import 'package:minerva_app/profiel/admin_gebruikersnamen_page.dart';
 import 'package:minerva_app/ui/notifications/notification_settings_page.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
@@ -26,6 +27,7 @@ class _ProfielTabState extends State<ProfielTab> {
   bool _isGlobalAdmin = false;
   List<Map<String, dynamic>> _teamRoles = [];
   Map<int, String> _teamNamesById = const {};
+  final Set<String> _processingLinkRequestIds = {};
 
   @override
   void initState() {
@@ -80,13 +82,6 @@ class _ProfielTabState extends State<ProfielTab> {
         row['role'] = _normalizeRole(raw);
       }
 
-      // Sorteer netjes op team_id
-      roles.sort((a, b) {
-        final ai = (a['team_id'] as num?)?.toInt() ?? 0;
-        final bi = (b['team_id'] as num?)?.toInt() ?? 0;
-        return ai.compareTo(bi);
-      });
-
       // 2b) Teamnamen ophalen (best-effort)
       final teamIds = roles
           .map((r) => (r['team_id'] as num?)?.toInt())
@@ -97,6 +92,19 @@ class _ProfielTabState extends State<ProfielTab> {
 
       final teamNamesById = await _loadTeamNames(teamIds: teamIds);
       if (!mounted) return;
+
+      // Sorteer teams volgens app-volgorde (DS -> HS -> MR -> MA -> JA -> MB -> JB -> MC -> JC ...)
+      roles.sort((a, b) {
+        final ai = (a['team_id'] as num?)?.toInt() ?? 0;
+        final bi = (b['team_id'] as num?)?.toInt() ?? 0;
+        final an = (teamNamesById[ai] ?? '').trim();
+        final bn = (teamNamesById[bi] ?? '').trim();
+        return NevoboApi.compareTeamNames(
+          an.isEmpty ? 'Team $ai' : an,
+          bn.isEmpty ? 'Team $bi' : bn,
+          volleystarsLast: true,
+        );
+      });
 
       _safeSetState(() {
         _isGlobalAdmin = isAdmin;
@@ -215,6 +223,40 @@ class _ProfielTabState extends State<ProfielTab> {
     final notifier = ctx.ouderKindNotifier;
     if (notifier == null) return const SizedBox.shrink();
 
+    Future<List<Map<String, dynamic>>> loadRequests() async {
+      try {
+        final res = await _client.rpc('get_my_pending_account_link_requests');
+        return (res as List<dynamic>).cast<Map<String, dynamic>>();
+      } catch (_) {
+        return const [];
+      }
+    }
+
+    Future<void> acceptRequest(String requestId) async {
+      await _client.rpc('accept_account_link_request', params: {'request_id': requestId});
+      // Best-effort: refresh linked list in the app context.
+      try {
+        final res = await _client.rpc('get_my_linked_child_profiles');
+        final list = (res as List<dynamic>?)
+                ?.map((e) {
+                  final m = e as Map<String, dynamic>?;
+                  if (m == null) return null;
+                  final id = m['profile_id']?.toString();
+                  final name = m['display_name']?.toString() ?? m['profile_id']?.toString() ?? '';
+                  if (id == null || id.isEmpty) return null;
+                  return LinkedChild(profileId: id, displayName: name.trim().isEmpty ? 'Gekoppeld account' : name);
+                })
+                .whereType<LinkedChild>()
+                .toList() ??
+            const [];
+        notifier.setChildren(list);
+      } catch (_) {}
+    }
+
+    Future<void> rejectRequest(String requestId) async {
+      await _client.rpc('reject_account_link_request', params: {'request_id': requestId});
+    }
+
     return GlassCard(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Column(
@@ -222,26 +264,167 @@ class _ProfielTabState extends State<ProfielTab> {
         children: [
           const ListTile(
             title: Text(
-              'Ouder-kind account',
+              'Gekoppelde accounts',
               style: TextStyle(color: AppColors.textSecondary),
             ),
           ),
-          if (ctx.isViewingAsChild) ...[
+          FutureBuilder<List<Map<String, dynamic>>>(
+            future: loadRequests(),
+            builder: (context, snapshot) {
+              final rows = snapshot.data ?? const [];
+              if (rows.isEmpty) return const SizedBox.shrink();
+
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Koppelingsverzoeken',
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    ...rows.map((r) {
+                      final requestId = (r['request_id'] ?? '').toString();
+                      final otherName = (r['other_display_name'] ?? '').toString().trim();
+                      final role = (r['role'] ?? '').toString();
+                      final subtitle = role == 'parent'
+                          ? 'Deze koppeling maakt jou ouder/verzorger.'
+                          : role == 'child'
+                              ? 'Deze koppeling maakt het andere account ouder/verzorger.'
+                              : 'Koppelingsverzoek';
+                      final isBusy = requestId.isNotEmpty && _processingLinkRequestIds.contains(requestId);
+
+                      return GlassCard(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    otherName.isNotEmpty ? otherName : 'Account',
+                                    style: const TextStyle(
+                                      color: AppColors.onBackground,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    subtitle,
+                                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            TextButton(
+                              onPressed: requestId.isEmpty
+                                  ? null
+                                  : isBusy
+                                      ? null
+                                  : () async {
+                                      final messenger = ScaffoldMessenger.of(context);
+                                      try {
+                                        setState(() => _processingLinkRequestIds.add(requestId));
+                                        await rejectRequest(requestId);
+                                        if (!mounted) return;
+                                        showTopMessage(messenger.context, 'Verzoek geweigerd.');
+                                        setState(() => _processingLinkRequestIds.remove(requestId));
+                                      } catch (e) {
+                                        if (!mounted) return;
+                                        showTopMessage(messenger.context, 'Weigeren mislukt: $e', isError: true);
+                                        setState(() => _processingLinkRequestIds.remove(requestId));
+                                      }
+                                    },
+                              child: isBusy
+                                  ? const SizedBox(
+                                      height: 16,
+                                      width: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Text('Weigeren'),
+                            ),
+                            const SizedBox(width: 4),
+                            ElevatedButton(
+                              onPressed: requestId.isEmpty
+                                  ? null
+                                  : isBusy
+                                      ? null
+                                  : () async {
+                                      final messenger = ScaffoldMessenger.of(context);
+                                      try {
+                                        setState(() => _processingLinkRequestIds.add(requestId));
+                                        await acceptRequest(requestId);
+                                        if (!mounted) return;
+                                        showTopMessage(messenger.context, 'Verzoek geaccepteerd.');
+                                        setState(() => _processingLinkRequestIds.remove(requestId));
+                                      } catch (e) {
+                                        if (!mounted) return;
+                                        showTopMessage(messenger.context, 'Accepteren mislukt: $e', isError: true);
+                                        setState(() => _processingLinkRequestIds.remove(requestId));
+                                      }
+                                    },
+                              child: isBusy
+                                  ? const SizedBox(
+                                      height: 16,
+                                      width: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Text('Accepteren'),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              );
+            },
+          ),
+          // Only the ouder/verzorger (parent) can unlink. The linked account (child) never sees this.
+          if (ctx.isViewingAsChild && ctx.isOuderVerzorger) ...[
             ListTile(
               dense: true,
-              leading: const Icon(Icons.person_outline, color: AppColors.primary),
+              leading: const Icon(Icons.link_off, color: AppColors.error),
               title: const Text(
-                'Terug naar mijn account',
+                'Ontkoppelen',
                 style: TextStyle(
                   color: AppColors.onBackground,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
               subtitle: Text(
-                'Nu bekeken als: ${ctx.viewingAsDisplayName ?? 'Kind'}',
+                'Ontkoppel: ${ctx.viewingAsDisplayName ?? 'Gekoppeld account'}',
                 style: const TextStyle(color: AppColors.textSecondary),
               ),
-              onTap: () => notifier.clearViewingAs(),
+              onTap: () async {
+                final messenger = ScaffoldMessenger.of(context);
+                final childId = ctx.viewingAsProfileId;
+                if (childId == null || childId.isEmpty) return;
+
+                try {
+                  await _client.rpc('unlink_child_account', params: {'child_profile_id': childId});
+
+                  // Update local view state immediately.
+                  notifier.clearViewingAs();
+                  notifier.setChildren(
+                    notifier.linkedChildren.where((c) => c.profileId != childId).toList(),
+                  );
+
+                  if (!mounted) return;
+                  showTopMessage(messenger.context, 'Account ontkoppeld.');
+                } catch (e) {
+                  if (!mounted) return;
+                  showTopMessage(messenger.context, 'Ontkoppelen mislukt: $e', isError: true);
+                }
+              },
             ),
           ],
           ...ctx.linkedChildProfiles.map((c) {
@@ -264,13 +447,13 @@ class _ProfielTabState extends State<ProfielTab> {
                   : () => notifier.setViewingAs(c.profileId, c.displayName),
             );
           }),
-          // Kind koppelen: waar je een nieuw kind aan je account koppelt
+          // Account koppelen
           if (!ctx.isViewingAsChild)
             ListTile(
               dense: true,
               leading: const Icon(Icons.person_add_outlined, color: AppColors.iconMuted),
               title: const Text(
-                'Kind koppelen',
+                'Account koppelen',
                 style: TextStyle(
                   color: AppColors.onBackground,
                   fontWeight: FontWeight.w600,
@@ -278,8 +461,8 @@ class _ProfielTabState extends State<ProfielTab> {
               ),
               subtitle: Text(
                 ctx.linkedChildProfiles.isEmpty
-                    ? 'Koppel het account van je kind aan je eigen account.'
-                    : 'Nog een kind toevoegen.',
+                    ? 'Koppel een ander account. De ouder/verzorger kan daarna meekijken en aanwezigheid aanpassen.'
+                    : 'Nog een account toevoegen.',
                 style: const TextStyle(color: AppColors.textSecondary),
               ),
               onTap: () {
@@ -345,20 +528,22 @@ class _ProfielTabState extends State<ProfielTab> {
   Widget build(BuildContext context) {
     final user = _client.auth.currentUser;
     final email = user?.email ?? 'Onbekend';
+    final ctx = AppUserContext.of(context);
+    final displayName = ctx.displayName.trim().isNotEmpty ? ctx.displayName.trim() : (user?.email ?? 'Onbekend');
 
     return Scaffold(
       backgroundColor: Colors.transparent,
-      appBar: AppBar(
-        title: const AppLogoTitle(),
-        backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-      ),
       body: RefreshIndicator(
         color: AppColors.primary,
         onRefresh: _reload,
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(16),
+          padding: EdgeInsets.fromLTRB(
+            16,
+            16 + MediaQuery.paddingOf(context).top,
+            16,
+            16 + MediaQuery.paddingOf(context).bottom,
+          ),
           children: _loading
               ? [
                   const SizedBox(
@@ -394,7 +579,7 @@ class _ProfielTabState extends State<ProfielTab> {
                           style: TextStyle(color: AppColors.textSecondary),
                         ),
                         subtitle: Text(
-                          email,
+                          displayName,
                           style: const TextStyle(color: AppColors.onBackground),
                         ),
                       ),
@@ -416,7 +601,19 @@ class _ProfielTabState extends State<ProfielTab> {
                         subtitle: Text(
                           _isGlobalAdmin
                               ? 'Algemeen admin'
-                              : (_isTrainerOrCoach ? 'Trainer/coach' : 'Speler'),
+                              : (() {
+                                  final ctx = AppUserContext.of(context);
+                                  final roles = <String>[];
+                                  final isPlayer = _teamRoles.any((row) {
+                                    final r = (row['role']?.toString() ?? '').toLowerCase();
+                                    return r == 'player' || r == 'speler';
+                                  });
+                                  if (isPlayer) roles.add('Speler');
+                                  if (_isTrainerOrCoach) roles.add('Trainer/coach');
+                                  if (ctx.isOuderVerzorger) roles.add('Ouder/verzorger');
+                                  if (roles.isEmpty) roles.add('Speler');
+                                  return roles.join(' • ');
+                                })(),
                           style: const TextStyle(color: AppColors.onBackground),
                         ),
                       ),
@@ -629,19 +826,16 @@ class _ProfielTabState extends State<ProfielTab> {
     );
     controller.dispose();
 
+    if (!mounted) return;
     if (newEmail == null || newEmail.trim().isEmpty) return;
 
     final email = newEmail.trim();
     if (!_isValidEmail(email)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Vul een geldig e-mailadres in.')),
-      );
+      showTopMessage(context, 'Vul een geldig e-mailadres in.', isError: true);
       return;
     }
     if (email == currentEmail) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Dit is al je huidige e-mailadres.')),
-      );
+      showTopMessage(context, 'Dit is al je huidige e-mailadres.', isError: true);
       return;
     }
 
@@ -650,20 +844,14 @@ class _ProfielTabState extends State<ProfielTab> {
         UserAttributes(email: email),
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('E-mail wijziging gestart. Check je mail om te bevestigen.')),
-      );
+      showTopMessage(context, 'E-mail wijziging gestart. Check je mail om te bevestigen.');
       await _reload();
     } on AuthException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message)),
-      );
+      showTopMessage(context, e.message, isError: true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Kon e-mail niet wijzigen. Probeer het later opnieuw.')),
-      );
+      showTopMessage(context, 'Kon e-mail niet wijzigen. Probeer het later opnieuw.', isError: true);
     }
   }
 
@@ -699,68 +887,31 @@ class _ProfielTabState extends State<ProfielTab> {
         // Best-effort; we'll handle errors from the function call below.
       }
 
-      final response = await _client.functions.invoke('delete_my_account');
+      // Self-service deletion via SQL RPC (no Edge Function / service role needed).
+      await _client.rpc('delete_my_account');
       if (!mounted) return;
-      if (response.status >= 200 && response.status < 300) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Account verwijderd.')),
-        );
-        await _client.auth.signOut();
-      } else {
-        final msg = response.data is Map && response.data['error'] != null
-            ? response.data['error'].toString()
-            : 'Account verwijderen mislukt.';
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(msg)),
-        );
-      }
-    } on FunctionException catch (e) {
+
+      showTopMessage(context, 'Account verwijderd.');
+      await _client.auth.signOut();
+    } on PostgrestException catch (e) {
       if (!mounted) return;
       final url = dotenv.env['SUPABASE_URL'] ?? '(onbekend)';
 
-      if (e.status == 401) {
-        // Token is invalid/expired → force re-auth by signing out.
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Je sessie is verlopen. Je wordt uitgelogd; log opnieuw in en probeer opnieuw.'),
-          ),
-        );
-        await _client.auth.signOut();
-        return;
-      }
-
-      if (e.status == 404) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Edge Function delete_my_account niet gevonden (404). Controleer dat SUPABASE_URL naar het juiste project wijst ($url) en dat de function gedeployed is.',
-            ),
-          ),
-        );
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Account verwijderen mislukt (${_shortError(e)}). SUPABASE_URL: $url',
-          ),
-        ),
+      showTopMessage(
+        context,
+        'Account verwijderen mislukt (${_shortError(e.message)}). SUPABASE_URL: $url',
+        isError: true,
       );
     } on AuthException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message)),
-      );
+      showTopMessage(context, e.message, isError: true);
     } catch (e) {
       if (!mounted) return;
       final url = dotenv.env['SUPABASE_URL'] ?? '(onbekend)';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Account verwijderen mislukt (${_shortError(e)}). Controleer dat SUPABASE_URL naar het juiste project wijst ($url) en dat de Edge Function delete_my_account gedeployed is.',
-          ),
-        ),
+      showTopMessage(
+        context,
+        'Account verwijderen mislukt (${_shortError(e)}). Controleer dat SUPABASE_URL naar het juiste project wijst ($url).',
+        isError: true,
       );
     }
   }

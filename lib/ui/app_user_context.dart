@@ -71,12 +71,15 @@ class TeamMembership {
     final r = role.trim().toLowerCase();
     return r == 'trainer' || r == 'coach';
   }
+
+  bool get isGuardian => role.trim().toLowerCase() == 'guardian';
 }
 
 class AppUserContext extends InheritedWidget {
   /// Effectieve profile id (voor data: ouder of gekozen kind).
   final String profileId;
   final String email;
+  final String displayName;
   final bool isGlobalAdmin;
   final List<TeamMembership> memberships;
   final List<String> committees;
@@ -93,6 +96,7 @@ class AppUserContext extends InheritedWidget {
     super.key,
     required this.profileId,
     required this.email,
+    required this.displayName,
     required this.isGlobalAdmin,
     required this.memberships,
     required this.committees,
@@ -106,6 +110,13 @@ class AppUserContext extends InheritedWidget {
 
   /// True als de gebruiker nu "als kind" kijkt.
   bool get isViewingAsChild => viewingAsProfileId != null;
+
+  /// Ouder/verzorger-rol: je hebt minimaal één gekoppeld account.
+  bool get isOuderVerzorger => linkedChildProfiles.isNotEmpty;
+
+  /// Voor aanwezigheid beheren: als je een gekoppeld account geselecteerd hebt,
+  /// voer acties uit voor dat profiel; anders voor je eigen account.
+  String get attendanceProfileId => (viewingAsProfileId ?? loggedInProfileId);
 
   bool get hasFullAdminRights => isGlobalAdmin;
 
@@ -152,6 +163,7 @@ class AppUserContext extends InheritedWidget {
   bool updateShouldNotify(AppUserContext oldWidget) {
     return profileId != oldWidget.profileId ||
         email != oldWidget.email ||
+        displayName != oldWidget.displayName ||
         isGlobalAdmin != oldWidget.isGlobalAdmin ||
         memberships != oldWidget.memberships ||
         committees != oldWidget.committees ||

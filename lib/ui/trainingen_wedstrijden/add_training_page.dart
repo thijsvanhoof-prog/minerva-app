@@ -4,6 +4,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 
 class AddTrainingPage extends StatefulWidget {
   final List<TeamMembership> manageableTeams;
@@ -287,9 +289,7 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
     final title = _teamTitle();
 
     if (_selectedTeamId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Kies een team')),
-      );
+      showTopMessage(context, 'Kies een team', isError: true);
       return;
     }
 
@@ -300,9 +300,7 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
       final endDateTime = _combine(_selectedDate, _endTime);
 
       if (!endDateTime.isAfter(startDateTime)) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Eindtijd moet na starttijd liggen')),
-        );
+        showTopMessage(context, 'Eindtijd moet na starttijd liggen', isError: true);
         return;
       }
 
@@ -323,9 +321,7 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
     } catch (e) {
       debugPrint('Fout bij training opslaan: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Fout bij opslaan: $e')),
-        );
+        showTopMessage(context, 'Fout bij opslaan: $e', isError: true);
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -337,29 +333,36 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
-        title: const Text('Training toevoegen'),
-        actions: [
-          IconButton(
-            onPressed: _saving ? null : _saveTraining,
-            icon: const Icon(Icons.check),
-            color: AppColors.primary,
-          ),
-        ],
+      backgroundColor: Colors.transparent,
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        onPressed: _saving ? null : _saveTraining,
+        child: const Icon(Icons.check),
       ),
       body: AbsorbPointer(
         absorbing: _saving,
         child: ListView(
-          padding: const EdgeInsets.all(16),
+          padding: EdgeInsets.fromLTRB(
+            16,
+            16 + MediaQuery.paddingOf(context).top,
+            16,
+            16 + MediaQuery.paddingOf(context).bottom,
+          ),
           children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: IconButton(
+                onPressed: _saving ? null : () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.arrow_back),
+              ),
+            ),
             Text(
               'Team',
               style: theme.textTheme.titleMedium?.copyWith(color: AppColors.onBackground),
             ),
             const SizedBox(height: 8),
-            Card(
-              color: AppColors.card,
+            GlassCard(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 child: DropdownButton<int>(
@@ -387,8 +390,7 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
               style: theme.textTheme.titleMedium?.copyWith(color: AppColors.onBackground),
             ),
             const SizedBox(height: 8),
-            Card(
-              color: AppColors.card,
+            GlassCard(
               child: ListTile(
                 dense: true,
                 title: const Text(
@@ -411,8 +413,7 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
                   theme.textTheme.titleSmall?.copyWith(color: AppColors.textSecondary),
             ),
             const SizedBox(height: 8),
-            Card(
-              color: AppColors.card,
+            GlassCard(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 child: DropdownButton<String>(

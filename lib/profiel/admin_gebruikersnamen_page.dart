@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/branded_background.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 
 /// Alleen voor admins: bekijk en wijzig gebruikersnamen (display_name) van leden.
 class AdminGebruikersnamenPage extends StatefulWidget {
@@ -32,6 +33,29 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
       _loading = true;
       _error = null;
     });
+
+    // Preferred: admin RPC (works even if profiles RLS is strict).
+    try {
+      final res = await _client.rpc('admin_list_profiles');
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final list = <_ProfileRow>[];
+      for (final r in rows) {
+        final id = (r['profile_id'] ?? r['id'])?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final name = (r['display_name'] ?? '').toString().trim();
+        final email = (r['email'] ?? '').toString().trim();
+        list.add(_ProfileRow(id: id, displayName: name, email: email));
+      }
+      if (mounted) {
+        setState(() {
+          _profiles = list;
+          _loading = false;
+        });
+      }
+      return;
+    } catch (_) {
+      // fall back to direct profiles select below
+    }
 
     List<Map<String, dynamic>> raw = const [];
     for (final select in const [
@@ -134,20 +158,68 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
     if (newName == null) return;
 
     try {
-      await _client
-          .from('profiles')
-          .update({'display_name': newName})
-          .eq('id', profile.id);
+      // Preferred: admin RPC (works even if profiles RLS is strict).
+      try {
+        await _client.rpc(
+          'admin_set_profile_display_name',
+          params: {'target_profile_id': profile.id, 'new_display_name': newName},
+        );
+      } catch (_) {
+        // fallback: direct update (older installs)
+        await _client
+            .from('profiles')
+            .update({'display_name': newName})
+            .eq('id', profile.id);
+      }
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Gebruikersnaam is bijgewerkt.')),
-      );
+      showTopMessage(context, 'Gebruikersnaam is bijgewerkt.');
       await _load();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Kon gebruikersnaam niet wijzigen: $e')),
+      showTopMessage(context, 'Kon gebruikersnaam niet wijzigen: $e', isError: true);
+    }
+  }
+
+  Future<void> _deleteUser(_ProfileRow profile) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Account verwijderen'),
+        content: Text(
+          'Weet je zeker dat je dit account wilt verwijderen?\n\n'
+          '${profile.displayName.isNotEmpty ? profile.displayName : profile.email}\n'
+          '${profile.email.isNotEmpty ? profile.email : ''}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Verwijderen'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    if (!mounted) return;
+
+    try {
+      await _client.rpc(
+        'admin_delete_user',
+        params: {'target_user_id': profile.id},
       );
+      if (!mounted) return;
+      showTopMessage(context, 'Account verwijderd.');
+      await _load();
+    } on PostgrestException catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Verwijderen mislukt: ${e.message}', isError: true);
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Verwijderen mislukt: $e', isError: true);
     }
   }
 
@@ -155,11 +227,6 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
-      appBar: AppBar(
-        title: const Text('Gebruikersnamen beheren'),
-        backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-      ),
       body: BrandedBackground(
         child: RefreshIndicator(
           color: AppColors.primary,
@@ -191,8 +258,20 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
                   )
                 : ListView(
                     physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.all(16),
+                    padding: EdgeInsets.fromLTRB(
+                      16,
+                      16 + MediaQuery.paddingOf(context).top,
+                      16,
+                      16 + MediaQuery.paddingOf(context).bottom,
+                    ),
                     children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: IconButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          icon: const Icon(Icons.arrow_back),
+                        ),
+                      ),
                       TextField(
                         decoration: const InputDecoration(
                           prefixIcon: Icon(Icons.search),
@@ -236,9 +315,20 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
                                         ),
                                       )
                                     : null,
-                                trailing: const Icon(
-                                  Icons.edit_outlined,
-                                  color: AppColors.primary,
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      tooltip: 'Account verwijderen',
+                                      icon: const Icon(Icons.delete_outline),
+                                      color: AppColors.error,
+                                      onPressed: () => _deleteUser(p),
+                                    ),
+                                    const Icon(
+                                      Icons.edit_outlined,
+                                      color: AppColors.primary,
+                                    ),
+                                  ],
                                 ),
                                 onTap: () => _changeNameFor(p),
                               ),

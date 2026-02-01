@@ -3,6 +3,7 @@ import 'package:minerva_app/ui/components/glass_card.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -65,6 +66,22 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
 
+    // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
+    try {
+      final res = await _client.rpc('get_profile_display_names', params: {'profile_ids': ids});
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final map = <String, String>{};
+      for (final r in rows) {
+        final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final name = (r['display_name'] ?? '').toString().trim();
+        map[id] = name.isNotEmpty ? name : _shortId(id);
+      }
+      if (map.isNotEmpty) return map;
+    } catch (_) {
+      // fall back to direct profiles select below
+    }
+
     List<Map<String, dynamic>> rows = const [];
     for (final select in const [
       'id, display_name, full_name, email',
@@ -100,6 +117,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     if (user == null) return;
     if (matches.isEmpty) return;
 
+    final ctx = AppUserContext.of(context);
+    final targetProfileId = ctx.attendanceProfileId;
+
     final keys = matches.map((m) => m.matchKey).toSet().toList();
 
     // Fetch all availability rows for displayed matches
@@ -133,7 +153,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       final status = (r['status'] ?? '').toString().trim().toLowerCase();
       final name = pid.isEmpty ? '' : (namesById[pid] ?? _shortId(pid));
 
-      if (pid == user.id && (status == 'playing' || status == 'coach')) {
+      if (pid == targetProfileId && (status == 'playing' || status == 'coach')) {
         myStatus[key] = status;
       }
       if (name.trim().isEmpty) continue;
@@ -152,7 +172,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     }
 
     if (!mounted) return;
-    final myName = namesById[user.id] ?? _shortId(user.id);
+    final myName = namesById[targetProfileId] ?? _shortId(targetProfileId);
     setState(() {
       _myDisplayName = myName;
       _myStatusByMatchKey
@@ -219,6 +239,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   }) async {
     final user = _client.auth.currentUser;
     if (user == null) return;
+    final ctx = AppUserContext.of(context);
+    final targetProfileId = ctx.attendanceProfileId;
     final key = match.matchKey;
 
     final prevStatus = _myStatusByMatchKey[key];
@@ -235,7 +257,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
             .from('match_availability')
             .delete()
             .eq('match_key', key)
-            .eq('profile_id', user.id);
+            .eq('profile_id', targetProfileId);
       } else {
         await _client.from('match_availability').upsert(
           {
@@ -244,7 +266,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
             'starts_at': match.start.toUtc().toIso8601String(),
             'summary': match.summary,
             'location': match.location,
-            'profile_id': user.id,
+            'profile_id': targetProfileId,
             'status': status,
           },
           onConflict: 'match_key,profile_id',
@@ -261,9 +283,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         _playingNamesByMatchKey[key] = prevPlaying;
         _coachNamesByMatchKey[key] = prevCoaches;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Kon status niet opslaan: $e')),
-      );
+      showTopMessage(context, 'Kon status niet opslaan: $e', isError: true);
     }
   }
 
@@ -271,6 +291,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final user = _client.auth.currentUser;
     if (user == null) return;
     if (_upcomingMatchRefs.isEmpty) return;
+    final ctx = AppUserContext.of(context);
+    final targetProfileId = ctx.attendanceProfileId;
 
     final prevStatus = Map<String, String?>.from(_myStatusByMatchKey);
     final prevPlaying = <String, List<String>>{
@@ -292,7 +314,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         await _client
             .from('match_availability')
             .delete()
-            .eq('profile_id', user.id)
+            .eq('profile_id', targetProfileId)
             .inFilter('match_key', keys);
       } else {
         final rows = _upcomingMatchRefs.map((m) => {
@@ -301,7 +323,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           'starts_at': m.start.toUtc().toIso8601String(),
           'summary': m.summary,
           'location': m.location,
-          'profile_id': user.id,
+          'profile_id': targetProfileId,
           'status': status,
         }).toList();
         await _client.from('match_availability').upsert(
@@ -311,8 +333,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       }
       if (!mounted) return;
       final label = status == null ? 'Afwezig' : 'Aanwezig';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$label voor ${_upcomingMatchRefs.length} wedstrijd(en) opgeslagen.')),
+      showTopMessage(
+        context,
+        '$label voor ${_upcomingMatchRefs.length} wedstrijd(en) opgeslagen.',
       );
     } catch (e) {
       if (!mounted) return;
@@ -328,9 +351,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           ..clear()
           ..addAll(prevCoaches);
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Kon status niet opslaan: $e')),
-      );
+      showTopMessage(context, 'Kon status niet opslaan: $e', isError: true);
     }
   }
 
@@ -339,6 +360,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final user = _client.auth.currentUser;
     if (user == null) return;
     if (_upcomingMatchRefs.isEmpty) return;
+    final ctx = AppUserContext.of(context);
+    final targetProfileId = ctx.attendanceProfileId;
 
     final prevStatus = Map<String, String?>.from(_myStatusByMatchKey);
     final prevPlaying = <String, List<String>>{
@@ -364,7 +387,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           'starts_at': m.start.toUtc().toIso8601String(),
           'summary': m.summary,
           'location': m.location,
-          'profile_id': user.id,
+          'profile_id': targetProfileId,
           'status': status,
         };
       }).toList();
@@ -373,8 +396,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         onConflict: 'match_key,profile_id',
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Aanwezig voor ${_upcomingMatchRefs.length} wedstrijd(en) opgeslagen.')),
+      showTopMessage(
+        context,
+        'Aanwezig voor ${_upcomingMatchRefs.length} wedstrijd(en) opgeslagen.',
       );
     } catch (e) {
       if (!mounted) return;
@@ -390,9 +414,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           ..clear()
           ..addAll(prevCoaches);
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Kon status niet opslaan: $e')),
-      );
+      showTopMessage(context, 'Kon status niet opslaan: $e', isError: true);
     }
   }
 
@@ -412,13 +434,13 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           .where((c) => c.isNotEmpty)
           .toSet()
           .toList()
-        ..sort();
+        ..sort(NevoboApi.compareTeamCodes);
 
       final teams = codes
           .map(NevoboApi.teamFromCode)
           .whereType<NevoboTeam>()
           .toList()
-        ..sort((a, b) => a.code.compareTo(b.code));
+        ..sort(NevoboApi.compareTeams);
 
       setState(() {
         _teams = teams;
@@ -550,6 +572,20 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.teamCodes.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Text(
+            'Je bent nog niet gekoppeld aan een team.\n'
+            'Koppel eerst je account aan een team om wedstrijden te zien.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+        ),
+      );
+    }
+
     if (_loading && _teams.isEmpty) {
       return const Center(
         child: CircularProgressIndicator(color: AppColors.primary),

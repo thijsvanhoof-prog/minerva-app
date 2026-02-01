@@ -26,6 +26,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
   final SupabaseClient _client = Supabase.instance.client;
 
   late Future<void> _loadFuture;
+  List<int> _allowedTeamIds = const [];
 
   List<Map<String, dynamic>> _trainings = [];
   final Map<int, AttendanceStatus?> _statusBySessionId = {};
@@ -40,21 +41,54 @@ class _TrainingsTabState extends State<TrainingsTab> {
   @override
   void initState() {
     super.initState();
-    _loadFuture = _loadData();
+    // Don't read inherited widgets in initState. We'll load once dependencies are available.
+    _loadFuture = Future.value();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final ctx = AppUserContext.of(context);
+    final next = ctx.memberships.map((m) => m.teamId).toSet().toList()..sort();
+    if (_sameIntList(_allowedTeamIds, next)) return;
+    _allowedTeamIds = next;
+    setState(() {
+      _loadFuture = _loadData(teamIds: _allowedTeamIds);
+    });
   }
 
   Future<void> _refresh() async {
     setState(() {
-      _loadFuture = _loadData();
+      _loadFuture = _loadData(teamIds: _allowedTeamIds);
     });
     await _loadFuture;
   }
 
-  Future<void> _loadData() async {
+  bool _sameIntList(List<int> a, List<int> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  Future<void> _loadData({required List<int> teamIds}) async {
     final user = _client.auth.currentUser;
     if (user == null) {
       _trainings = [];
       _statusBySessionId.clear();
+      return;
+    }
+
+    // Capture before awaits (avoids use_build_context_synchronously lint).
+    final targetProfileId = AppUserContext.of(context).attendanceProfileId;
+
+    if (teamIds.isEmpty) {
+      _trainings = [];
+      _statusBySessionId.clear();
+      _playingBySessionId.clear();
+      _coachBySessionId.clear();
       return;
     }
 
@@ -64,6 +98,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
           'session_id, team_id, session_type, title, start_datetime, location, created_by, is_cancelled, start_timestamp, end_timestamp',
         )
         .eq('session_type', 'training')
+        .inFilter('team_id', teamIds)
         .order('start_datetime', ascending: false);
 
     final sessions = (sessionsRes as List<dynamic>).cast<Map<String, dynamic>>();
@@ -103,7 +138,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
       final status = (r['status'] ?? '').toString().trim().toLowerCase();
       final name = pid.isEmpty ? '' : (namesById[pid] ?? _shortId(pid));
 
-      if (pid == user.id) {
+      if (pid == targetProfileId) {
         final s = _statusFromString(status);
         if (s != null) _statusBySessionId[sid] = s;
       }
@@ -123,7 +158,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
 
     if (!mounted) return;
-    final myName = namesById[user.id] ?? _shortId(user.id);
+    final myName = namesById[targetProfileId] ?? _shortId(targetProfileId);
     setState(() {
       _myDisplayName = myName;
       _playingBySessionId
@@ -163,6 +198,23 @@ class _TrainingsTabState extends State<TrainingsTab> {
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> ids) async {
     if (ids.isEmpty) return {};
     final list = ids.toList();
+
+    // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
+    try {
+      final res = await _client.rpc('get_profile_display_names', params: {'profile_ids': list});
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final map = <String, String>{};
+      for (final r in rows) {
+        final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final name = (r['display_name'] ?? '').toString().trim();
+        map[id] = name.isNotEmpty ? name : _shortId(id);
+      }
+      if (map.isNotEmpty) return map;
+    } catch (_) {
+      // fall back to direct profiles select below
+    }
+
     List<Map<String, dynamic>> rows = const [];
     for (final select in const [
       'id, display_name, full_name, email',
@@ -331,6 +383,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
     if (user == null) return;
     if (!mounted) return;
 
+    final ctx = AppUserContext.of(context);
+    final targetProfileId = ctx.attendanceProfileId;
+
     final effective = status;
 
     final prevStatus = _statusBySessionId[sessionId];
@@ -347,12 +402,12 @@ class _TrainingsTabState extends State<TrainingsTab> {
             .from('attendance')
             .delete()
             .eq('session_id', sessionId)
-            .eq('person_id', user.id);
+            .eq('person_id', targetProfileId);
       } else {
         await _client.from('attendance').upsert(
           {
             'session_id': sessionId,
-            'person_id': user.id,
+            'person_id': targetProfileId,
             'status': effective.name,
           },
           onConflict: 'session_id,person_id',
@@ -374,6 +429,21 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
   @override
   Widget build(BuildContext context) {
+    final ctx = AppUserContext.of(context);
+    if (ctx.memberships.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Text(
+            'Je bent nog niet gekoppeld aan een team.\n'
+            'Koppel eerst je account aan een team om trainingen te zien.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: Colors.transparent,
       floatingActionButton: _canCreateTrainings
@@ -417,10 +487,6 @@ class _TrainingsTabState extends State<TrainingsTab> {
                   ),
                   const SizedBox(height: 12),
                   ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: AppColors.background,
-                    ),
                     onPressed: _refresh,
                     child: const Text('Opnieuw laden'),
                   ),

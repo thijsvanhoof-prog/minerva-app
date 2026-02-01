@@ -8,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:minerva_app/ui/app_ui.dart';
 import 'package:minerva_app/ui/auth/auth_gate.dart';
 import 'package:minerva_app/ui/notifications/notification_service.dart';
+import 'package:minerva_app/ui/branded_background.dart';
 import 'package:minerva_app/ui/user_app_bootstrap.dart';
 
 Future<void> main() async {
@@ -32,11 +33,48 @@ Future<void> main() async {
       await dotenv.load(fileName: '.env');
 
       final supabaseUrl = dotenv.env['SUPABASE_URL'] ?? '';
-      final supabaseKey = dotenv.env['SUPABASE_ANON_KEY'] ?? '';
+      final configuredKey = dotenv.env['SUPABASE_ANON_KEY'] ?? '';
+      final supabaseKey = configuredKey;
 
       if (supabaseUrl.isEmpty || supabaseKey.isEmpty) {
         throw Exception(
-          'SUPABASE_URL en SUPABASE_ANON_KEY moeten zijn ingesteld in .env',
+          'SUPABASE_URL en SUPABASE_ANON_KEY moeten zijn ingesteld in .env.',
+        );
+      }
+
+      // Safe debug: helps confirm which key is actually loaded from the bundled `.env` asset.
+      final keyPreview = supabaseKey.length <= 24
+          ? supabaseKey
+          : '${supabaseKey.substring(0, 20)}…${supabaseKey.substring(supabaseKey.length - 4)}';
+      debugPrint('Supabase URL: $supabaseUrl');
+      debugPrint('Supabase key preview: $keyPreview');
+
+      // Guardrails: a common misconfig is pasting a secret key (sb_secret_...) instead of the
+      // project's anon/public (JWT-like) key. That will cause "Invalid API key" errors at runtime.
+      if (supabaseKey.startsWith('sb_secret_')) {
+        throw Exception(
+          'SUPABASE_ANON_KEY lijkt op een secret key (sb_secret_...). '
+          'Gebruik de "anon/public" key (legacy JWT) óf de "Publishable key" (sb_publishable_...) '
+          'uit Supabase Dashboard → Project Settings → API Keys. '
+          'Plak nooit een service/secret key in de app.',
+        );
+      }
+
+      // Supabase now shows "Publishable key" (sb_publishable_...) for client usage.
+      // Older projects may still use a JWT-like anon key; accept both formats.
+      final looksLikePublishable = supabaseKey.startsWith('sb_publishable_');
+      if (looksLikePublishable && supabaseKey.contains('...')) {
+        throw Exception(
+          'SUPABASE_ANON_KEY lijkt afgekapt (bevat "..."). '
+          'Gebruik in Supabase Dashboard → Settings → API Keys de copy-knop bij "Publishable key" '
+          'en plak de volledige waarde in `.env`.',
+        );
+      }
+      final jwtLike = RegExp(r'^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$');
+      if (!looksLikePublishable && !jwtLike.hasMatch(supabaseKey)) {
+        throw Exception(
+          'SUPABASE_ANON_KEY lijkt niet op een geldige Supabase client key. '
+          'Gebruik de "Publishable key" (sb_publishable_...) uit Supabase Dashboard → Settings → API Keys.',
         );
       }
 
@@ -77,7 +115,9 @@ class MinervaApp extends StatelessWidget {
 
       // ✅ Zorg dat AppUserContext beschikbaar is voor ALLE routes/dialogs.
       builder: (context, child) {
-        return UserAppBootstrap(child: child ?? const SizedBox.shrink());
+        return BrandedBackground(
+          child: UserAppBootstrap(child: child ?? const SizedBox.shrink()),
+        );
       },
 
       // 🔐 Auth bepaalt automatisch of je login of app ziet

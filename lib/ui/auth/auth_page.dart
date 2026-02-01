@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:minerva_app/ui/components/app_logo_title.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/primary_button.dart';
 import 'package:minerva_app/ui/auth/register_page.dart';
 import 'package:minerva_app/ui/branded_background.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
@@ -42,24 +42,18 @@ class _AuthPageState extends State<AuthPage> {
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ingelogd')),
-      );
+      showTopMessage(context, 'Ingelogd');
     } on AuthException catch (e) {
       if (!mounted) return;
 
       final msg = e.message.toLowerCase().contains('invalid login credentials')
           ? 'Email en wachtwoord komen niet overeen'
           : e.message;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg)),
-      );
+      showTopMessage(context, msg, isError: true);
     } catch (e) {
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Onbekende fout: $e')),
-      );
+      showTopMessage(context, 'Onbekende fout: $e', isError: true);
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -88,7 +82,7 @@ class _AuthPageState extends State<AuthPage> {
 
   @override
   Widget build(BuildContext context) {
-    final topPadding = MediaQuery.paddingOf(context).top + kToolbarHeight;
+    final topPadding = MediaQuery.paddingOf(context).top + 16;
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
@@ -97,15 +91,7 @@ class _AuthPageState extends State<AuthPage> {
         systemNavigationBarIconBrightness: Brightness.dark,
       ),
       child: Scaffold(
-        extendBodyBehindAppBar: true,
         backgroundColor: Colors.transparent,
-        appBar: AppBar(
-          title: const AppLogoTitle(),
-          backgroundColor: Colors.transparent,
-          surfaceTintColor: Colors.transparent,
-          elevation: 0,
-          forceMaterialTransparency: true,
-        ),
         body: BrandedBackground(
           child: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
@@ -145,14 +131,6 @@ class _AuthPageState extends State<AuthPage> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: OutlinedButton(
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: AppColors.onBackground,
-                          side: BorderSide(
-                            color: AppColors.primary.withValues(alpha: 0.55),
-                            width: AppColors.cardBorderWidth,
-                          ),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                        ),
                         onPressed: _loading
                             ? null
                             : () {

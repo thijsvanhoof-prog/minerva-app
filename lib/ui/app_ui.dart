@@ -16,7 +16,8 @@ class AppUI {
       useMaterial3: true,
       colorScheme: colorScheme,
 
-      scaffoldBackgroundColor: AppColors.background,
+      // Branded background is drawn behind all routes; keep scaffolds transparent.
+      scaffoldBackgroundColor: Colors.transparent,
 
       // ✅ Alle iconen standaard oranje (tenzij je ze lokaal overschrijft)
       iconTheme: const IconThemeData(
@@ -68,6 +69,19 @@ class AppUI {
           foregroundColor: AppColors.primary,
         ),
       ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppColors.primary,
+          side: BorderSide(
+            color: AppColors.primary.withValues(alpha: 0.55),
+            width: AppColors.cardBorderWidth,
+          ),
+          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppColors.cardRadius),
+          ),
+        ),
+      ),
 
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: Colors.transparent,
@@ -87,6 +101,95 @@ class AppUI {
             color: selected ? AppColors.primary : Colors.white,
           );
         }),
+      ),
+
+      switchTheme: SwitchThemeData(
+        thumbColor: WidgetStateProperty.resolveWith((states) {
+          final selected = states.contains(WidgetState.selected);
+          return selected ? AppColors.primary : AppColors.iconMuted;
+        }),
+        trackColor: WidgetStateProperty.resolveWith((states) {
+          final selected = states.contains(WidgetState.selected);
+          return selected
+              ? AppColors.primary.withValues(alpha: 0.45)
+              : AppColors.darkBlue.withValues(alpha: 0.12);
+        }),
+      ),
+
+      checkboxTheme: CheckboxThemeData(
+        fillColor: WidgetStateProperty.resolveWith((states) {
+          final selected = states.contains(WidgetState.selected);
+          return selected ? AppColors.primary : Colors.transparent;
+        }),
+        checkColor: WidgetStateProperty.all(Colors.white),
+        side: BorderSide(color: AppColors.darkBlue.withValues(alpha: 0.25)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(6),
+        ),
+      ),
+
+      dividerTheme: DividerThemeData(
+        color: AppColors.darkBlue.withValues(alpha: 0.18),
+        thickness: 1,
+        space: 1,
+      ),
+
+      dialogTheme: DialogThemeData(
+        backgroundColor: AppColors.card,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppColors.cardRadius),
+          side: BorderSide(
+            color: AppColors.darkBlue.withValues(alpha: 0.15),
+            width: AppColors.cardBorderWidth,
+          ),
+        ),
+        titleTextStyle: const TextStyle(
+          color: AppColors.onBackground,
+          fontWeight: FontWeight.w900,
+          fontSize: 18,
+        ),
+        contentTextStyle: const TextStyle(
+          color: AppColors.onBackground,
+        ),
+      ),
+
+      tabBarTheme: const TabBarThemeData(
+        labelColor: AppColors.primary,
+        unselectedLabelColor: AppColors.textSecondary,
+        labelStyle: TextStyle(fontWeight: FontWeight.w800),
+      ),
+
+      segmentedButtonTheme: SegmentedButtonThemeData(
+        style: ButtonStyle(
+          visualDensity: VisualDensity.compact,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          padding: WidgetStateProperty.all(
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          ),
+          shape: WidgetStateProperty.all(
+            RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppColors.cardRadius),
+            ),
+          ),
+          side: WidgetStateProperty.all(
+            BorderSide(color: AppColors.darkBlue.withValues(alpha: 0.18), width: 1),
+          ),
+          backgroundColor: WidgetStateProperty.resolveWith((states) {
+            final selected = states.contains(WidgetState.selected);
+            return selected ? AppColors.darkBlue : Colors.transparent;
+          }),
+          foregroundColor: WidgetStateProperty.resolveWith((states) {
+            final selected = states.contains(WidgetState.selected);
+            return selected ? AppColors.primary : AppColors.textSecondary;
+          }),
+          textStyle: WidgetStateProperty.resolveWith((states) {
+            final selected = states.contains(WidgetState.selected);
+            return TextStyle(
+              fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+            );
+          }),
+        ),
       ),
 
       snackBarTheme: SnackBarThemeData(

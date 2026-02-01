@@ -56,6 +56,7 @@ as $$
           to_jsonb(p)->>'display_name',
           to_jsonb(p)->>'full_name',
           to_jsonb(p)->>'name',
+          au.raw_user_meta_data->>'display_name',
           au.email,
           ''
         )
@@ -63,6 +64,7 @@ as $$
           to_jsonb(p)->>'display_name',
           to_jsonb(p)->>'full_name',
           to_jsonb(p)->>'name',
+          au.raw_user_meta_data->>'display_name',
           au.email,
           ''
         )
@@ -82,6 +84,7 @@ as $$
           to_jsonb(p)->>'display_name',
           to_jsonb(p)->>'full_name',
           to_jsonb(p)->>'name',
+          au.raw_user_meta_data->>'display_name',
           au.email,
           ''
         )
@@ -89,6 +92,7 @@ as $$
           to_jsonb(p)->>'display_name',
           to_jsonb(p)->>'full_name',
           to_jsonb(p)->>'name',
+          au.raw_user_meta_data->>'display_name',
           au.email,
           ''
         )

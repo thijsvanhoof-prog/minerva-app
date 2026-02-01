@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
-import 'package:minerva_app/ui/components/app_logo_title.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -17,43 +17,40 @@ class MyTasksTab extends StatelessWidget {
       length: 2,
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        appBar: AppBar(
-          title: const AppLogoTitle(),
-          backgroundColor: Colors.transparent,
-          surfaceTintColor: Colors.transparent,
-          bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(54),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: GlassCard(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                child: TabBar(
-                  indicator: BoxDecoration(
-                    color: AppColors.darkBlue,
-                    borderRadius: BorderRadius.circular(AppColors.cardRadius),
+        body: SafeArea(
+          top: true,
+          bottom: false,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                child: GlassCard(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  child: TabBar(
+                    indicator: BoxDecoration(
+                      color: AppColors.darkBlue,
+                      borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                    ),
+                    indicatorSize: TabBarIndicatorSize.tab,
+                    tabs: const [
+                      Tab(text: 'Verenigingstaken'),
+                      Tab(text: 'Overzicht'),
+                    ],
                   ),
-                  indicatorSize: TabBarIndicatorSize.tab,
-                  labelColor: AppColors.primary,
-                  unselectedLabelColor: AppColors.textSecondary,
-                  labelStyle: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                  ),
-                  tabs: const [
-                    Tab(text: 'Verenigingstaken'),
-                    Tab(text: 'Overzicht'),
+                ),
+              ),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    const _TeamTasksView(),
+                    ctx.canViewAllTasks
+                        ? const _OverviewHomeMatchesView()
+                        : const _LockedView(),
                   ],
                 ),
               ),
-            ),
+            ],
           ),
-        ),
-        body: TabBarView(
-          children: [
-            const _TeamTasksView(),
-            ctx.canViewAllTasks
-                ? const _OverviewHomeMatchesView()
-                : const _LockedView(),
-          ],
         ),
       ),
     );
@@ -74,7 +71,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
   String? _error;
   bool _schemaMissing = false;
 
-  String? _lastProfileId;
+  String? _lastSubjectProfileId;
 
   List<_LinkedMatchTasks> _matches = const [];
   Set<int> _signedUpTaskIds = const {}; // task_ids I am signed up for
@@ -85,8 +82,9 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final ctx = AppUserContext.of(context);
-    if (_lastProfileId != ctx.profileId) {
-      _lastProfileId = ctx.profileId;
+    // Reload when the "active subject" changes (own vs linked profile).
+    if (_lastSubjectProfileId != ctx.attendanceProfileId) {
+      _lastSubjectProfileId = ctx.attendanceProfileId;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _load(ctx: ctx);
       });
@@ -94,6 +92,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
   }
 
   Future<void> _load({AppUserContext? ctx}) async {
+    if (!mounted) return;
     setState(() {
       _loading = true;
       _error = null;
@@ -103,6 +102,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
     try {
       final user = _client.auth.currentUser;
       if (user == null) {
+        if (!mounted) return;
         setState(() {
           _matches = const [];
           _signedUpTaskIds = const {};
@@ -113,10 +113,12 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       }
 
       final userContext = ctx ?? AppUserContext.of(context);
+      final targetProfileId = userContext.attendanceProfileId;
       final myTeamIds = userContext.memberships.map((m) => m.teamId).toSet().toList();
       myTeamIds.sort();
 
       if (myTeamIds.isEmpty) {
+        if (!mounted) return;
         setState(() {
           _matches = const [];
           _signedUpTaskIds = const {};
@@ -177,7 +179,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         final sRes = await _client
             .from('club_task_signups')
             .select('task_id')
-            .eq('profile_id', user.id)
+            .eq('profile_id', targetProfileId)
             .inFilter('task_id', taskIds.toList());
         final sRows = (sRes as List<dynamic>).cast<Map<String, dynamic>>();
         for (final row in sRows) {
@@ -191,6 +193,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
 
       final signupNamesByTaskId = await _loadSignupNamesByTaskId(matchKeys: matchKeys);
 
+      if (!mounted) return;
       setState(() {
         _matches = matches;
         _signedUpTaskIds = signedUp;
@@ -200,6 +203,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       });
     } catch (e) {
       final msg = e.toString();
+      if (!mounted) return;
       setState(() {
         _error = msg;
         _schemaMissing = msg.contains('PGRST205') ||
@@ -220,6 +224,22 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
+
+    // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
+    try {
+      final res = await _client.rpc('get_profile_display_names', params: {'profile_ids': ids});
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final map = <String, String>{};
+      for (final r in rows) {
+        final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final name = (r['display_name'] ?? '').toString().trim();
+        map[id] = name.isNotEmpty ? name : _shortId(id);
+      }
+      if (map.isNotEmpty) return map;
+    } catch (_) {
+      // fall back to direct profiles select below
+    }
 
     List<Map<String, dynamic>> rows = const [];
     for (final select in const [
@@ -371,6 +391,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
   Future<void> _toggleSignup(int taskId) async {
     final user = _client.auth.currentUser;
     if (user == null) return;
+    final targetProfileId = AppUserContext.of(context).attendanceProfileId;
 
     final signedUp = _signedUpTaskIds.contains(taskId);
     try {
@@ -379,7 +400,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
             .from('club_task_signups')
             .delete()
             .eq('task_id', taskId)
-            .eq('profile_id', user.id);
+            .eq('profile_id', targetProfileId);
         if (!mounted) return;
         setState(() {
           _signedUpTaskIds = {..._signedUpTaskIds}..remove(taskId);
@@ -387,7 +408,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       } else {
         await _client.from('club_task_signups').insert({
           'task_id': taskId,
-          'profile_id': user.id,
+          'profile_id': targetProfileId,
         });
         if (!mounted) return;
         setState(() {
@@ -396,9 +417,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Kan aanmelding niet wijzigen: $e')),
-      );
+      showTopMessage(context, 'Kan aanmelding niet wijzigen: $e', isError: true);
     }
   }
 
@@ -829,6 +848,22 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
+
+    // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
+    try {
+      final res = await _client.rpc('get_profile_display_names', params: {'profile_ids': ids});
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final map = <String, String>{};
+      for (final r in rows) {
+        final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final name = (r['display_name'] ?? '').toString().trim();
+        map[id] = name.isNotEmpty ? name : _shortId(id);
+      }
+      if (map.isNotEmpty) return map;
+    } catch (_) {
+      // fall back to direct profiles select below
+    }
 
     List<Map<String, dynamic>> rows = const [];
     for (final select in const [
@@ -1595,14 +1630,10 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       if (!mounted) return;
       await _refreshStatusForKey(key);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Gekoppeld. ($created aangemaakt)')),
-      );
+      showTopMessage(context, 'Gekoppeld. ($created aangemaakt)');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Koppelen mislukt: $e')),
-      );
+      showTopMessage(context, 'Koppelen mislukt: $e', isError: true);
     }
   }
 
@@ -1637,7 +1668,12 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
             );
           }
           if (list.isNotEmpty) {
-            list.sort((a, b) => a.label.compareTo(b.label));
+            list.sort((a, b) {
+              final ac = a.code;
+              final bc = b.code;
+              if (ac != null && bc != null) return NevoboApi.compareTeamCodes(ac, bc);
+              return NevoboApi.compareTeamNames(a.label, b.label, volleystarsLast: true);
+            });
             return list;
           }
         } catch (_) {
@@ -2430,6 +2466,22 @@ class _MyTasksTabState extends State<MyTasksTab> {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
 
+    // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
+    try {
+      final res = await _client.rpc('get_profile_display_names', params: {'profile_ids': ids});
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final map = <String, String>{};
+      for (final r in rows) {
+        final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final name = (r['display_name'] ?? '').toString().trim();
+        map[id] = name.isNotEmpty ? name : shortId(id);
+      }
+      if (map.isNotEmpty) return map;
+    } catch (_) {
+      // fall back to direct profiles select below
+    }
+
     List<Map<String, dynamic>> rows = const [];
     for (final select in const [
       'id, display_name, full_name, email',
@@ -2864,6 +2916,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
   Future<void> _toggleSignup(int taskId) async {
     final user = _client.auth.currentUser;
     if (user == null) return;
+    final targetProfileId = AppUserContext.of(context).attendanceProfileId;
 
     final signedUp = _signedUpTaskIds.contains(taskId);
     try {
@@ -2872,19 +2925,17 @@ class _MyTasksTabState extends State<MyTasksTab> {
             .from('club_task_signups')
             .delete()
             .eq('task_id', taskId)
-            .eq('profile_id', user.id);
+            .eq('profile_id', targetProfileId);
       } else {
         await _client.from('club_task_signups').insert({
           'task_id': taskId,
-          'profile_id': user.id,
+          'profile_id': targetProfileId,
         });
       }
       await _load();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Kan aanmelding niet wijzigen: $e')),
-      );
+      showTopMessage(context, 'Kan aanmelding niet wijzigen: $e', isError: true);
     }
   }
 
@@ -3064,13 +3115,10 @@ class _MyTasksTabState extends State<MyTasksTab> {
       }
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Import klaar: $created taken toegevoegd, $skipped overgeslagen.'
-            '${missingTeamId > 0 ? ' ($missingTeamId teams konden we niet mappen)' : ''}',
-          ),
-        ),
+      showTopMessage(
+        context,
+        'Import klaar: $created taken toegevoegd, $skipped overgeslagen.'
+        '${missingTeamId > 0 ? ' ($missingTeamId teams konden we niet mappen)' : ''}',
       );
 
       await _load();
@@ -3723,7 +3771,6 @@ class _CreateTaskPageState extends State<_CreateTaskPage> {
                     SwitchListTile.adaptive(
                       value: _required,
                       onChanged: (v) => setState(() => _required = v),
-                      activeThumbColor: AppColors.primary,
                       title: const Text(
                         'Verplicht',
                         style: TextStyle(

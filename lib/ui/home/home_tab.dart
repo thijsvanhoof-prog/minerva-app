@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:minerva_app/ui/components/app_logo_title.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/data/mock_home_data.dart';
@@ -11,7 +11,7 @@ import 'package:minerva_app/ui/app_colors.dart';
 /// Home-tab van VV Minerva. Stap voor stap herbouwd.
 ///
 /// Stap 1: Minimale basis – scaffold, AppBar, welkomsttekst
-/// Stap 2: Sectiestructuur – _SectionTitle + lege secties Uitgelicht, Agenda, Nieuws
+/// Stap 2: Sectiestructuur – tabs voor Uitgelicht, Agenda, Nieuws
 /// Stap 3: Uitgelicht – highlights laden (Supabase of mock) en horizontale kaarten
 /// Stap 4: Agenda – agenda laden, kaarten, RSVP
 /// Stap 5: Nieuwsberichten – NewsItem + mockNews (zoals oorspronkelijk)
@@ -23,8 +23,10 @@ class HomeTab extends StatefulWidget {
   State<HomeTab> createState() => _HomeTabState();
 }
 
-class _HomeTabState extends State<HomeTab> {
+class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   final SupabaseClient _client = Supabase.instance.client;
+
+  late final TabController _tabController;
 
   bool _loadingHighlights = true;
   String? _highlightsError;
@@ -49,9 +51,16 @@ class _HomeTabState extends State<HomeTab> {
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 3, vsync: this, initialIndex: 0);
     _loadHighlights();
     _loadAgenda();
     _loadNews();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadHighlights() async {
@@ -293,9 +302,7 @@ class _HomeTabState extends State<HomeTab> {
     final user = _client.auth.currentUser;
     if (user == null) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Log in om je aan te melden.')),
-      );
+      showTopMessage(context, 'Log in om je aan te melden.', isError: true);
       return;
     }
     if (item.id == null) return;
@@ -326,9 +333,7 @@ class _HomeTabState extends State<HomeTab> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Aanmelding mislukt: $e')),
-      );
+      showTopMessage(context, 'Aanmelding mislukt: $e', isError: true);
     }
   }
 
@@ -500,14 +505,10 @@ class _HomeTabState extends State<HomeTab> {
       });
       await _loadNews();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nieuwsbericht toegevoegd.')),
-      );
+      showTopMessage(context, 'Nieuwsbericht toegevoegd.');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Opslaan mislukt: $e')),
-      );
+      showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
     }
   }
 
@@ -579,14 +580,10 @@ class _HomeTabState extends State<HomeTab> {
       }).eq('news_id', newsId);
       await _loadNews();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nieuwsbericht aangepast.')),
-      );
+      showTopMessage(context, 'Nieuwsbericht aangepast.');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Opslaan mislukt: $e')),
-      );
+      showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
     }
   }
 
@@ -621,14 +618,10 @@ class _HomeTabState extends State<HomeTab> {
       await _client.from('home_news').delete().eq('news_id', newsId);
       await _loadNews();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nieuwsbericht verwijderd.')),
-      );
+      showTopMessage(context, 'Nieuwsbericht verwijderd.');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Verwijderen mislukt: $e')),
-      );
+      showTopMessage(context, 'Verwijderen mislukt: $e', isError: true);
     }
   }
 
@@ -880,14 +873,10 @@ class _HomeTabState extends State<HomeTab> {
       await _client.from('home_agenda').insert(payload);
       await _loadAgenda();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Activiteit toegevoegd.')),
-      );
+      showTopMessage(context, 'Activiteit toegevoegd.');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Opslaan mislukt: $e')),
-      );
+      showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
     }
   }
 
@@ -1142,14 +1131,10 @@ class _HomeTabState extends State<HomeTab> {
       await _client.from('home_agenda').update(payload).eq('agenda_id', existing.id!);
       await _loadAgenda();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Activiteit aangepast.')),
-      );
+      showTopMessage(context, 'Activiteit aangepast.');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Opslaan mislukt: $e')),
-      );
+      showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
     }
   }
 
@@ -1183,14 +1168,10 @@ class _HomeTabState extends State<HomeTab> {
       await _client.from('home_agenda').delete().eq('agenda_id', item.id!);
       await _loadAgenda();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Activiteit verwijderd.')),
-      );
+      showTopMessage(context, 'Activiteit verwijderd.');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Verwijderen mislukt: $e')),
-      );
+      showTopMessage(context, 'Verwijderen mislukt: $e', isError: true);
     }
   }
 
@@ -1307,9 +1288,7 @@ class _HomeTabState extends State<HomeTab> {
       await _loadHighlights();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Opslaan mislukt: $e')),
-      );
+      showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
     }
   }
 
@@ -1322,215 +1301,271 @@ class _HomeTabState extends State<HomeTab> {
 
     return Scaffold(
       backgroundColor: Colors.transparent,
-      appBar: AppBar(
-        title: const AppLogoTitle(),
-        backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-      ),
-      body: RefreshIndicator(
-        color: AppColors.primary,
-        onRefresh: _refreshHome,
-        child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: EdgeInsets.fromLTRB(
-          16,
-          12,
-          16,
-          24 + MediaQuery.paddingOf(context).bottom,
-        ),
-        children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppColors.darkBlue,
-              borderRadius: BorderRadius.circular(AppColors.cardRadius),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Welkom bij VV Minerva',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.w800,
-                      ),
+      body: SafeArea(
+        top: true,
+        bottom: false,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppColors.darkBlue,
+                  borderRadius: BorderRadius.circular(AppColors.cardRadius),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  'Updates, agenda en nieuws vanuit de vereniging.',
-                  style: TextStyle(
-                    color: AppColors.primary.withOpacity(0.9),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-
-          _SectionTitle(
-            'Uitgelicht',
-            trailing: canManageHighlights
-                ? IconButton(
-                    tooltip: 'Punt toevoegen',
-                    icon: const Icon(Icons.add_circle_outline),
-                    color: AppColors.primary,
-                    onPressed: () => _openEditHighlightDialog(
-                      canManage: true,
-                      existing: null,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Welkom bij VV Minerva',
+                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w800,
+                          ),
                     ),
-                  )
-                : (_loadingHighlights
-                    ? const SizedBox(
-                        height: 18,
-                        width: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppColors.primary,
-                        ),
-                      )
-                    : null),
-          ),
-          const SizedBox(height: 12),
-          if (_highlightsError != null && canManageHighlights)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Text(
-                'Let op: highlights tabel niet beschikbaar.\n'
-                'Voer supabase/home_highlights_minimal.sql uit in Supabase → SQL Editor.\n'
-                'Details: $_highlightsError',
-                style: const TextStyle(color: AppColors.textSecondary),
-              ),
-            ),
-          SizedBox(
-            height: 135,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: _highlights.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 12),
-              itemBuilder: (_, i) => SizedBox(
-                width: 260,
-                child: _HighlightCard(
-                  item: _highlights[i],
-                  canManage: canManageHighlights,
-                  onEdit: () => _openEditHighlightDialog(
-                    canManage: canManageHighlights,
-                    existing: _highlights[i],
-                  ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Updates, agenda en nieuws vanuit de vereniging.',
+                      style: TextStyle(
+                        color: AppColors.primary.withValues(alpha: 0.9),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-          ),
-
-          const SizedBox(height: 22),
-          _SectionTitle(
-            'Agenda',
-            trailing: canManageAgenda
-                ? IconButton(
-                    tooltip: 'Activiteit toevoegen',
-                    icon: const Icon(Icons.add_circle_outline),
-                    color: AppColors.primary,
-                    onPressed: () => _openAddAgendaDialog(),
-                  )
-                : (_loadingAgenda
-                    ? const SizedBox(
-                        height: 18,
-                        width: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppColors.primary,
-                        ),
-                      )
-                    : null),
-          ),
-          const SizedBox(height: 12),
-          if (_agendaError != null && canManageAgenda)
             Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Text(
-                'Let op: agenda tabel/RSVP niet beschikbaar.\n'
-                'Voeg Supabase tabellen `home_agenda` + `home_agenda_rsvps` toe.\n'
-                'Details: $_agendaError',
-                style: const TextStyle(color: AppColors.textSecondary),
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: GlassCard(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                child: TabBar(
+                  controller: _tabController,
+                  indicator: BoxDecoration(
+                    color: AppColors.darkBlue,
+                    borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                  ),
+                  indicatorSize: TabBarIndicatorSize.tab,
+                  tabs: const [
+                    Tab(text: 'Uitgelicht'),
+                    Tab(text: 'Agenda'),
+                    Tab(text: 'Nieuws'),
+                  ],
+                ),
               ),
             ),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 360),
-            child: ListView.separated(
-              itemCount: _agendaItems.length,
-              shrinkWrap: true,
-              physics: const AlwaysScrollableScrollPhysics(),
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
-              itemBuilder: (_, i) {
-                final item = _agendaItems[i];
-                final signedUp =
-                    item.id != null && _myRsvpAgendaIds.contains(item.id);
-                final enabled = item.canRsvp && item.id != null;
-                return _AgendaCard(
-                  item: item,
-                  signedUp: signedUp,
-                  enabled: enabled,
-                  canManage: canManageAgenda,
-                  onToggleRsvp: () => _toggleAgendaRsvp(item),
-                  onReadMore: () => _showAgendaDetail(item),
-                  onEdit: item.id != null ? () => _openEditAgendaDialog(item) : null,
-                  onDelete: item.id != null ? () => _deleteAgendaItem(item) : null,
-                );
-              },
-            ),
-          ),
-
-          const SizedBox(height: 22),
-          _SectionTitle(
-            'Nieuwsberichten',
-            trailing: canManageNews
-                ? IconButton(
-                    tooltip: 'Nieuwsbericht toevoegen',
-                    icon: const Icon(Icons.add_circle_outline),
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  // Uitgelicht
+                  RefreshIndicator(
                     color: AppColors.primary,
-                    onPressed: () => _openAddNewsDialog(),
-                  )
-                : (_loadingNews
-                    ? const SizedBox(
-                        height: 18,
-                        width: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppColors.primary,
+                    onRefresh: _refreshHome,
+                    child: ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: EdgeInsets.fromLTRB(
+                        16,
+                        0,
+                        16,
+                        24 + MediaQuery.paddingOf(context).bottom,
+                      ),
+                      children: [
+                        _HomeTabHeader(
+                          title: 'Uitgelicht',
+                          trailing: canManageHighlights
+                              ? IconButton(
+                                  tooltip: 'Punt toevoegen',
+                                  icon: const Icon(Icons.add_circle_outline),
+                                  color: AppColors.primary,
+                                  onPressed: () => _openEditHighlightDialog(
+                                    canManage: true,
+                                    existing: null,
+                                  ),
+                                )
+                              : (_loadingHighlights
+                                  ? const SizedBox(
+                                      height: 18,
+                                      width: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: AppColors.primary,
+                                      ),
+                                    )
+                                  : null),
                         ),
-                      )
-                    : null),
-          ),
-          const SizedBox(height: 12),
-          if (_newsError != null && canManageNews)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Text(
-                'Let op: nieuwstabel niet beschikbaar. '
-                'Voer supabase/home_news_minimal.sql uit in Supabase → SQL Editor.\n'
-                'Details: $_newsError',
-                style: const TextStyle(color: AppColors.textSecondary),
+                        const SizedBox(height: 12),
+                        if (_highlightsError != null && canManageHighlights)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: Text(
+                              'Let op: highlights tabel niet beschikbaar.\n'
+                              'Voer supabase/home_highlights_minimal.sql uit in Supabase → SQL Editor.\n'
+                              'Details: $_highlightsError',
+                              style: const TextStyle(color: AppColors.textSecondary),
+                            ),
+                          ),
+                        SizedBox(
+                          height: 135,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: _highlights.length,
+                            separatorBuilder: (_, _) => const SizedBox(width: 12),
+                            itemBuilder: (_, i) => SizedBox(
+                              width: 260,
+                              child: _HighlightCard(
+                                item: _highlights[i],
+                                canManage: canManageHighlights,
+                                onEdit: () => _openEditHighlightDialog(
+                                  canManage: canManageHighlights,
+                                  existing: _highlights[i],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Agenda
+                  RefreshIndicator(
+                    color: AppColors.primary,
+                    onRefresh: _refreshHome,
+                    child: ListView.separated(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: EdgeInsets.fromLTRB(
+                        16,
+                        0,
+                        16,
+                        24 + MediaQuery.paddingOf(context).bottom,
+                      ),
+                      itemCount: 1 + (_agendaItems.isEmpty ? 1 : _agendaItems.length),
+                      separatorBuilder: (_, _) => const SizedBox(height: 12),
+                      itemBuilder: (context, i) {
+                        if (i == 0) {
+                          return _HomeTabHeader(
+                            title: 'Agenda',
+                            trailing: canManageAgenda
+                                ? IconButton(
+                                    tooltip: 'Activiteit toevoegen',
+                                    icon: const Icon(Icons.add_circle_outline),
+                                    color: AppColors.primary,
+                                    onPressed: () => _openAddAgendaDialog(),
+                                  )
+                                : (_loadingAgenda
+                                    ? const SizedBox(
+                                        height: 18,
+                                        width: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: AppColors.primary,
+                                        ),
+                                      )
+                                    : null),
+                          );
+                        }
+
+                        if (_agendaItems.isEmpty) {
+                          if (_agendaError != null && canManageAgenda) {
+                            return Text(
+                              'Let op: agenda tabel/RSVP niet beschikbaar.\n'
+                              'Voeg Supabase tabellen `home_agenda` + `home_agenda_rsvps` toe.\n'
+                              'Details: $_agendaError',
+                              style: const TextStyle(color: AppColors.textSecondary),
+                            );
+                          }
+                          return const Text(
+                            'Geen items in de agenda.',
+                            style: TextStyle(color: AppColors.textSecondary),
+                          );
+                        }
+
+                        final item = _agendaItems[i - 1];
+                        final signedUp = item.id != null && _myRsvpAgendaIds.contains(item.id);
+                        final enabled = item.canRsvp && item.id != null;
+                        return _AgendaCard(
+                          item: item,
+                          signedUp: signedUp,
+                          enabled: enabled,
+                          canManage: canManageAgenda,
+                          onToggleRsvp: () => _toggleAgendaRsvp(item),
+                          onReadMore: () => _showAgendaDetail(item),
+                          onEdit: item.id != null ? () => _openEditAgendaDialog(item) : null,
+                          onDelete: item.id != null ? () => _deleteAgendaItem(item) : null,
+                        );
+                      },
+                    ),
+                  ),
+
+                  // Nieuws
+                  RefreshIndicator(
+                    color: AppColors.primary,
+                    onRefresh: _refreshHome,
+                    child: ListView.separated(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: EdgeInsets.fromLTRB(
+                        16,
+                        0,
+                        16,
+                        24 + MediaQuery.paddingOf(context).bottom,
+                      ),
+                      itemCount: 1 + (_newsItems.isEmpty ? 1 : _newsItems.length),
+                      separatorBuilder: (_, _) => const SizedBox(height: 12),
+                      itemBuilder: (context, i) {
+                        if (i == 0) {
+                          return _HomeTabHeader(
+                            title: 'Nieuws',
+                            trailing: canManageNews
+                                ? IconButton(
+                                    tooltip: 'Nieuwsbericht toevoegen',
+                                    icon: const Icon(Icons.add_circle_outline),
+                                    color: AppColors.primary,
+                                    onPressed: () => _openAddNewsDialog(),
+                                  )
+                                : (_loadingNews
+                                    ? const SizedBox(
+                                        height: 18,
+                                        width: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: AppColors.primary,
+                                        ),
+                                      )
+                                    : null),
+                          );
+                        }
+
+                        if (_newsItems.isEmpty) {
+                          if (_newsError != null && canManageNews) {
+                            return Text(
+                              'Let op: nieuwstabel niet beschikbaar. '
+                              'Voer supabase/home_news_minimal.sql uit in Supabase → SQL Editor.\n'
+                              'Details: $_newsError',
+                              style: const TextStyle(color: AppColors.textSecondary),
+                            );
+                          }
+                          return const Text(
+                            'Geen nieuwsberichten gevonden.',
+                            style: TextStyle(color: AppColors.textSecondary),
+                          );
+                        }
+
+                        final n = _newsItems[i - 1];
+                        return _NewsCard(
+                          item: n,
+                          canManage: canManageNews,
+                          onReadMore: _needsLeesMeer(n) ? () => _showNewsDetail(n) : null,
+                          onEdit: _newsFromSupabase ? () => _openEditNewsDialog(n) : null,
+                          onDelete: _newsFromSupabase ? () => _deleteNewsItem(n) : null,
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ),
             ),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 360),
-            child: ListView.separated(
-              itemCount: _newsItems.length,
-              shrinkWrap: true,
-              physics: const AlwaysScrollableScrollPhysics(),
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
-              itemBuilder: (_, i) {
-                final n = _newsItems[i];
-                return _NewsCard(
-                  item: n,
-                  canManage: canManageNews,
-                  onReadMore: _needsLeesMeer(n) ? () => _showNewsDetail(n) : null,
-                  onEdit: _newsFromSupabase ? () => _openEditNewsDialog(n) : null,
-                  onDelete: _newsFromSupabase ? () => _deleteNewsItem(n) : null,
-                );
-              },
-            ),
-          ),
-        ],
+          ],
         ),
       ),
     );
@@ -1539,11 +1574,11 @@ class _HomeTabState extends State<HomeTab> {
 
 /* ----------------------- SECTIE-TITEL ----------------------- */
 
-class _SectionTitle extends StatelessWidget {
+class _HomeTabHeader extends StatelessWidget {
   final String title;
   final Widget? trailing;
 
-  const _SectionTitle(this.title, {this.trailing});
+  const _HomeTabHeader({required this.title, this.trailing});
 
   @override
   Widget build(BuildContext context) {
@@ -1898,8 +1933,6 @@ class _AgendaCard extends StatelessWidget {
                   child: OutlinedButton(
                     onPressed: enabled ? onToggleRsvp : null,
                     style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.primary,
-                      side: BorderSide(color: AppColors.primary.withValues(alpha: 0.6)),
                       padding: const EdgeInsets.symmetric(horizontal: 12),
                       minimumSize: Size.zero,
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -1912,7 +1945,6 @@ class _AgendaCard extends StatelessWidget {
               TextButton(
                 onPressed: onReadMore,
                 style: TextButton.styleFrom(
-                  foregroundColor: AppColors.primary,
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   minimumSize: Size.zero,
                   tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -1974,7 +2006,7 @@ String _newsDateLabel(DateTime d) {
   if (diff == 0) return 'Vandaag';
   if (diff == 1) return 'Gisteren';
   if (diff < 7) return '$diff dagen geleden';
-  final two = (int v) => v.toString().padLeft(2, '0');
+  String two(int v) => v.toString().padLeft(2, '0');
   return '${two(d.day)}-${two(d.month)}-${d.year}';
 }
 

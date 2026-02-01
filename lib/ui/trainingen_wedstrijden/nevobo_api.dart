@@ -30,6 +30,10 @@ class NevoboMatch {
   final DateTime? end;
   final String? location;
   final String? description;
+  final List<int>? eindstand; // e.g. [3,1] home-away
+  final String? volledigeUitslag; // e.g. "1-3  (21-25, 13-25, ...)"
+  final String? status; // e.g. "gespeeld"
+  final String? urlDwf;
 
   const NevoboMatch({
     required this.summary,
@@ -37,6 +41,10 @@ class NevoboMatch {
     this.end,
     this.location,
     this.description,
+    this.eindstand,
+    this.volledigeUitslag,
+    this.status,
+    this.urlDwf,
   });
 }
 
@@ -61,6 +69,8 @@ class NevoboApi {
 
   static final Map<String, String> _teamNameCacheByPath = {};
   static final Map<String, NevoboTeam> _resolvedTeamByCode = {};
+  static final Map<String, String> _iriNameCache = {};
+  static final Map<String, String> _sporthalCache = {};
 
   static NevoboTeam? teamFromCode(String code) => _fromCode(code);
 
@@ -74,6 +84,67 @@ class NevoboApi {
 
     // Try to derive from a descriptive name (e.g. "Heren 2", "Jongens C 1").
     return _deriveCodeFromDisplayName(raw);
+  }
+
+  /// Custom team ordering for the app:
+  /// dames -> heren -> recreanten -> meiden A -> jongens A -> meiden B -> jongens B -> meiden C -> jongens C.
+  ///
+  /// Sorts within each group by team number (ascending).
+  static int compareTeamCodes(String a, String b) {
+    final ka = _teamSortKeyFromCode(a);
+    final kb = _teamSortKeyFromCode(b);
+    if (ka.$1 != kb.$1) return ka.$1.compareTo(kb.$1);
+    if (ka.$2 != kb.$2) return ka.$2.compareTo(kb.$2);
+    return a.compareTo(b);
+  }
+
+  static int compareTeams(NevoboTeam a, NevoboTeam b) => compareTeamCodes(a.code, b.code);
+
+  /// Compare user-facing team names using derived codes when possible.
+  ///
+  /// Use [volleystarsLast] for training UIs, where "Volleystars" should appear last.
+  static int compareTeamNames(
+    String a,
+    String b, {
+    bool volleystarsLast = false,
+  }) {
+    final an = a.trim();
+    final bn = b.trim();
+
+    if (volleystarsLast) {
+      final av = an.toLowerCase().contains('volleystars');
+      final bv = bn.toLowerCase().contains('volleystars');
+      if (av != bv) return av ? 1 : -1;
+    }
+
+    final ac = extractCodeFromTeamName(an);
+    final bc = extractCodeFromTeamName(bn);
+    if (ac != null && bc != null) return compareTeamCodes(ac, bc);
+    if (ac != null && bc == null) return -1;
+    if (ac == null && bc != null) return 1;
+    return an.toLowerCase().compareTo(bn.toLowerCase());
+  }
+
+  static (int, int) _teamSortKeyFromCode(String raw) {
+    final normalized = raw.trim().toUpperCase().replaceAll(' ', '');
+    final m = RegExp(r'^([A-Z]{2})(\d+)$').firstMatch(normalized);
+    final prefix = m?.group(1) ?? normalized;
+    final number = int.tryParse(m?.group(2) ?? '') ?? 999;
+
+    // Order groups according to requested app ordering.
+    final group = switch (prefix) {
+      'DS' => 0, // dames
+      'HS' => 1, // heren
+      'MR' => 2, // recreanten/mix
+      'MA' => 3, // meiden A
+      'JA' => 4, // jongens A
+      'MB' => 5, // meiden B
+      'JB' => 6, // jongens B
+      'MC' => 7, // meiden C
+      'JC' => 8, // jongens C
+      _ => 99,
+    };
+    return (group, number);
   }
 
   static String? _deriveCodeFromDisplayName(String raw) {
@@ -131,7 +202,7 @@ class NevoboApi {
               .map(_fromCode)
               .whereType<NevoboTeam>()
               .toList()
-            ..sort((a, b) => a.code.compareTo(b.code));
+            ..sort(compareTeams);
           return teams;
         }
       } catch (_) {
@@ -249,6 +320,102 @@ class NevoboApi {
     throw lastError ?? Exception('ICS error (geen categorie gevonden) voor ${team.code}');
   }
 
+  /// Fetch wedstrijden (incl. uitslagen) via de officiële competitie API.
+  ///
+  /// Dit endpoint bevat o.a. `eindstand` en `volledigeUitslag`, en is betrouwbaarder
+  /// dan proberen te parsen uit de ICS export.
+  static Future<List<NevoboMatch>> fetchMatchesForTeamViaCompetitionApi({
+    required NevoboTeam team,
+  }) async {
+    final resolved = await _resolveTeam(team);
+    final candidates = _categoryCandidates(team.code, resolved.category);
+
+    Exception? lastError;
+    for (final category in candidates) {
+      final teamPath = '/competitie/teams/${team.clubIdLower}/${category.toLowerCase()}/${team.number}';
+      final uri = Uri.parse(
+        'https://api.nevobo.nl/competitie/wedstrijden?team=${Uri.encodeComponent(teamPath)}',
+      );
+
+      try {
+        final res = await http.get(
+          uri,
+          headers: const {'Accept': 'application/json'},
+        );
+        if (res.statusCode != 200) {
+          lastError = Exception('Wedstrijden HTTP ${res.statusCode} ($teamPath)');
+          continue;
+        }
+
+        final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+        final list = _asList(decoded);
+        if (list == null) {
+          lastError = Exception('Onverwachte response voor wedstrijden ($teamPath)');
+          continue;
+        }
+
+        final out = <NevoboMatch>[];
+        for (final item in list) {
+          if (item is! Map) continue;
+          final m = item.cast<String, dynamic>();
+
+          final tijdstip = m['tijdstip']?.toString();
+          final start = _parseDateTime(tijdstip);
+          final lengteMin = (m['lengte'] is num) ? (m['lengte'] as num).toInt() : int.tryParse('${m['lengte'] ?? ''}');
+          final end = (start != null && (lengteMin ?? 0) > 0) ? start.add(Duration(minutes: lengteMin!)) : null;
+
+          final statusObj = m['status'];
+          final status = statusObj is Map ? (statusObj['waarde']?.toString()) : statusObj?.toString();
+
+          final eindstand = _asIntList(m['eindstand']);
+          final volledigeUitslag = m['volledigeUitslag']?.toString();
+          final urlDwf = m['urlDwf']?.toString();
+
+          final teams = _asStringList(m['teams']);
+          final teamNames = <String>[];
+          for (final iri in teams) {
+            final name = await _resolveIriName(iri);
+            teamNames.add(name);
+          }
+          final summary = teamNames.length >= 2
+              ? '${teamNames[0]} - ${teamNames[1]}'
+              : (teamNames.isNotEmpty ? teamNames.join(' - ') : 'Wedstrijd');
+
+          final sporthalIri = m['sporthal']?.toString();
+          final sporthal = sporthalIri == null || sporthalIri.isEmpty ? null : await _resolveSporthal(sporthalIri);
+
+          out.add(
+            NevoboMatch(
+              summary: summary,
+              start: start,
+              end: end,
+              location: sporthal,
+              // Keep description for any legacy parsing fallback.
+              description: volledigeUitslag,
+              eindstand: eindstand,
+              volledigeUitslag: volledigeUitslag,
+              status: status,
+              urlDwf: urlDwf,
+            ),
+          );
+        }
+
+        out.sort((a, b) {
+          final sa = a.start ?? DateTime(2100);
+          final sb = b.start ?? DateTime(2100);
+          return sa.compareTo(sb);
+        });
+
+        _resolvedTeamByCode[team.code] = NevoboTeam(code: team.code, category: category, number: team.number);
+        return out;
+      } catch (e) {
+        lastError = Exception('Wedstrijden error ($e) ($teamPath)');
+      }
+    }
+
+    throw lastError ?? Exception('Wedstrijden error (geen categorie gevonden) voor ${team.code}');
+  }
+
   static List<NevoboMatch> _parseIcs(String ics) {
     final result = <NevoboMatch>[];
     final normalized = ics.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
@@ -268,7 +435,7 @@ class NevoboApi {
         if (idx <= 0) continue;
 
         var key = line.substring(0, idx);
-        final value = line.substring(idx + 1);
+        final value = _icsUnescape(line.substring(idx + 1));
 
         final semi = key.indexOf(';');
         if (semi > 0) key = key.substring(0, semi);
@@ -290,6 +457,18 @@ class NevoboApi {
     return result;
   }
 
+  static String _icsUnescape(String value) {
+    // Common ICS escapes: \n, \\, \, \; \:
+    // Order matters: translate newlines first, then unescape other sequences.
+    var v = value;
+    v = v.replaceAll(r'\n', '\n');
+    v = v.replaceAll(r'\,', ',');
+    v = v.replaceAll(r'\;', ';');
+    v = v.replaceAll(r'\:', ':');
+    v = v.replaceAll(r'\\', r'\');
+    return v;
+  }
+
   static DateTime? _parseDate(String? raw) {
     if (raw == null) return null;
     try {
@@ -308,6 +487,17 @@ class NevoboApi {
       }
     } catch (_) {}
     return null;
+  }
+
+  static DateTime? _parseDateTime(String? raw) {
+    if (raw == null) return null;
+    final s = raw.trim();
+    if (s.isEmpty) return null;
+    try {
+      return DateTime.parse(s);
+    } catch (_) {
+      return null;
+    }
   }
 
   static Future<NevoboTeam> _resolveTeam(NevoboTeam team) async {
@@ -411,6 +601,120 @@ class NevoboApi {
     return out;
   }
 
+  static List<dynamic>? _asList(dynamic decoded) {
+    if (decoded is List) return decoded;
+    if (decoded is Map && decoded['hydra:member'] is List) {
+      return (decoded['hydra:member'] as List);
+    }
+    return null;
+  }
+
+  static List<String> _asStringList(dynamic value) {
+    if (value is List) {
+      return value.map((e) => e?.toString() ?? '').where((s) => s.isNotEmpty).toList();
+    }
+    return const [];
+  }
+
+  static List<int>? _asIntList(dynamic value) {
+    if (value is List) {
+      final out = <int>[];
+      for (final v in value) {
+        if (v is int) out.add(v);
+        if (v is num) out.add(v.toInt());
+        if (v is String) {
+          final p = int.tryParse(v.trim());
+          if (p != null) out.add(p);
+        }
+      }
+      return out.isEmpty ? null : out;
+    }
+    return null;
+  }
+
+  static Future<String> _resolveIriName(String iri) async {
+    final cached = _iriNameCache[iri];
+    if (cached != null) return cached;
+    try {
+      final url = iri.startsWith('http') ? iri : 'https://api.nevobo.nl$iri';
+      final res = await http.get(Uri.parse(url), headers: const {'Accept': 'application/json'});
+      if (res.statusCode != 200) {
+        _iriNameCache[iri] = iri;
+        return iri;
+      }
+      final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+      String? name;
+      if (decoded is Map) {
+        final m = decoded.cast<String, dynamic>();
+        name = _readString(m, const ['naam', 'name', 'teamNaam', 'teamnaam', 'omschrijving', 'displayName']);
+      } else if (decoded is List && decoded.isNotEmpty && decoded.first is Map) {
+        final m = (decoded.first as Map).cast<String, dynamic>();
+        name = _readString(m, const ['naam', 'name', 'teamNaam', 'teamnaam', 'omschrijving', 'displayName']);
+      }
+      final v = (name == null || name.trim().isEmpty) ? iri : name.trim();
+      _iriNameCache[iri] = v;
+      return v;
+    } catch (_) {
+      _iriNameCache[iri] = iri;
+      return iri;
+    }
+  }
+
+  static Future<String?> _resolveSporthal(String iri) async {
+    final cached = _sporthalCache[iri];
+    if (cached != null) return cached.isEmpty ? null : cached;
+    try {
+      final url = iri.startsWith('http') ? iri : 'https://api.nevobo.nl$iri';
+      final res = await http.get(Uri.parse(url), headers: const {'Accept': 'application/json'});
+      if (res.statusCode != 200) {
+        _sporthalCache[iri] = '';
+        return null;
+      }
+      final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+
+      Map<String, dynamic>? m;
+      if (decoded is Map) m = decoded.cast<String, dynamic>();
+      if (decoded is List && decoded.isNotEmpty && decoded.first is Map) {
+        m = (decoded.first as Map).cast<String, dynamic>();
+      }
+      if (m == null) {
+        _sporthalCache[iri] = '';
+        return null;
+      }
+
+      final name = _readString(m, const ['naam', 'name', 'omschrijving']) ?? '';
+      final plaats = _readString(m, const ['plaats', 'city']) ?? '';
+
+      String? addr;
+      final adres = m['adres'];
+      if (adres is Map) {
+        final a = adres.cast<String, dynamic>();
+        final straat = _readString(a, const ['straat', 'street']) ?? '';
+        final huisnr = _readString(a, const ['huisnummer', 'number', 'huisnr']) ?? '';
+        final postcode = _readString(a, const ['postcode', 'zip']) ?? '';
+        final p = _readString(a, const ['plaats', 'city']) ?? plaats;
+        final parts = <String>[
+          [straat, huisnr].where((x) => x.trim().isNotEmpty).join(' ').trim(),
+          [postcode, p].where((x) => x.trim().isNotEmpty).join(' ').trim(),
+        ].where((x) => x.trim().isNotEmpty).toList();
+        addr = parts.isEmpty ? null : parts.join(', ');
+      }
+
+      final labelParts = <String>[
+        name.trim(),
+        (addr ?? '').trim(),
+        (addr == null ? plaats.trim() : '').trim(),
+      ].where((x) => x.isNotEmpty).toList();
+
+      final label = labelParts.isEmpty ? '' : labelParts.join(', ');
+      _sporthalCache[iri] = label;
+      return label.isEmpty ? null : label;
+    } catch (_) {
+      _sporthalCache[iri] = '';
+      return null;
+    }
+  }
+
   static Future<List<NevoboStandingEntry>> fetchStandingsForTeam({
     required NevoboTeam team,
   }) async {
@@ -448,35 +752,124 @@ class NevoboApi {
   }
 
   static String? _extractPoulePath(dynamic decoded) {
-    // In the old working build, the "team" call returned a List with 1..n entries.
-    // We try a few shapes and keys.
-    Map<String, dynamic>? firstMap;
-    if (decoded is List && decoded.isNotEmpty && decoded.first is Map) {
-      firstMap = (decoded.first as Map).cast<String, dynamic>();
-    } else if (decoded is Map) {
-      firstMap = decoded.cast<String, dynamic>();
-    }
-    if (firstMap == null) return null;
+    // The endpoint may return multiple entries (e.g. first half / second half).
+    // We try to pick the most relevant one for "now" (or otherwise the latest).
 
-    // Direct keys
-    for (final k in const ['poule', 'pouleUrl', 'poule_path', 'poulePath', 'href']) {
-      final v = firstMap[k];
-      if (v is String && v.startsWith('/competitie/poules/')) return v;
-      if (v is String && v.contains('/competitie/poules/')) {
-        final idx = v.indexOf('/competitie/poules/');
-        return v.substring(idx);
+    String? extractFromMap(Map<String, dynamic> m) {
+      // Direct keys
+      for (final k in const ['poule', 'pouleUrl', 'poule_path', 'poulePath', 'href']) {
+        final v = m[k];
+        if (v is String && v.startsWith('/competitie/poules/')) return v;
+        if (v is String && v.contains('/competitie/poules/')) {
+          final idx = v.indexOf('/competitie/poules/');
+          return v.substring(idx);
+        }
+        if (v is Map) {
+          final inner = v.cast<String, dynamic>();
+          final url = inner['url'] ?? inner['href'] ?? inner['poule'];
+          if (url is String && url.startsWith('/competitie/poules/')) return url;
+        }
       }
-      if (v is Map) {
-        final inner = v.cast<String, dynamic>();
-        final url = inner['url'] ?? inner['href'] ?? inner['poule'];
-        if (url is String && url.startsWith('/competitie/poules/')) return url;
+
+      // Search any string value that looks like a poule path
+      for (final entry in m.entries) {
+        final v = entry.value;
+        if (v is String && v.startsWith('/competitie/poules/')) return v;
       }
+
+      return null;
     }
 
-    // Search any string value that looks like a poule path
-    for (final entry in firstMap.entries) {
-      final v = entry.value;
-      if (v is String && v.startsWith('/competitie/poules/')) return v;
+    DateTime? tryParseDate(dynamic v) {
+      if (v == null) return null;
+      if (v is DateTime) return v;
+      final s = v.toString().trim();
+      if (s.isEmpty) return null;
+      return DateTime.tryParse(s);
+    }
+
+    int scoreCandidate(Map<String, dynamic> m, String poulePath) {
+      final now = DateTime.now();
+      final lowerText = m.values
+          .whereType<Object?>()
+          .map((e) => e?.toString().toLowerCase() ?? '')
+          .join(' ');
+      final lowerPoulePath = poulePath.toLowerCase();
+
+      DateTime? start = tryParseDate(
+        m['startDatum'] ?? m['startdatum'] ?? m['starts_at'] ?? m['start'] ?? m['beginDatum'] ?? m['begin'] ?? m['van'],
+      );
+      DateTime? end = tryParseDate(
+        m['eindDatum'] ?? m['einddatum'] ?? m['ends_at'] ?? m['end'] ?? m['tot'] ?? m['einde'] ?? m['datumTot'],
+      );
+
+      // Prefer entries active "now"
+      final startOk = start == null || !now.isBefore(start.toLocal());
+      final endOk = end == null || !now.isAfter(end.toLocal());
+      int score = 0;
+      if (startOk && endOk) score += 1_000_000;
+
+      // Prefer second half / later phases if the API includes such text (common in poule path).
+      final looksSecondHalf = lowerPoulePath.contains('tweede-helft') ||
+          lowerPoulePath.contains('2e-helft') ||
+          lowerPoulePath.contains('voorjaar') ||
+          lowerPoulePath.contains('fase-2') ||
+          lowerText.contains('tweede-helft') ||
+          lowerText.contains('2e-helft') ||
+          lowerText.contains('voorjaar') ||
+          lowerText.contains('fase 2');
+      final looksFirstHalf = lowerPoulePath.contains('eerste-helft') ||
+          lowerPoulePath.contains('najaars') ||
+          lowerText.contains('eerste-helft') ||
+          lowerText.contains('najaars');
+      if (looksSecondHalf) score += 50_000;
+      if (looksFirstHalf) score -= 10_000;
+
+      // Prefer the most recent start date if multiple remain.
+      final startEpoch = start?.toUtc().millisecondsSinceEpoch ?? 0;
+      score += startEpoch ~/ 10_000; // keep it bounded-ish
+
+      // Minor tie-breaker: longer/unique poule path tends to be newer in practice.
+      score += poulePath.length;
+      return score;
+    }
+
+    if (decoded is List) {
+      final candidates = <Map<String, dynamic>>[];
+      for (final item in decoded) {
+        if (item is Map) candidates.add(item.cast<String, dynamic>());
+      }
+      if (candidates.isEmpty) return null;
+
+      String? bestPath;
+      int bestScore = -1;
+      for (final m in candidates) {
+        final path = extractFromMap(m);
+        if (path == null || path.isEmpty) continue;
+        final score = scoreCandidate(m, path);
+        if (score > bestScore) {
+          bestScore = score;
+          bestPath = path;
+        }
+      }
+      if (kDebugMode && candidates.length > 1) {
+        final allPaths = candidates
+            .map((m) => extractFromMap(m))
+            .whereType<String>()
+            .where((p) => p.isNotEmpty)
+            .toList();
+        if (allPaths.isNotEmpty) {
+          debugPrint('Nevobo poule candidates: ${allPaths.join(' | ')} -> selected: $bestPath');
+        }
+      }
+      if (bestPath != null) return bestPath;
+
+      // Fallback: try first map if nothing scored.
+      return extractFromMap(candidates.first);
+    }
+
+    if (decoded is Map) {
+      return extractFromMap(decoded.cast<String, dynamic>());
     }
 
     return null;

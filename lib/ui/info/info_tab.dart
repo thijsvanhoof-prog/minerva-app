@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:minerva_app/ui/components/app_logo_title.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 
 class InfoTab extends StatefulWidget {
   const InfoTab({super.key});
@@ -176,6 +176,61 @@ class _InfoTabState extends State<InfoTab> {
     }
   }
 
+  Future<bool> _updateCommitteeMemberFunction({
+    required String committeeKey,
+    required String profileId,
+    required String? value,
+  }) async {
+    // Best-effort: schema differs per Supabase project.
+    // We try a few common column names for "function/role/title".
+    const candidates = [
+      'function',
+      'role',
+      'title',
+      'functie',
+      'rol',
+      'position',
+      'positie',
+    ];
+
+    Object? lastError;
+    for (final field in candidates) {
+      try {
+        final res = await _client
+            .from('committee_members')
+            .update({field: value})
+            .eq('committee_name', committeeKey)
+            .eq('profile_id', profileId)
+            .select('profile_id');
+        final rows = (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? const [];
+        if (rows.isEmpty) {
+          throw StateError('Geen rij bijgewerkt (commissie of profiel niet gevonden).');
+        }
+        return true;
+      } on PostgrestException catch (e) {
+        lastError = e;
+        // Missing column → try next candidate.
+        if (e.code == 'PGRST204' ||
+            (e.message.contains("Could not find the '") &&
+                e.message.contains("column"))) {
+          continue;
+        }
+        rethrow;
+      } catch (e) {
+        lastError = e;
+        rethrow;
+      }
+    }
+
+    // If none of the columns exist in this Supabase schema, treat as "not supported"
+    // and don't fail the user flow (adding/editing members should still work).
+    //
+    // We only surface non-schema errors (RLS, network, etc.) above.
+    if (lastError is PostgrestException) return false;
+    if (lastError != null) return false;
+    return false;
+  }
+
   Future<Map<String, String>> _loadProfileNames({required List<String> profileIds}) async {
     if (profileIds.isEmpty) return {};
 
@@ -246,9 +301,7 @@ class _InfoTabState extends State<InfoTab> {
     final alreadyIn = (_membersByCommittee[committeeKey] ?? []).map((m) => m.profileId).toSet();
     final available = _allProfiles.where((p) => !alreadyIn.contains(p.profileId)).toList();
     if (available.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Iedereen zit al in deze commissie.')),
-      );
+      showTopMessage(context, 'Iedereen zit al in deze commissie.', isError: true);
       return;
     }
     var search = '';
@@ -308,6 +361,7 @@ class _InfoTabState extends State<InfoTab> {
       ),
     );
     if (chosen == null) return;
+    if (!mounted) return;
     var function = '';
     final save = await showDialog<bool>(
       context: context,
@@ -341,14 +395,33 @@ class _InfoTabState extends State<InfoTab> {
       await _client.from('committee_members').insert({
         'committee_name': committeeKey,
         'profile_id': chosen.profileId,
-        if (function.isNotEmpty) 'function': function,
       });
+      if (function.isNotEmpty) {
+        // Try to write the function/role in whichever column exists.
+        final updated = await _updateCommitteeMemberFunction(
+          committeeKey: committeeKey,
+          profileId: chosen.profileId,
+          value: function,
+        );
+        if (!updated && mounted) {
+          showTopMessage(
+            context,
+            'Let op: je database heeft geen functie/rol-kolom; functie kon niet worden opgeslagen.',
+            isError: true,
+          );
+        }
+      }
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lid toegevoegd aan commissie.')));
+      showTopMessage(
+        context,
+        function.isNotEmpty
+            ? 'Lid toegevoegd aan commissie.'
+            : 'Lid toegevoegd aan commissie.',
+      );
       await _loadCommittees();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Toevoegen mislukt: $e')));
+      showTopMessage(context, 'Toevoegen mislukt: $e', isError: true);
     }
   }
 
@@ -390,23 +463,33 @@ class _InfoTabState extends State<InfoTab> {
       try {
         await _client.from('committee_members').delete().eq('committee_name', committeeKey).eq('profile_id', member.profileId);
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lid uit commissie gehaald.')));
+        showTopMessage(context, 'Lid uit commissie gehaald.');
         await _loadCommittees();
       } catch (e) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Verwijderen mislukt: $e')));
+        showTopMessage(context, 'Verwijderen mislukt: $e', isError: true);
       }
       return;
     }
     if (result == 'save') {
       try {
-        await _client.from('committee_members').update({'function': newFunction.isEmpty ? null : newFunction}).eq('committee_name', committeeKey).eq('profile_id', member.profileId);
+        final updated = await _updateCommitteeMemberFunction(
+          committeeKey: committeeKey,
+          profileId: member.profileId,
+          value: newFunction.isEmpty ? null : newFunction,
+        );
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Functie bijgewerkt.')));
+        showTopMessage(
+          context,
+          updated
+              ? 'Functie bijgewerkt.'
+              : 'Je database heeft geen functie/rol-kolom; wijziging niet opgeslagen.',
+          isError: !updated,
+        );
         await _loadCommittees();
       } catch (e) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Bijwerken mislukt: $e')));
+        showTopMessage(context, 'Bijwerken mislukt: $e', isError: true);
       }
     }
   }
@@ -415,16 +498,16 @@ class _InfoTabState extends State<InfoTab> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
-      appBar: AppBar(
-        title: const AppLogoTitle(),
-        backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-      ),
       body: RefreshIndicator(
         color: AppColors.primary,
         onRefresh: _loadCommittees,
         child: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: EdgeInsets.fromLTRB(
+          16,
+          16 + MediaQuery.paddingOf(context).top,
+          16,
+          16 + MediaQuery.paddingOf(context).bottom,
+        ),
         children: [
           const _InfoCard(
             icon: Icons.info_outline,
@@ -554,7 +637,7 @@ class _InfoTabState extends State<InfoTab> {
                   const SizedBox(height: 6),
                   Text(
                     'Alleen zichtbaar voor het bestuur. Voeg leden toe of pas functies aan.',
-                    style: TextStyle(color: AppColors.textSecondary.withOpacity(0.9), fontSize: 13),
+                    style: TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.9), fontSize: 13),
                   ),
                   const SizedBox(height: 14),
                   ..._manageableCommittees.map((c) {

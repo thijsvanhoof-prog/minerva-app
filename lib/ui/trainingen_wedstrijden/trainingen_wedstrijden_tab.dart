@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import 'package:minerva_app/ui/components/app_logo_title.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
@@ -50,49 +49,49 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
         .whereType<String>()
         .toSet()
         .toList()
-      ..sort();
+      ..sort(NevoboApi.compareTeamCodes);
+
+    final manageableTeamsSorted = [...widget.manageableTeams]
+      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
 
     return Scaffold(
       backgroundColor: Colors.transparent,
-      appBar: AppBar(
-        title: const AppLogoTitle(),
-        backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(54),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: GlassCard(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              child: TabBar(
+      body: SafeArea(
+        top: true,
+        bottom: false,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              child: GlassCard(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                child: TabBar(
+                  controller: _tabController,
+                  indicator: BoxDecoration(
+                    color: AppColors.darkBlue,
+                    borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                  ),
+                  indicatorSize: TabBarIndicatorSize.tab,
+                  tabs: const [
+                    Tab(text: 'Trainingen'),
+                    Tab(text: 'Wedstrijden'),
+                    Tab(text: 'Standen'),
+                  ],
+                ),
+              ),
+            ),
+            Expanded(
+              child: TabBarView(
                 controller: _tabController,
-                indicator: BoxDecoration(
-                  color: AppColors.darkBlue,
-                  borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                ),
-                indicatorSize: TabBarIndicatorSize.tab,
-                labelColor: AppColors.primary,
-                unselectedLabelColor: AppColors.textSecondary,
-                labelStyle: const TextStyle(
-                  fontWeight: FontWeight.w800,
-                ),
-                tabs: const [
-                  Tab(text: 'Trainingen'),
-                  Tab(text: 'Wedstrijden'),
-                  Tab(text: 'Standen'),
+                children: [
+                  TrainingsTab(manageableTeams: manageableTeamsSorted),
+                  NevoboWedstrijdenTab(teamCodes: linkedCodes),
+                  const NevoboStandenTab(),
                 ],
               ),
             ),
-          ),
+          ],
         ),
-      ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          TrainingsTab(manageableTeams: widget.manageableTeams),
-          NevoboWedstrijdenTab(teamCodes: linkedCodes),
-          const NevoboStandenTab(),
-        ],
       ),
     );
   }

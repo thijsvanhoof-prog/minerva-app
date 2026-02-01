@@ -3,8 +3,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
-import 'package:minerva_app/ui/components/app_logo_title.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 class TcTab extends StatefulWidget {
   const TcTab({super.key});
@@ -210,7 +211,7 @@ class _TcTabState extends State<TcTab> {
             list.add(_TeamOption(id, label));
           }
           if (list.isNotEmpty) {
-            list.sort((a, b) => a.label.compareTo(b.label));
+            list.sort((a, b) => NevoboApi.compareTeamNames(a.label, b.label, volleystarsLast: true));
             return list;
           }
         } catch (_) {
@@ -225,9 +226,7 @@ class _TcTabState extends State<TcTab> {
     final ctx = AppUserContext.of(context);
     if (!_isAuthorized(ctx)) return;
     if (_teams.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Geen teams gevonden.')),
-      );
+      showTopMessage(context, 'Geen teams gevonden.', isError: true);
       return;
     }
 
@@ -305,14 +304,10 @@ class _TcTabState extends State<TcTab> {
         _unassignedMembers =
             _unassignedMembers.where((m) => m.profileId != member.profileId).toList();
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Lid gekoppeld aan team.')),
-      );
+      showTopMessage(context, 'Lid gekoppeld aan team.');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Koppelen mislukt: $e')),
-      );
+      showTopMessage(context, 'Koppelen mislukt: $e', isError: true);
     }
   }
 
@@ -334,9 +329,7 @@ class _TcTabState extends State<TcTab> {
     final alreadyInTeam = (_teamAssignments[teamId] ?? []).map((a) => a.profileId).toSet();
     final available = _allMembers.where((m) => !alreadyInTeam.contains(m.profileId)).toList();
     if (available.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Alle leden zitten al in dit team.')),
-      );
+      showTopMessage(context, 'Alle leden zitten al in dit team.', isError: true);
       return;
     }
     var search = '';
@@ -405,6 +398,7 @@ class _TcTabState extends State<TcTab> {
       ),
     );
     if (chosen == null) return;
+    if (!mounted) return;
     var selectedRole = 'player';
     final save = await showDialog<bool>(
       context: context,
@@ -421,7 +415,7 @@ class _TcTabState extends State<TcTab> {
               ],
               const SizedBox(height: 16),
               DropdownButtonFormField<String>(
-                value: selectedRole,
+                initialValue: selectedRole,
                 items: const [
                   DropdownMenuItem(value: 'player', child: Text('Speler')),
                   DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
@@ -452,15 +446,11 @@ class _TcTabState extends State<TcTab> {
         'role': selectedRole,
       });
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Lid toegevoegd aan team.')),
-      );
+      showTopMessage(context, 'Lid toegevoegd aan team.');
       await _load();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Toevoegen mislukt: $e')),
-      );
+      showTopMessage(context, 'Toevoegen mislukt: $e', isError: true);
     }
   }
 
@@ -489,7 +479,7 @@ class _TcTabState extends State<TcTab> {
               ],
               const SizedBox(height: 16),
               DropdownButtonFormField<String>(
-                value: chosenRole,
+                initialValue: chosenRole,
                 items: const [
                   DropdownMenuItem(value: 'player', child: Text('Speler')),
                   DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
@@ -521,11 +511,11 @@ class _TcTabState extends State<TcTab> {
       try {
         await _client.from('team_members').delete().eq('team_id', teamId).eq('profile_id', member.profileId);
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lid uit team gehaald.')));
+        showTopMessage(context, 'Lid uit team gehaald.');
         await _load();
       } catch (e) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Verwijderen mislukt: $e')));
+        showTopMessage(context, 'Verwijderen mislukt: $e', isError: true);
       }
       return;
     }
@@ -534,11 +524,11 @@ class _TcTabState extends State<TcTab> {
       try {
         await _client.from('team_members').update({'role': result}).eq('team_id', teamId).eq('profile_id', member.profileId);
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Rol bijgewerkt.')));
+        showTopMessage(context, 'Rol bijgewerkt.');
         await _load();
       } catch (e) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Bijwerken mislukt: $e')));
+        showTopMessage(context, 'Bijwerken mislukt: $e', isError: true);
       }
     }
   }
@@ -555,17 +545,17 @@ class _TcTabState extends State<TcTab> {
 
     return Scaffold(
       backgroundColor: Colors.transparent,
-      appBar: AppBar(
-        title: const AppLogoTitle(),
-        backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-      ),
       body: RefreshIndicator(
         color: AppColors.primary,
         onRefresh: _load,
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(16),
+          padding: EdgeInsets.fromLTRB(
+            16,
+            16 + MediaQuery.paddingOf(context).top,
+            16,
+            16 + MediaQuery.paddingOf(context).bottom,
+          ),
           children: !authorized
               ? [
                   const SizedBox(
@@ -649,7 +639,7 @@ class _TcTabState extends State<TcTab> {
                               Text(
                                 'Bekijk alle teams, voeg leden toe aan een of meerdere teams, en pas rollen aan.',
                                 style: TextStyle(
-                                  color: AppColors.primary.withOpacity(0.9),
+                                  color: AppColors.primary.withValues(alpha: 0.9),
                                   fontSize: 13,
                                 ),
                               ),
@@ -731,7 +721,7 @@ class _TcTabState extends State<TcTab> {
                         Text(
                           'Zie wie in welk team zit. Tik op een lid om de rol te wijzigen of uit het team te halen.',
                           style: TextStyle(
-                            color: AppColors.textSecondary.withOpacity(0.9),
+                            color: AppColors.textSecondary.withValues(alpha: 0.9),
                             fontSize: 13,
                           ),
                         ),

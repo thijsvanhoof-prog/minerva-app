@@ -26,12 +26,14 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
   final SupabaseClient _client = Supabase.instance.client;
   StreamSubscription<AuthState>? _authSub;
   final OuderKindNotifier _ouderKindNotifier = OuderKindNotifier();
+  bool _suppressOuderKindReload = false;
 
   bool _loading = true;
   bool _isGlobalAdmin = false;
 
   String _profileId = '';
   String _email = '';
+  String _displayName = '';
   String _loggedInProfileId = '';
 
   List<TeamMembership> _memberships = const [];
@@ -53,6 +55,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
   }
 
   void _onOuderKindChanged() {
+    if (_suppressOuderKindReload) return;
     if (mounted) _reload();
   }
 
@@ -68,11 +71,17 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
 
     final user = _client.auth.currentUser;
     if (user == null) {
-      _ouderKindNotifier.setViewingAs(null, null);
-      _ouderKindNotifier.setChildren(const []);
+      _suppressOuderKindReload = true;
+      try {
+        _ouderKindNotifier.setViewingAs(null, null);
+        _ouderKindNotifier.setChildren(const []);
+      } finally {
+        _suppressOuderKindReload = false;
+      }
       setState(() {
         _profileId = '';
         _email = '';
+        _displayName = '';
         _loggedInProfileId = '';
         _isGlobalAdmin = false;
         _memberships = const [];
@@ -82,12 +91,22 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       return;
     }
 
+    // If the logged-in user changes, clear any "view as child" state immediately.
+    final prevLoggedIn = _loggedInProfileId;
     _loggedInProfileId = user.id;
     _email = user.email ?? '';
-    final effectiveProfileId = _ouderKindNotifier.viewingAsProfileId ?? user.id;
-    _profileId = effectiveProfileId;
+    _displayName = (user.userMetadata?['display_name']?.toString() ?? '').trim();
+    if (prevLoggedIn.isNotEmpty && prevLoggedIn != user.id) {
+      _suppressOuderKindReload = true;
+      try {
+        _ouderKindNotifier.setViewingAs(null, null);
+      } finally {
+        _suppressOuderKindReload = false;
+      }
+    }
 
     // 0) Gekoppelde kinderen ophalen (ouder-kind account) – best-effort RPC
+    _suppressOuderKindReload = true;
     try {
       final res = await _client.rpc('get_my_linked_child_profiles');
       final list = (res as List<dynamic>?)
@@ -103,9 +122,21 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
           .toList() ??
           const [];
       _ouderKindNotifier.setChildren(list);
+
+      // New desired behavior: if this account has linked profiles, default to "view as"
+      // the first linked profile so the ouder/verzorger sees what the linked account sees.
+      if (list.isNotEmpty && _ouderKindNotifier.viewingAsProfileId == null) {
+        _ouderKindNotifier.setViewingAs(list.first.profileId, list.first.displayName);
+      }
     } catch (_) {
       _ouderKindNotifier.setChildren(const []);
+    } finally {
+      _suppressOuderKindReload = false;
     }
+
+    // We keep the logged-in profile as the "main" profile.
+    // For ouder/verzorger we may additionally load team memberships for the selected linked profile.
+    _profileId = user.id;
 
     // 1) Global admin check (RPC) – altijd voor de ingelogde user
     bool isGlobalAdmin = false;
@@ -116,14 +147,33 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       isGlobalAdmin = false;
     }
 
-    // 2) Team memberships ophalen voor de effectieve profile (ouder of gekozen kind)
-    final List<dynamic> tmRows = await _client
+    // 2) Team memberships:
+    // - altijd je eigen roles (player/trainer)
+    // - als ouder/verzorger: voeg teams toe waar een gekoppeld account speler is
+    final List<dynamic> ownTmRows = await _client
         .from('team_members')
         .select('team_id, role')
-        .eq('profile_id', effectiveProfileId);
+        .eq('profile_id', user.id);
+
+    final linkedProfileIds = _ouderKindNotifier.linkedChildren
+        .map((c) => c.profileId)
+        .where((id) => id.isNotEmpty && id != user.id)
+        .toSet()
+        .toList();
+    List<dynamic> linkedTmRows = const [];
+    if (linkedProfileIds.isNotEmpty) {
+      try {
+        linkedTmRows = await _client
+            .from('team_members')
+            .select('team_id, role, profile_id')
+            .inFilter('profile_id', linkedProfileIds);
+      } catch (_) {
+        linkedTmRows = const [];
+      }
+    }
 
     final teamIds = <int>[];
-    for (final row in tmRows) {
+    for (final row in [...ownTmRows, ...linkedTmRows]) {
       final m = row as Map<String, dynamic>;
       final teamId = (m['team_id'] as num).toInt();
       if (!teamIds.contains(teamId)) teamIds.add(teamId);
@@ -135,31 +185,75 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
 
     // 4) Bouw memberships
     final memberships = <TeamMembership>[];
-    for (final row in tmRows) {
+
+    // Own roles (player/trainer)
+    for (final row in ownTmRows) {
       final m = row as Map<String, dynamic>;
       final teamId = (m['team_id'] as num).toInt();
       final roleRaw = (m['role'] as String?) ?? 'player';
       final role = _normalizeRole(roleRaw);
-
-      // teamName is REQUIRED -> altijd string leveren
       final teamName = teamNamesById[teamId] ?? '';
-
-      memberships.add(
-        TeamMembership(
-          teamId: teamId,
-          role: role,
-          teamName: teamName,
-        ),
-      );
+      memberships.add(TeamMembership(teamId: teamId, role: role, teamName: teamName));
     }
 
-    // 5) Commissies ophalen voor de effectieve profile (best-effort).
-    final committees = await _loadCommittees(profileId: effectiveProfileId);
+    // Guardian roles (ouder/verzorger): include teams where ANY linked account is a player.
+    final seen = <String>{
+      for (final m in memberships) '${m.teamId}:${m.role}',
+    };
+    for (final row in linkedTmRows) {
+      final m = row as Map<String, dynamic>;
+      final teamId = (m['team_id'] as num).toInt();
+      final roleRaw = (m['role'] as String?) ?? 'player';
+      final normalized = _normalizeRole(roleRaw);
+      if (normalized != 'player') continue;
+      final teamName = teamNamesById[teamId] ?? '';
+      final key = '$teamId:guardian';
+      if (seen.add(key)) {
+        memberships.add(TeamMembership(teamId: teamId, role: 'guardian', teamName: teamName));
+      }
+    }
+
+    // 5) Commissies altijd voor de ingelogde user (ouder/verzorger behoudt eigen commissies).
+    final committees = await _loadCommittees(profileId: user.id);
+
+    // 6) Display name (gebruikersnaam) voor "ingelogd als" etc. – prefer profiles/metadata.
+    // Best-effort: use SECURITY DEFINER RPC if available to avoid RLS problems.
+    String displayName = _displayName;
+    if (displayName.trim().isEmpty) {
+      try {
+        final res = await _client.rpc(
+          'get_profile_display_names',
+          params: {'profile_ids': [user.id]},
+        );
+        final rows = (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? const [];
+        if (rows.isNotEmpty) {
+          final name = (rows.first['display_name'] ?? '').toString().trim();
+          if (name.isNotEmpty) displayName = name;
+        }
+      } catch (_) {}
+    }
+    if (displayName.trim().isEmpty) {
+      // last resort: email local-part
+      final e = _email;
+      displayName = e.contains('@') ? e.split('@').first : e;
+    }
+
+    // If this user only has the ouder/verzorger role (no own team memberships),
+    // show a clearer label: "Naam (ouder/verzorger 'Gekoppeld account')".
+    if (ownTmRows.isEmpty && _ouderKindNotifier.linkedChildren.isNotEmpty) {
+      final linkedName =
+          (_ouderKindNotifier.viewingAsDisplayName ??
+                  _ouderKindNotifier.linkedChildren.first.displayName)
+              .trim();
+      final suffix = linkedName.isNotEmpty ? linkedName : 'Gekoppeld account';
+      displayName = "$displayName (ouder/verzorger '$suffix')";
+    }
 
     setState(() {
       _isGlobalAdmin = isGlobalAdmin;
       _memberships = memberships;
       _committees = committees;
+      _displayName = displayName;
       _loading = false;
     });
 
@@ -293,6 +387,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     return AppUserContext(
       profileId: _profileId,
       email: _email,
+      displayName: _displayName,
       isGlobalAdmin: _isGlobalAdmin,
       memberships: _memberships,
       committees: _committees,
