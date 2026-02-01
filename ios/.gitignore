@@ -18,7 +18,9 @@ xcuserdata
 Flutter/App.framework
 Flutter/Flutter.framework
 Flutter/Flutter.podspec
-Flutter/Generated.xcconfig
+# Keep Generated.xcconfig in git for Xcode Cloud builds.
+# Flutter may regenerate it locally, but CI needs a fallback to avoid
+# failing early while parsing ios/Flutter/*.xcconfig.
 Flutter/ephemeral/
 Flutter/app.flx
 Flutter/app.zip

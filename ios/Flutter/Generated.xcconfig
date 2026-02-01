@@ -1,0 +1,36 @@
+// NOTE:
+// Flutter normally generates this file during `flutter pub get`.
+// Xcode Cloud archives can fail early if this file is missing, because
+// ios/Flutter/Debug.xcconfig and Release.xcconfig include it.
+//
+// This committed fallback keeps Xcode Cloud unblocked. In CI we also run
+// `flutter pub get` and `pod install` (see ci_scripts/ and the [CI] build phase),
+// which may regenerate this file. That is fine.
+
+// Where Flutter SDK lives. Our CI bootstrap installs Flutter to $HOME/flutter.
+FLUTTER_ROOT=$(HOME)/flutter
+
+// Project root (one level above ios/)
+FLUTTER_APPLICATION_PATH=$(SRCROOT)/..
+
+// Entry point
+FLUTTER_TARGET=$(SRCROOT)/../lib/main.dart
+
+// Build output directory
+FLUTTER_BUILD_DIR=build
+
+// Use Xcode version/build settings to avoid hardcoding.
+FLUTTER_BUILD_NAME=$(MARKETING_VERSION)
+FLUTTER_BUILD_NUMBER=$(CURRENT_PROJECT_VERSION)
+
+COCOAPODS_PARALLEL_CODE_SIGN=true
+
+EXCLUDED_ARCHS[sdk=iphonesimulator*]=i386
+EXCLUDED_ARCHS[sdk=iphoneos*]=armv7
+
+// These are filled/overridden by Flutter tooling when needed.
+DART_DEFINES=
+DART_OBFUSCATION=false
+TRACK_WIDGET_CREATION=false
+TREE_SHAKE_ICONS=true
+PACKAGE_CONFIG=$(SRCROOT)/../.dart_tool/package_config.json
