@@ -28,6 +28,7 @@ class _ProfielTabState extends State<ProfielTab> {
   List<Map<String, dynamic>> _teamRoles = [];
   Map<int, String> _teamNamesById = const {};
   final Set<String> _processingLinkRequestIds = {};
+  bool _unlinking = false;
 
   @override
   void initState() {
@@ -388,91 +389,222 @@ class _ProfielTabState extends State<ProfielTab> {
               );
             },
           ),
-          // Only the ouder/verzorger (parent) can unlink. The linked account (child) never sees this.
-          if (ctx.isViewingAsChild && ctx.isOuderVerzorger) ...[
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.link_off, color: AppColors.error),
-              title: const Text(
-                'Ontkoppelen',
-                style: TextStyle(
-                  color: AppColors.onBackground,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              subtitle: Text(
-                'Ontkoppel: ${ctx.viewingAsDisplayName ?? 'Gekoppeld account'}',
-                style: const TextStyle(color: AppColors.textSecondary),
-              ),
-              onTap: () async {
-                final messenger = ScaffoldMessenger.of(context);
-                final childId = ctx.viewingAsProfileId;
-                if (childId == null || childId.isEmpty) return;
+          // Render this part from the notifier so UI updates immediately after unlink/link.
+          AnimatedBuilder(
+            animation: notifier,
+            builder: (context, _) {
+              final linked = notifier.linkedChildren;
+              final viewingAsId = notifier.viewingAsProfileId;
+              final viewingAsName = notifier.viewingAsDisplayName;
+              final isViewingAsChild = viewingAsId != null;
+              final isOuderVerzorger = linked.isNotEmpty;
 
-                try {
-                  await _client.rpc('unlink_child_account', params: {'child_profile_id': childId});
+              final widgets = <Widget>[];
 
-                  // Update local view state immediately.
-                  notifier.clearViewingAs();
-                  notifier.setChildren(
-                    notifier.linkedChildren.where((c) => c.profileId != childId).toList(),
-                  );
+              // Only the ouder/verzorger (parent) can unlink. The linked account (child) never sees this.
+              if (isViewingAsChild && isOuderVerzorger) {
+                widgets.add(
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.error,
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: _unlinking
+                            ? null
+                            : () async {
+                                final messenger = ScaffoldMessenger.of(context);
+                                final childId = viewingAsId;
+                                if (childId.isEmpty) {
+                                  showTopMessage(
+                                    messenger.context,
+                                    'Geen gekoppeld account geselecteerd.',
+                                    isError: true,
+                                  );
+                                  return;
+                                }
 
-                  if (!mounted) return;
-                  showTopMessage(messenger.context, 'Account ontkoppeld.');
-                } catch (e) {
-                  if (!mounted) return;
-                  showTopMessage(messenger.context, 'Ontkoppelen mislukt: $e', isError: true);
-                }
-              },
-            ),
-          ],
-          ...ctx.linkedChildProfiles.map((c) {
-            final isActive = ctx.viewingAsProfileId == c.profileId;
-            return ListTile(
-              dense: true,
-              leading: Icon(
-                isActive ? Icons.check_circle : Icons.person_outline,
-                color: isActive ? AppColors.primary : AppColors.iconMuted,
-              ),
-              title: Text(
-                isActive ? 'Bekijk als ${c.displayName} (actief)' : 'Bekijk als ${c.displayName}',
-                style: const TextStyle(
-                  color: AppColors.onBackground,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              onTap: isActive
-                  ? null
-                  : () => notifier.setViewingAs(c.profileId, c.displayName),
-            );
-          }),
-          // Account koppelen
-          if (!ctx.isViewingAsChild)
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.person_add_outlined, color: AppColors.iconMuted),
-              title: const Text(
-                'Account koppelen',
-                style: TextStyle(
-                  color: AppColors.onBackground,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              subtitle: Text(
-                ctx.linkedChildProfiles.isEmpty
-                    ? 'Koppel een ander account. De ouder/verzorger kan daarna meekijken en aanwezigheid aanpassen.'
-                    : 'Nog een account toevoegen.',
-                style: const TextStyle(color: AppColors.textSecondary),
-              ),
-              onTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const OuderKindKoppelPage(),
+                                final prevChildren =
+                                    List<LinkedChild>.from(notifier.linkedChildren);
+                                final prevViewingAsId = notifier.viewingAsProfileId;
+                                final prevViewingAsName = notifier.viewingAsDisplayName;
+
+                                try {
+                                  setState(() => _unlinking = true);
+
+                                  // Optimistic UI update: remove immediately so it feels responsive.
+                                  notifier.clearViewingAs();
+                                  notifier.setChildren(
+                                    prevChildren.where((c) => c.profileId != childId).toList(),
+                                  );
+
+                                  await _client.rpc(
+                                    'unlink_child_account',
+                                    params: {'child_profile_id': childId},
+                                  );
+
+                                  // After unlink, refresh the list from backend (source of truth).
+                                  // If we cannot fetch, we must NOT claim success (otherwise it may "come back").
+                                  final res =
+                                      await _client.rpc('get_my_linked_child_profiles');
+                                  final fresh = (res as List<dynamic>?)
+                                          ?.map((e) {
+                                            final m = e as Map<String, dynamic>?;
+                                            if (m == null) return null;
+                                            final id = m['profile_id']?.toString();
+                                            final name = (m['display_name'] ??
+                                                    m['profile_id'] ??
+                                                    '')
+                                                .toString()
+                                                .trim();
+                                            if (id == null || id.isEmpty) return null;
+                                            return LinkedChild(
+                                              profileId: id,
+                                              displayName: name.isNotEmpty
+                                                  ? name
+                                                  : 'Gekoppeld account',
+                                            );
+                                          })
+                                          .whereType<LinkedChild>()
+                                          .toList() ??
+                                      const [];
+
+                                  notifier.setChildren(fresh);
+                                  // Keep viewing-as cleared after unlink attempt.
+
+                                  // Verify: if still present, treat as failure (no silent success).
+                                  final stillLinked =
+                                      fresh.any((c) => c.profileId == childId);
+
+                                  if (!mounted) return;
+                                  if (stillLinked) {
+                                    // Restore optimistic state if unlink didn't actually happen.
+                                    notifier.setChildren(prevChildren);
+                                    if (prevViewingAsId != null) {
+                                      notifier.setViewingAs(prevViewingAsId, prevViewingAsName);
+                                    }
+                                    showTopMessage(
+                                      messenger.context,
+                                      'Ontkoppelen is niet gelukt (koppeling bestaat nog). Controleer of de Supabase RPC `unlink_child_account` correct is geïnstalleerd en rechten heeft.',
+                                      isError: true,
+                                    );
+                                  } else {
+                                    showTopMessage(messenger.context, 'Account ontkoppeld.');
+                                  }
+                                } on PostgrestException catch (e) {
+                                  if (!mounted) return;
+                                  final msg = e.message;
+                                  final hint = msg.contains('Could not find the function') ||
+                                          msg.contains('PGRST202')
+                                      ? '\n\nRun `supabase/account_link_requests_schema.sql` (of alleen de unlink RPC) in Supabase.'
+                                      : '';
+                                  // Restore optimistic state on failure.
+                                  notifier.setChildren(prevChildren);
+                                  if (prevViewingAsId != null) {
+                                    notifier.setViewingAs(prevViewingAsId, prevViewingAsName);
+                                  }
+                                  showTopMessage(
+                                    messenger.context,
+                                    'Ontkoppelen mislukt: $msg$hint',
+                                    isError: true,
+                                  );
+                                } catch (e) {
+                                  if (!mounted) return;
+                                  notifier.setChildren(prevChildren);
+                                  if (prevViewingAsId != null) {
+                                    notifier.setViewingAs(prevViewingAsId, prevViewingAsName);
+                                  }
+                                  showTopMessage(
+                                    messenger.context,
+                                    'Ontkoppelen mislukt: $e',
+                                    isError: true,
+                                  );
+                                } finally {
+                                  if (mounted) setState(() => _unlinking = false);
+                                }
+                              },
+                        icon: _unlinking
+                            ? const SizedBox(
+                                height: 16,
+                                width: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(Icons.link_off),
+                        label: Text(
+                          _unlinking
+                              ? 'Ontkoppelen…'
+                              : "Ontkoppelen (${viewingAsName ?? 'Gekoppeld account'})",
+                        ),
+                      ),
+                    ),
                   ),
                 );
-              },
-            ),
+              }
+
+              // Linked accounts list
+              widgets.addAll(
+                linked.map((c) {
+                  final isActive = viewingAsId == c.profileId;
+                  return ListTile(
+                    dense: true,
+                    leading: Icon(
+                      isActive ? Icons.check_circle : Icons.person_outline,
+                      color: isActive ? AppColors.primary : AppColors.iconMuted,
+                    ),
+                    title: Text(
+                      isActive
+                          ? 'Bekijk als ${c.displayName} (actief)'
+                          : 'Bekijk als ${c.displayName}',
+                      style: const TextStyle(
+                        color: AppColors.onBackground,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    onTap: isActive ? null : () => notifier.setViewingAs(c.profileId, c.displayName),
+                  );
+                }),
+              );
+
+              // Account koppelen (only when not viewing as)
+              if (!isViewingAsChild) {
+                widgets.add(
+                  ListTile(
+                    dense: true,
+                    leading:
+                        const Icon(Icons.person_add_outlined, color: AppColors.iconMuted),
+                    title: const Text(
+                      'Account koppelen',
+                      style: TextStyle(
+                        color: AppColors.onBackground,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    subtitle: Text(
+                      linked.isEmpty
+                          ? 'Koppel een ander account. De ouder/verzorger kan daarna meekijken en aanwezigheid aanpassen.'
+                          : 'Nog een account toevoegen.',
+                      style: const TextStyle(color: AppColors.textSecondary),
+                    ),
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const OuderKindKoppelPage(),
+                        ),
+                      );
+                    },
+                  ),
+                );
+              }
+
+              return Column(children: widgets);
+            },
+          ),
         ],
       ),
     );

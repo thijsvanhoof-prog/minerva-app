@@ -500,6 +500,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     }
   }
 
+  Future<void> refresh() async {
+    await _loadAll();
+  }
+
   String _formatDateTime(DateTime dt) {
     final d = dt.toLocal();
     String two(int v) => v.toString().padLeft(2, '0');

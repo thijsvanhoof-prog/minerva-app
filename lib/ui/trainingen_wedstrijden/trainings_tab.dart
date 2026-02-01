@@ -64,6 +64,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
     await _loadFuture;
   }
 
+  Future<void> refresh() async {
+    await _refresh();
+  }
+
   bool _sameIntList(List<int> a, List<int> b) {
     if (identical(a, b)) return true;
     if (a.length != b.length) return false;

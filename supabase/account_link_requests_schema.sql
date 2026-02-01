@@ -291,6 +291,8 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  affected int;
 begin
   if auth.uid() is null then
     raise exception 'Not authenticated';
@@ -303,6 +305,11 @@ begin
   delete from public.account_links
   where parent_id = auth.uid()
     and child_id = child_profile_id;
+
+  get diagnostics affected = row_count;
+  if affected = 0 then
+    raise exception 'Link not found (nothing unlinked)';
+  end if;
 end;
 $$;
 

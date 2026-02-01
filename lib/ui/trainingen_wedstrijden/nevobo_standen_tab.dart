@@ -337,6 +337,10 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     }
   }
 
+  Future<void> refresh() async {
+    await _loadAll();
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading && _teams.isEmpty) {

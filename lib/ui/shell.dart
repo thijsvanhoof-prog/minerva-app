@@ -120,7 +120,7 @@ class _ShellState extends State<Shell> {
                 NavigationBar(
                   selectedIndex: selectedIndex,
                   onDestinationSelected: (i) => setState(() => _index = i),
-                  labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
+                  labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
                   destinations: destinations,
                 ),
               ],

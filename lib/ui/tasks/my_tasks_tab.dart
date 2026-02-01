@@ -12,6 +12,19 @@ class MyTasksTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
+    final canSeeOverview =
+        ctx.hasFullAdminRights || ctx.isInBestuur || ctx.isInWedstrijdzaken;
+
+    if (!canSeeOverview) {
+      return Scaffold(
+        backgroundColor: Colors.transparent,
+        body: SafeArea(
+          top: true,
+          bottom: false,
+          child: const _TeamTasksView(),
+        ),
+      );
+    }
 
     return DefaultTabController(
       length: 2,
@@ -43,9 +56,7 @@ class MyTasksTab extends StatelessWidget {
                 child: TabBarView(
                   children: [
                     const _TeamTasksView(),
-                    ctx.canViewAllTasks
-                        ? const _OverviewHomeMatchesView()
-                        : const _LockedView(),
+                    const _OverviewHomeMatchesView(),
                   ],
                 ),
               ),
@@ -214,6 +225,11 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         _loading = false;
       });
     }
+  }
+
+  Future<void> refresh() async {
+    final ctx = AppUserContext.of(context);
+    await _load(ctx: ctx);
   }
 
   String _shortId(String value) {
@@ -441,74 +457,97 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       );
     }
 
+    // Always allow pull-to-refresh on this tab, even on empty/error states.
     if (_loading) {
-      return const Center(
-        child: CircularProgressIndicator(color: AppColors.primary),
+      return RefreshIndicator(
+        color: AppColors.primary,
+        onRefresh: () => _load(ctx: ctx),
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          children: const [
+            SizedBox(height: 140),
+            Center(child: CircularProgressIndicator(color: AppColors.primary)),
+          ],
+        ),
       );
     }
 
     if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: GlassCard(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'Verenigingstaken konden niet laden',
-                  style: TextStyle(
-                    color: AppColors.onBackground,
-                    fontWeight: FontWeight.w900,
-                  ),
+      return RefreshIndicator(
+        color: AppColors.primary,
+        onRefresh: () => _load(ctx: ctx),
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          children: [
+            GlassCard(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Verenigingstaken konden niet laden',
+                      style: TextStyle(
+                        color: AppColors.onBackground,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      _error!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: AppColors.error),
+                    ),
+                    const SizedBox(height: 12),
+                    if (_schemaMissing) ...[
+                      const Text(
+                        'Je Supabase tabellen voor taken zijn nog niet aangemaakt (of schema-cache is nog niet ververst).',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: AppColors.textSecondary),
+                      ),
+                      const SizedBox(height: 10),
+                      const Text(
+                        'Run `supabase/club_tasks_schema.sql` in Supabase.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: AppColors.textSecondary),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Swipe omlaag om opnieuw te laden.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: AppColors.textSecondary),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 10),
-                Text(
-                  _error!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: AppColors.error),
-                ),
-                const SizedBox(height: 12),
-                if (_schemaMissing) ...[
-                  const Text(
-                    'Je Supabase tabellen voor taken zijn nog niet aangemaakt (of schema-cache is nog niet ververst).',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: AppColors.textSecondary),
-                  ),
-                  const SizedBox(height: 10),
-                  const Text(
-                    'Run `supabase/club_tasks_schema.sql` in Supabase.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: AppColors.textSecondary),
-                  ),
-                ],
-                const SizedBox(height: 14),
-                ElevatedButton.icon(
-                  onPressed: () => _load(ctx: ctx),
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Opnieuw'),
-                ),
-              ],
+              ),
             ),
-          ),
+          ],
         ),
       );
     }
 
     if (_matches.isEmpty) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(16),
-          child: GlassCard(
-            child: Padding(
-              padding: EdgeInsets.all(14),
-              child: Text(
-                'Wedstrijdzaken heeft nog geen wedstrijden aan jouw team(s) gekoppeld.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: AppColors.textSecondary),
+      return RefreshIndicator(
+        color: AppColors.primary,
+        onRefresh: () => _load(ctx: ctx),
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          children: const [
+            GlassCard(
+              child: Padding(
+                padding: EdgeInsets.all(14),
+                child: Text(
+                  'Wedstrijdzaken heeft nog geen wedstrijden aan jouw team(s) gekoppeld.\n\nSwipe omlaag om te verversen.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: AppColors.textSecondary),
+                ),
               ),
             ),
-          ),
+          ],
         ),
       );
     }
@@ -517,6 +556,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       color: AppColors.primary,
       onRefresh: () => _load(ctx: ctx),
       child: ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         itemCount: _matches.length,
         separatorBuilder: (_, _) => const SizedBox(height: 12),
@@ -821,6 +861,10 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         _loading = false;
       });
     }
+  }
+
+  Future<void> refresh() async {
+    await _load();
   }
 
   String _formatDate(DateTime dt) {
@@ -2146,29 +2190,6 @@ class _MatchSignupSummary {
     required this.fluitenNames,
     required this.tellenNames,
   });
-}
-
-class _LockedView extends StatelessWidget {
-  const _LockedView();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-      child: Padding(
-        padding: EdgeInsets.all(16),
-        child: GlassCard(
-          child: Padding(
-            padding: EdgeInsets.all(14),
-            child: Text(
-              'Alleen Bestuur & Wedstrijdzaken.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: AppColors.textSecondary),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
 /* (oude Taken-implementatie staat hieronder; tijdelijk uitgecommentarieerd
    zodat we stap-voor-stap opnieuw kunnen ontwerpen)

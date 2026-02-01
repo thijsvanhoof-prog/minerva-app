@@ -41,6 +41,24 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   String? _newsError;
   List<NewsItem> _newsItems = const [];
   bool _newsFromSupabase = false;
+  String _newsIdField = 'news_id';
+
+  NewsCategory _categoryFromDb(dynamic v) {
+    final s = (v ?? '').toString().trim().toLowerCase();
+    switch (s) {
+      case 'tc':
+      case 'technische commissie':
+      case 'technische-commissie':
+        return NewsCategory.tc;
+      case 'communicatie':
+        return NewsCategory.communicatie;
+      case 'team':
+        return NewsCategory.team;
+      case 'bestuur':
+      default:
+        return NewsCategory.bestuur;
+    }
+  }
 
   Future<void> _refreshHome() async {
     await _loadHighlights();
@@ -235,18 +253,45 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     });
 
     try {
-      final res = await _client
-          .from('home_news')
-          .select('news_id, title, description, created_at')
-          .order('created_at', ascending: false);
+      // Be defensive about schema differences (id/title/body columns).
+      List<Map<String, dynamic>> rows = const [];
+      String idField = 'news_id';
+      for (final attempt in const [
+        ('news_id, title, description, created_at, author, category, source', 'news_id'),
+        ('id, title, description, created_at, author, category, source', 'id'),
+        // Older schemas may use "body" instead of "description"
+        ('news_id, title, body, created_at, author, category, source', 'news_id'),
+        ('id, title, body, created_at, author, category, source', 'id'),
+        // Minimal schema
+        ('news_id, title, description, created_at', 'news_id'),
+        ('id, title, description, created_at', 'id'),
+        ('news_id, title, body, created_at', 'news_id'),
+        ('id, title, body, created_at', 'id'),
+      ]) {
+        try {
+          final select = attempt.$1;
+          final candidateId = attempt.$2;
+          final res = await _client
+              .from('home_news')
+              .select(select)
+              .order('created_at', ascending: false);
+          rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+          idField = candidateId;
+          break;
+        } catch (_) {
+          // try next
+        }
+      }
 
-      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
       final list = <NewsItem>[];
       for (final r in rows) {
-        final id = (r['news_id'] as num?)?.toInt();
-        if (id == null) continue;
+        final rawId = r[idField];
+        final idStr = (rawId is num)
+            ? (rawId.toInt()).toString()
+            : (rawId?.toString() ?? '').trim();
+        if (idStr.isEmpty) continue;
         final title = (r['title'] as String?) ?? '';
-        final body = (r['description'] as String?) ?? '';
+        final body = (r['description'] ?? r['body'] ?? '').toString();
         DateTime? date;
         final raw = r['created_at'];
         if (raw is DateTime) {
@@ -255,19 +300,24 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           date = DateTime.tryParse(raw.toString());
         }
         date ??= DateTime.now();
+        final author = (r['author'] ?? '').toString().trim();
+        final category = _categoryFromDb(r['category']);
         list.add(NewsItem(
-          id: id.toString(),
+          id: idStr,
           title: title,
           body: body,
           date: date,
-          author: 'Bestuur',
-          category: NewsCategory.bestuur,
+          author: author.isNotEmpty ? author : 'Bestuur',
+          category: category,
         ));
       }
 
       setState(() {
-        _newsItems = list.isEmpty ? mockNews : list;
-        _newsFromSupabase = list.isNotEmpty;
+        _newsIdField = idField;
+        // If the DB table exists but has no rows yet, show an empty state (not mock data),
+        // otherwise admins end up with "fake" items that can't be edited/deleted.
+        _newsItems = list;
+        _newsFromSupabase = true;
         _loadingNews = false;
       });
     } catch (e) {
@@ -441,6 +491,16 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   }
 
   Future<void> _openAddNewsDialog() async {
+    final authorName = (() {
+      try {
+        final ctx = AppUserContext.of(context);
+        final n = ctx.displayName.trim();
+        return n.isNotEmpty ? n : 'Bestuur';
+      } catch (_) {
+        return 'Bestuur';
+      }
+    })();
+
     final titleController = TextEditingController();
     final descriptionController = TextEditingController();
 
@@ -499,10 +559,27 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (title.isEmpty) return;
 
     try {
-      await _client.from('home_news').insert({
+      final payload = {
         'title': title,
         'description': descriptionController.text.trim(),
-      });
+        'author': authorName,
+        'category': 'bestuur',
+      };
+      // Some DB schemas require non-null `source` / `author` / `category` columns.
+      try {
+        await _client.from('home_news').insert({...payload, 'source': 'app'});
+      } on PostgrestException catch (e) {
+        // Missing column -> retry without extra fields
+        if (e.code == 'PGRST204' ||
+            (e.message.contains("Could not find the '") && e.message.contains("column"))) {
+          await _client.from('home_news').insert({
+            'title': title,
+            'description': descriptionController.text.trim(),
+          });
+        } else {
+          rethrow;
+        }
+      }
       await _loadNews();
       if (!mounted) return;
       showTopMessage(context, 'Nieuwsbericht toegevoegd.');
@@ -513,8 +590,18 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   }
 
   Future<void> _openEditNewsDialog(NewsItem existing) async {
-    final newsId = int.tryParse(existing.id);
-    if (newsId == null) return;
+    final authorName = (() {
+      try {
+        final ctx = AppUserContext.of(context);
+        final n = ctx.displayName.trim();
+        return n.isNotEmpty ? n : existing.author;
+      } catch (_) {
+        return existing.author;
+      }
+    })();
+
+    final idValue = int.tryParse(existing.id) ?? existing.id;
+    if (existing.id.trim().isEmpty) return;
 
     final titleController = TextEditingController(text: existing.title);
     final descriptionController = TextEditingController(text: existing.body);
@@ -574,10 +661,30 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (title.isEmpty) return;
 
     try {
-      await _client.from('home_news').update({
+      final payload = {
         'title': title,
         'description': descriptionController.text.trim(),
-      }).eq('news_id', newsId);
+        'author': authorName,
+        'category': existing.category.label.toLowerCase(),
+      };
+      // Some DB schemas require non-null `source` / `author` / `category` columns.
+      try {
+        await _client
+            .from('home_news')
+            .update({...payload, 'source': 'app'})
+            .eq(_newsIdField, idValue);
+      } on PostgrestException catch (e) {
+        // Missing column -> retry without extra fields
+        if (e.code == 'PGRST204' ||
+            (e.message.contains("Could not find the '") && e.message.contains("column"))) {
+          await _client.from('home_news').update({
+            'title': title,
+            'description': descriptionController.text.trim(),
+          }).eq(_newsIdField, idValue);
+        } else {
+          rethrow;
+        }
+      }
       await _loadNews();
       if (!mounted) return;
       showTopMessage(context, 'Nieuwsbericht aangepast.');
@@ -588,8 +695,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   }
 
   Future<void> _deleteNewsItem(NewsItem item) async {
-    final newsId = int.tryParse(item.id);
-    if (newsId == null) return;
+    final idValue = int.tryParse(item.id) ?? item.id;
+    if (item.id.trim().isEmpty) return;
 
     final confirm = await showDialog<bool>(
       context: context,
@@ -615,7 +722,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (confirm != true) return;
 
     try {
-      await _client.from('home_news').delete().eq('news_id', newsId);
+      await _client.from('home_news').delete().eq(_newsIdField, idValue);
       await _loadNews();
       if (!mounted) return;
       showTopMessage(context, 'Nieuwsbericht verwijderd.');
@@ -1200,6 +1307,41 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     await _client.from('home_highlights').delete().eq('highlight_id', id);
   }
 
+  Future<void> _confirmDeleteHighlight(_Highlight item) async {
+    if (item.id == null) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Punt verwijderen'),
+        content: Text('Weet je zeker dat je "${item.title}" wilt verwijderen?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: TextButton.styleFrom(foregroundColor: AppColors.error),
+            child: const Text('Verwijderen'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    try {
+      await _deleteHighlight(item.id!);
+      await _loadHighlights();
+      if (!mounted) return;
+      showTopMessage(context, 'Punt verwijderd.');
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Verwijderen mislukt: $e', isError: true);
+    }
+  }
+
   Future<void> _openEditHighlightDialog({
     required bool canManage,
     _Highlight? existing,
@@ -1238,12 +1380,6 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           ],
         ),
         actions: [
-          if (existing != null)
-            TextButton(
-              onPressed: () =>
-                  Navigator.of(context).pop(const _HighlightEditResult.delete()),
-              child: const Text('Verwijderen'),
-            ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(null),
             child: const Text('Annuleren'),
@@ -1272,9 +1408,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (result == null) return;
 
     try {
-      if (result.isDelete && existing != null) {
-        await _deleteHighlight(existing.id ?? 0);
-      } else if (result.isSave) {
+      if (result.isSave) {
         final title = result.title ?? '';
         if (title.isEmpty) return;
         await _upsertHighlight(
@@ -1420,6 +1554,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                   canManage: canManageHighlights,
                                   existing: _highlights[i],
                                 ),
+                                onDelete: _highlights[i].id != null
+                                    ? () => _confirmDeleteHighlight(_highlights[i])
+                                    : null,
                               ),
                             ),
                           ),
@@ -1648,15 +1785,18 @@ class _HighlightCard extends StatelessWidget {
   final _Highlight item;
   final bool canManage;
   final VoidCallback? onEdit;
+  final VoidCallback? onDelete;
 
   const _HighlightCard({
     required this.item,
     required this.canManage,
     this.onEdit,
+    this.onDelete,
   });
 
   @override
   Widget build(BuildContext context) {
+    final showMenu = canManage && (onEdit != null || onDelete != null);
     return _CardBox(
       padding: const EdgeInsets.all(14),
       child: Row(
@@ -1683,7 +1823,7 @@ class _HighlightCard extends StatelessWidget {
               ],
             ),
           ),
-          if (canManage && onEdit != null)
+          if (showMenu)
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert, color: AppColors.textSecondary),
               padding: EdgeInsets.zero,
@@ -1691,18 +1831,31 @@ class _HighlightCard extends StatelessWidget {
               tooltip: 'Meer opties',
               onSelected: (v) {
                 if (v == 'edit') onEdit?.call();
+                if (v == 'delete') onDelete?.call();
               },
               itemBuilder: (context) => [
-                const PopupMenuItem<String>(
-                  value: 'edit',
-                  child: Row(
-                    children: [
-                      Icon(Icons.edit, size: 20, color: AppColors.textSecondary),
-                      SizedBox(width: 8),
-                      Text('Bewerken'),
-                    ],
+                if (onEdit != null)
+                  const PopupMenuItem<String>(
+                    value: 'edit',
+                    child: Row(
+                      children: [
+                        Icon(Icons.edit, size: 20, color: AppColors.textSecondary),
+                        SizedBox(width: 8),
+                        Text('Bewerken'),
+                      ],
+                    ),
                   ),
-                ),
+                if (onDelete != null)
+                  const PopupMenuItem<String>(
+                    value: 'delete',
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete_outline, size: 20, color: AppColors.error),
+                        SizedBox(width: 8),
+                        Text('Verwijderen', style: TextStyle(color: AppColors.error)),
+                      ],
+                    ),
+                  ),
               ],
             ),
         ],
@@ -1713,27 +1866,16 @@ class _HighlightCard extends StatelessWidget {
 
 class _HighlightEditResult {
   final bool isSave;
-  final bool isDelete;
   final String? title;
   final String? subtitle;
   final String? iconText;
 
   const _HighlightEditResult._({
     required this.isSave,
-    required this.isDelete,
     this.title,
     this.subtitle,
     this.iconText,
   });
-
-  const _HighlightEditResult.delete()
-      : this._(
-          isSave: false,
-          isDelete: true,
-          title: null,
-          subtitle: null,
-          iconText: null,
-        );
 
   const _HighlightEditResult.save(
     String title,
@@ -1741,7 +1883,6 @@ class _HighlightEditResult {
     String iconText,
   ) : this._(
           isSave: true,
-          isDelete: false,
           title: title,
           subtitle: subtitle,
           iconText: iconText,
