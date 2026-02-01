@@ -45,5 +45,7 @@
 	<false/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>We gebruiken je locatie niet actief. iOS vereist deze melding omdat één van de gebruikte libraries mogelijk locatie-API’s kan aanroepen.</string>
 </dict>
 </plist>
