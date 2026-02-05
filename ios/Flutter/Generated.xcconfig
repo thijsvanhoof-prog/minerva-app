@@ -6,8 +6,8 @@
 // This committed fallback keeps Xcode Cloud unblocked. In CI we also run
 // `flutter pub get` and `pod install` (see ci_scripts/ and the [CI] build phase),
 // which may regenerate this file. That is fine.
-
-// Where Flutter SDK lives. Our CI bootstrap installs Flutter to $HOME/flutter.
+//
+// Important: avoid absolute paths here (so it works on any machine/CI).
 FLUTTER_ROOT=$(HOME)/flutter
 
 // Project root (one level above ios/)
@@ -19,14 +19,9 @@ FLUTTER_TARGET=$(SRCROOT)/../lib/main.dart
 // Build output directory
 FLUTTER_BUILD_DIR=build
 
-// Use Xcode version/build settings to avoid hardcoding.
+// Keep versions driven by Xcode build settings.
 FLUTTER_BUILD_NAME=$(MARKETING_VERSION)
 FLUTTER_BUILD_NUMBER=$(CURRENT_PROJECT_VERSION)
-
-COCOAPODS_PARALLEL_CODE_SIGN=true
-
-EXCLUDED_ARCHS[sdk=iphonesimulator*]=i386
-EXCLUDED_ARCHS[sdk=iphoneos*]=armv7
 
 // These are filled/overridden by Flutter tooling when needed.
 DART_DEFINES=

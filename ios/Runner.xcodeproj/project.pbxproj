@@ -195,8 +195,8 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 97C147051CF9000F007C117D /* Build configuration list for PBXNativeTarget "Runner" */;
 			buildPhases = (
-				C1C0FFEE0BADF00DDEADBEEF /* [CI] Bootstrap Flutter & Pods */,
 				A8C1B09BCEDF6175E6398AF6 /* [CP] Check Pods Manifest.lock */,
+				C1C0FFEE0BADF00DDEADBEEF /* [CI] Bootstrap Flutter & Pods */,
 				9740EEB61CF901F6004384FC /* Run Script */,
 				97C146EA1CF9000F007C117D /* Sources */,
 				97C146EB1CF9000F007C117D /* Frameworks */,
@@ -275,22 +275,6 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		C1C0FFEE0BADF00DDEADBEEF /* [CI] Bootstrap Flutter & Pods */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputPaths = (
-			);
-			name = "[CI] Bootstrap Flutter & Pods";
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "if [ -z \"${CI:-}\" ] && [ -z \"${XCODE_CLOUD_BUILD_ID:-}\" ] && [ -z \"${CI_XCODE_CLOUD:-}\" ] && [ -z \"${CI_XCODECLOUD:-}\" ]; then\n  echo \"[CI bootstrap] Not running on CI; skipping.\";\n  exit 0;\nfi\n\nset -e\n\necho \"[CI bootstrap] Ensuring Flutter + Pods\";\ncd \"${SRCROOT}/..\"\n\nif ! command -v flutter >/dev/null 2>&1; then\n  echo \"[CI bootstrap] Flutter not found; installing to ${HOME}/flutter\";\n  git clone --depth 1 --branch stable https://github.com/flutter/flutter.git \"${HOME}/flutter\";\n  export PATH=\"${HOME}/flutter/bin:${PATH}\";\nfi\n\nflutter --version\nflutter pub get\n\ncd ios\nif [ ! -d \"Pods\" ]; then\n  echo \"[CI bootstrap] Running pod install\";\n  pod install;\nfi\n";
-			showEnvVarsInLog = 0;
-		};
 		3B06AD1E1E4923F5004D2608 /* Thin Binary */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -364,6 +348,22 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
+		C1C0FFEE0BADF00DDEADBEEF /* [CI] Bootstrap Flutter & Pods */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "[CI] Bootstrap Flutter & Pods";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ -z \"${CI:-}\" ] && [ -z \"${XCODE_CLOUD_BUILD_ID:-}\" ] && [ -z \"${CI_XCODE_CLOUD:-}\" ] && [ -z \"${CI_XCODECLOUD:-}\" ]; then\n  echo \"[CI bootstrap] Not running on CI; skipping.\";\n  exit 0;\nfi\n\nset -e\n\necho \"[CI bootstrap] Ensuring Flutter + Pods\";\ncd \"${SRCROOT}/..\"\n\nif ! command -v flutter >/dev/null 2>&1; then\n  echo \"[CI bootstrap] Flutter not found; installing to ${HOME}/flutter\";\n  git clone --depth 1 --branch stable https://github.com/flutter/flutter.git \"${HOME}/flutter\";\n  export PATH=\"${HOME}/flutter/bin:${PATH}\";\nfi\n\nflutter --version\nflutter pub get\n\ncd ios\nif [ ! -d \"Pods\" ]; then\n  echo \"[CI bootstrap] Running pod install\";\n  pod install;\nfi\n";
 			showEnvVarsInLog = 0;
 		};
 		FADD8B9B82824EE52AAD86BF /* [CP] Embed Pods Frameworks */ = {
@@ -494,7 +494,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = MG4RAJA2J9;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -685,7 +685,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = MG4RAJA2J9;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -709,7 +709,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = MG4RAJA2J9;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;

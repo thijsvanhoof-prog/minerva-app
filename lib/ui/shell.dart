@@ -1,5 +1,6 @@
 // lib/ui/shell.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/branded_background.dart';
@@ -100,33 +101,49 @@ class _ShellState extends State<Shell> {
     final pages = navItems.map((i) => i.page).toList();
     final destinations = navItems.map((i) => i.destination).toList();
 
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          BrandedBackground(child: const SizedBox.shrink()),
-          SafeArea(
-            top: true,
-            bottom: true,
-            child: Column(
-              children: [
-                Expanded(
-                  child: IndexedStack(
-                    index: selectedIndex,
-                    children: pages,
-                  ),
-                ),
-                NavigationBar(
-                  selectedIndex: selectedIndex,
-                  onDestinationSelected: (i) => setState(() => _index = i),
-                  labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-                  destinations: destinations,
-                ),
-              ],
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        // Keep Android nav area consistent with our bottom bar background.
+        systemNavigationBarColor: Colors.white,
+        systemNavigationBarDividerColor: Colors.transparent,
+        systemNavigationBarIconBrightness: Brightness.dark,
+      ),
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            BrandedBackground(child: const SizedBox.shrink()),
+            SafeArea(
+              top: true,
+              bottom: false,
+              child: IndexedStack(
+                index: selectedIndex,
+                children: pages,
+              ),
+            ),
+          ],
+        ),
+        bottomNavigationBar: ColoredBox(
+          // Fully opaque so nothing can shine through as a "stripe".
+          color: Colors.white,
+          child: SafeArea(
+            top: false,
+            child: NavigationBar(
+              backgroundColor: Colors.white,
+              elevation: 0,
+              shadowColor: Colors.transparent,
+              surfaceTintColor: Colors.transparent,
+              indicatorColor: Colors.transparent,
+              selectedIndex: selectedIndex,
+              onDestinationSelected: (i) => setState(() => _index = i),
+              labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+              destinations: destinations,
             ),
           ),
-        ],
+        ),
       ),
     );
   }

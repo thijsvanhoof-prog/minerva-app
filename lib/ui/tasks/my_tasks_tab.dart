@@ -3,6 +3,7 @@ import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -39,7 +40,10 @@ class MyTasksTab extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                 child: GlassCard(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  showBorder: false,
+                  showShadow: false,
                   child: TabBar(
+                    dividerColor: Colors.transparent,
                     indicator: BoxDecoration(
                       color: AppColors.darkBlue,
                       borderRadius: BorderRadius.circular(AppColors.cardRadius),
@@ -240,6 +244,9 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
+    final me = _client.auth.currentUser;
+    final myId = me?.id ?? '';
+    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '').trim();
 
     // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
     try {
@@ -249,8 +256,12 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       for (final r in rows) {
         final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
         if (id.isEmpty) continue;
-        final name = (r['display_name'] ?? '').toString().trim();
+        final raw = (r['display_name'] ?? '').toString().trim();
+        final name = applyDisplayNameOverrides(raw);
         map[id] = name.isNotEmpty ? name : _shortId(id);
+      }
+      if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
+        map[myId] = applyDisplayNameOverrides(myMetaName);
       }
       if (map.isNotEmpty) return map;
     } catch (_) {
@@ -282,7 +293,11 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
           (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
               .toString()
               .trim();
-      map[id] = name.isNotEmpty ? name : _shortId(id);
+      final overridden = applyDisplayNameOverrides(name);
+      map[id] = overridden.isNotEmpty ? overridden : _shortId(id);
+    }
+    if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
+      map[myId] = applyDisplayNameOverrides(myMetaName);
     }
     return map;
   }
@@ -892,6 +907,9 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
+    final me = _client.auth.currentUser;
+    final myId = me?.id ?? '';
+    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '').trim();
 
     // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
     try {
@@ -901,8 +919,12 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       for (final r in rows) {
         final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
         if (id.isEmpty) continue;
-        final name = (r['display_name'] ?? '').toString().trim();
+        final raw = (r['display_name'] ?? '').toString().trim();
+        final name = applyDisplayNameOverrides(raw);
         map[id] = name.isNotEmpty ? name : _shortId(id);
+      }
+      if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
+        map[myId] = applyDisplayNameOverrides(myMetaName);
       }
       if (map.isNotEmpty) return map;
     } catch (_) {
@@ -934,7 +956,11 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
           (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
               .toString()
               .trim();
-      map[id] = name.isNotEmpty ? name : _shortId(id);
+      final overridden = applyDisplayNameOverrides(name);
+      map[id] = overridden.isNotEmpty ? overridden : _shortId(id);
+    }
+    if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
+      map[myId] = applyDisplayNameOverrides(myMetaName);
     }
     return map;
   }
@@ -2210,6 +2236,7 @@ class MyTasksTab extends StatelessWidget {
           backgroundColor: Colors.transparent,
           surfaceTintColor: Colors.transparent,
           bottom: TabBar(
+            dividerColor: Colors.transparent,
             indicator: BoxDecoration(
               color: AppColors.darkBlue,
               borderRadius: BorderRadius.circular(AppColors.cardRadius),
@@ -2486,6 +2513,9 @@ class _MyTasksTabState extends State<MyTasksTab> {
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
+    final me = _client.auth.currentUser;
+    final myId = me?.id ?? '';
+    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '').trim();
 
     // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
     try {
@@ -2495,8 +2525,12 @@ class _MyTasksTabState extends State<MyTasksTab> {
       for (final r in rows) {
         final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
         if (id.isEmpty) continue;
-        final name = (r['display_name'] ?? '').toString().trim();
+        final raw = (r['display_name'] ?? '').toString().trim();
+        final name = applyDisplayNameOverrides(raw);
         map[id] = name.isNotEmpty ? name : shortId(id);
+      }
+      if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
+        map[myId] = applyDisplayNameOverrides(myMetaName);
       }
       if (map.isNotEmpty) return map;
     } catch (_) {
@@ -2533,7 +2567,11 @@ class _MyTasksTabState extends State<MyTasksTab> {
           (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
               .toString()
               .trim();
-      map[id] = name.isNotEmpty ? name : shortId(id);
+      final overridden = applyDisplayNameOverrides(name);
+      map[id] = overridden.isNotEmpty ? overridden : shortId(id);
+    }
+    if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
+      map[myId] = applyDisplayNameOverrides(myMetaName);
     }
     return map;
   }
@@ -3196,6 +3234,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
           backgroundColor: Colors.transparent,
           surfaceTintColor: Colors.transparent,
           bottom: TabBar(
+            dividerColor: Colors.transparent,
             indicator: BoxDecoration(
               color: AppColors.darkBlue,
               borderRadius: BorderRadius.circular(AppColors.cardRadius),

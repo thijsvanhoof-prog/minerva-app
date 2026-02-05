@@ -30,6 +30,7 @@ class _TcTabState extends State<TcTab> {
   String _query = '';
   String _teamQuery = '';
   String? _lastProfileId;
+  int? _expandedTeamId;
 
   @override
   void initState() {
@@ -749,34 +750,73 @@ class _TcTabState extends State<TcTab> {
                               ? members
                               : (teamLabelMatches ? members : filtered);
                           if (q.isNotEmpty && toShow.isEmpty) return const SizedBox.shrink();
+                          final expanded = _expandedTeamId == t.teamId;
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 12),
                             child: GlassCard(
-                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              padding: EdgeInsets.zero,
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Padding(
-                                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                                    child: Text(
-                                      t.label,
-                                      style: const TextStyle(
-                                        color: AppColors.primary,
-                                        fontWeight: FontWeight.w800,
-                                        fontSize: 16,
+                                  InkWell(
+                                    borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                                    onTap: () {
+                                      setState(() {
+                                        _expandedTeamId = expanded ? null : t.teamId;
+                                      });
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                                      child: Row(
+                                        children: [
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  t.label,
+                                                  style: const TextStyle(
+                                                    color: AppColors.primary,
+                                                    fontWeight: FontWeight.w800,
+                                                    fontSize: 16,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 2),
+                                                Text(
+                                                  '${toShow.length} lid/leden',
+                                                  style: TextStyle(
+                                                    color: AppColors.textSecondary.withValues(alpha: 0.9),
+                                                    fontSize: 12.5,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          Icon(
+                                            expanded ? Icons.expand_less : Icons.expand_more,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   ),
-                                  if (toShow.isEmpty)
-                                    const Padding(
-                                      padding: EdgeInsets.fromLTRB(16, 8, 16, 16),
-                                      child: Text(
-                                        'Geen leden in dit team.',
-                                        style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                                      ),
-                                    )
-                                  else
-                                    ...toShow.map((m) => ListTile(
+                                  if (expanded) ...[
+                                    const Divider(height: 1),
+                                    if (toShow.isEmpty)
+                                      const Padding(
+                                        padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
+                                        child: Text(
+                                          'Geen leden in dit team.',
+                                          style: TextStyle(
+                                            color: AppColors.textSecondary,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      )
+                                    else
+                                      ...toShow.map(
+                                        (m) => ListTile(
                                           dense: true,
                                           leading: const Icon(
                                             Icons.person_outline,
@@ -804,20 +844,27 @@ class _TcTabState extends State<TcTab> {
                                             size: 20,
                                           ),
                                           onTap: () => _editAssignment(t.teamId, m),
-                                        )),
-                                  ListTile(
-                                    dense: true,
-                                    leading: const Icon(Icons.person_add_outlined, color: AppColors.primary, size: 22),
-                                    title: const Text(
-                                      'Lid toevoegen aan dit team',
-                                      style: TextStyle(
-                                        color: AppColors.primary,
-                                        fontWeight: FontWeight.w600,
-                                        fontSize: 14,
+                                        ),
                                       ),
+                                    const Divider(height: 1),
+                                    ListTile(
+                                      dense: true,
+                                      leading: const Icon(
+                                        Icons.person_add_outlined,
+                                        color: AppColors.primary,
+                                        size: 22,
+                                      ),
+                                      title: const Text(
+                                        'Lid toevoegen aan dit team',
+                                        style: TextStyle(
+                                          color: AppColors.primary,
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                      onTap: () => _addMemberToTeam(t.teamId, t.label),
                                     ),
-                                    onTap: () => _addMemberToTeam(t.teamId, t.label),
-                                  ),
+                                  ],
                                 ],
                               ),
                             ),

@@ -7,6 +7,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:minerva_app/data/mock_home_data.dart';
 import 'package:minerva_app/models/news_item.dart';
 import 'package:minerva_app/ui/app_colors.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 /// Home-tab van VV Minerva. Stap voor stap herbouwd.
 ///
@@ -36,6 +38,12 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   String? _agendaError;
   List<_AgendaItem> _agendaItems = const [];
   Set<int> _myRsvpAgendaIds = const {};
+
+  // Agenda sub-tab: 0 = agenda, 1 = aanmeldingen (bestuur/communicatie)
+  int _agendaMode = 0;
+  bool _loadingAgendaRsvps = false;
+  String? _agendaRsvpsError;
+  Map<int, List<_AgendaSignup>> _rsvpsByAgendaId = const {};
 
   bool _loadingNews = true;
   String? _newsError;
@@ -236,6 +244,17 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         _myRsvpAgendaIds = myRsvps;
         _loadingAgenda = false;
       });
+
+      // Best-effort: if the user is allowed to view RSVPs and has selected the RSVPs tab,
+      // load RSVPs after agenda is available.
+      try {
+        final ctx = AppUserContext.of(context);
+        if (ctx.canViewAgendaRsvps && _agendaMode == 1) {
+          // Don't await; keep agenda UI responsive.
+          // ignore: unawaited_futures
+          _loadAgendaRsvps();
+        }
+      } catch (_) {}
     } catch (e) {
       setState(() {
         _agendaItems = _mockAgenda();
@@ -244,6 +263,419 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         _loadingAgenda = false;
       });
     }
+  }
+
+  String _shortId(String value) {
+    if (value.length <= 8) return value;
+    return '${value.substring(0, 4)}…${value.substring(value.length - 4)}';
+  }
+
+  Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
+    if (profileIds.isEmpty) return {};
+    final ids = profileIds.toList();
+
+    // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
+    try {
+      final res =
+          await _client.rpc('get_profile_display_names', params: {'profile_ids': ids});
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final map = <String, String>{};
+      for (final r in rows) {
+        final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final raw = (r['display_name'] ?? '').toString().trim();
+        final name = applyDisplayNameOverrides(raw);
+        map[id] = name.isNotEmpty ? name : _shortId(id);
+      }
+      if (map.isNotEmpty) return map;
+    } catch (_) {
+      // fall back to direct profiles select below
+    }
+
+    List<Map<String, dynamic>> rows = const [];
+    for (final select in const [
+      'id, display_name, full_name, email',
+      'id, display_name, email',
+      'id, full_name, email',
+      'id, name, email',
+      'id, email',
+    ]) {
+      try {
+        final res = await _client.from('profiles').select(select).inFilter('id', ids);
+        rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        break;
+      } catch (_) {}
+    }
+
+    final map = <String, String>{};
+    for (final r in rows) {
+      final id = r['id']?.toString() ?? '';
+      if (id.isEmpty) continue;
+      final n = (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
+          .toString()
+          .trim();
+      final name = applyDisplayNameOverrides(n);
+      map[id] = name.isNotEmpty ? name : _shortId(id);
+    }
+    return map;
+  }
+
+  Future<Map<int, String>> _loadTeamNames({required List<int> teamIds}) async {
+    if (teamIds.isEmpty) return {};
+
+    final candidates = <String>[
+      'team_name',
+      'name',
+      'short_name',
+      'code',
+      'team_code',
+      'abbreviation',
+    ];
+    final idFields = <String>['team_id', 'id'];
+
+    for (final idField in idFields) {
+      for (final nameField in candidates) {
+        try {
+          final List<dynamic> tRows = await _client
+              .from('teams')
+              .select('$idField, $nameField')
+              .inFilter(idField, teamIds);
+
+          final map = <int, String>{};
+          for (final row in tRows) {
+            final t = row as Map<String, dynamic>;
+            final tid = (t[idField] as num?)?.toInt();
+            if (tid == null) continue;
+            final name = (t[nameField] as String?) ?? '';
+            map[tid] = name;
+          }
+
+          final hasAny = map.values.any((v) => v.trim().isNotEmpty);
+          if (hasAny) return map;
+        } catch (_) {
+          // try next
+        }
+      }
+    }
+
+    return {};
+  }
+
+  Future<void> _loadAgendaRsvps() async {
+    final ctx = AppUserContext.of(context);
+    if (!ctx.canViewAgendaRsvps) return;
+
+    final agendaIds = _agendaItems.where((a) => a.canRsvp).map((a) => a.id).whereType<int>().toList();
+    if (agendaIds.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _rsvpsByAgendaId = const {};
+          _agendaRsvpsError = null;
+          _loadingAgendaRsvps = false;
+        });
+      }
+      return;
+    }
+
+    setState(() {
+      _loadingAgendaRsvps = true;
+      _agendaRsvpsError = null;
+    });
+
+    try {
+      // Fetch RSVPs (best-effort column variants)
+      List<Map<String, dynamic>> rows = const [];
+      for (final select in const [
+        'agenda_id, profile_id, created_at',
+        'agenda_id, profile_id',
+      ]) {
+        try {
+          final res = await _client
+              .from('home_agenda_rsvps')
+              .select(select)
+              .inFilter('agenda_id', agendaIds);
+          rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+          break;
+        } catch (_) {}
+      }
+
+      final profileIds = <String>{};
+      for (final r in rows) {
+        final pid = r['profile_id']?.toString() ?? '';
+        if (pid.isNotEmpty) profileIds.add(pid);
+      }
+
+      final nameById = await _loadProfileDisplayNames(profileIds);
+
+      // Load team memberships for these profiles to show the linked team(s).
+      final teamIds = <int>{};
+      final teamIdsByProfile = <String, Set<int>>{};
+      if (profileIds.isNotEmpty) {
+        try {
+          // Only show teams where the member is linked as a player.
+          // (So trainer/coach/guardian entries are ignored here.)
+          List<dynamic> res;
+          try {
+            res = await _client
+                .from('team_members')
+                .select('profile_id, team_id, role')
+                .inFilter('profile_id', profileIds.toList());
+          } catch (_) {
+            // If schema/RLS prevents selecting role, we can't reliably filter → show no teams.
+            res = const [];
+          }
+          final tmRows = res.cast<Map<String, dynamic>>();
+          for (final r in tmRows) {
+            final pid = r['profile_id']?.toString() ?? '';
+            final tid = (r['team_id'] as num?)?.toInt();
+            final role = (r['role'] ?? '').toString().trim().toLowerCase();
+            if (pid.isEmpty || tid == null) continue;
+            final isPlayer = role == 'player' || role == 'speler';
+            if (!isPlayer) continue;
+            teamIds.add(tid);
+            teamIdsByProfile.putIfAbsent(pid, () => <int>{}).add(tid);
+          }
+        } catch (_) {
+          // ignore (schema/RLS)
+        }
+      }
+
+      final teamNamesById = await _loadTeamNames(teamIds: teamIds.toList()..sort());
+
+      List<String> teamLabelsFor(String profileId) {
+        final ids = teamIdsByProfile[profileId]?.toList() ?? const [];
+        final out = <String>[];
+        for (final tid in ids) {
+          final raw = (teamNamesById[tid] ?? '').trim();
+          final code = raw.isNotEmpty ? (NevoboApi.extractCodeFromTeamName(raw) ?? raw) : '';
+          out.add(code.isNotEmpty ? code : 'Team $tid');
+        }
+        out.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+        return out;
+      }
+
+      final byAgenda = <int, List<_AgendaSignup>>{};
+      for (final r in rows) {
+        final aid = (r['agenda_id'] as num?)?.toInt();
+        final pid = r['profile_id']?.toString() ?? '';
+        if (aid == null || pid.isEmpty) continue;
+        final rawName = (nameById[pid] ?? '').trim();
+        final name = rawName.isNotEmpty ? rawName : _shortId(pid);
+        final createdAtValue = r['created_at'];
+        final createdAt = createdAtValue is DateTime
+            ? createdAtValue
+            : (createdAtValue != null ? DateTime.tryParse(createdAtValue.toString()) : null);
+        byAgenda.putIfAbsent(aid, () => []).add(
+              _AgendaSignup(
+                agendaId: aid,
+                profileId: pid,
+                name: name,
+                teamLabels: teamLabelsFor(pid),
+                createdAt: createdAt,
+              ),
+            );
+      }
+      for (final e in byAgenda.entries) {
+        e.value.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _rsvpsByAgendaId = byAgenda;
+        _loadingAgendaRsvps = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _agendaRsvpsError = e.toString();
+        _loadingAgendaRsvps = false;
+      });
+    }
+  }
+
+  Widget _buildAgendaListView({required bool canManageAgenda}) {
+    return RefreshIndicator(
+      color: AppColors.primary,
+      onRefresh: _refreshHome,
+      child: ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: EdgeInsets.fromLTRB(
+          16,
+          0,
+          16,
+          24 + MediaQuery.paddingOf(context).bottom,
+        ),
+        itemCount: 1 + (_agendaItems.isEmpty ? 1 : _agendaItems.length),
+        separatorBuilder: (_, _) => const SizedBox(height: 12),
+        itemBuilder: (context, i) {
+          if (i == 0) {
+            return _HomeTabHeader(
+              title: 'Agenda',
+              trailing: canManageAgenda
+                  ? IconButton(
+                      tooltip: 'Activiteit toevoegen',
+                      icon: const Icon(Icons.add_circle_outline),
+                      color: AppColors.primary,
+                      onPressed: () => _openAddAgendaDialog(),
+                    )
+                  : (_loadingAgenda
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.primary,
+                          ),
+                        )
+                      : null),
+            );
+          }
+
+          if (_agendaItems.isEmpty) {
+            if (_agendaError != null && canManageAgenda) {
+              return Text(
+                'Let op: agenda tabel/RSVP niet beschikbaar.\n'
+                'Voeg Supabase tabellen `home_agenda` + `home_agenda_rsvps` toe.\n'
+                'Details: $_agendaError',
+                style: const TextStyle(color: AppColors.textSecondary),
+              );
+            }
+            return const Text(
+              'Geen items in de agenda.',
+              style: TextStyle(color: AppColors.textSecondary),
+            );
+          }
+
+          final item = _agendaItems[i - 1];
+          final signedUp = item.id != null && _myRsvpAgendaIds.contains(item.id);
+          final enabled = item.canRsvp && item.id != null;
+          return _AgendaCard(
+            item: item,
+            signedUp: signedUp,
+            enabled: enabled,
+            canManage: canManageAgenda,
+            onToggleRsvp: () => _toggleAgendaRsvp(item),
+            onReadMore: () => _showAgendaDetail(item),
+            onEdit: item.id != null ? () => _openEditAgendaDialog(item) : null,
+            onDelete: item.id != null ? () => _deleteAgendaItem(item) : null,
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildAgendaRsvpsView() {
+    return RefreshIndicator(
+      color: AppColors.primary,
+      onRefresh: _loadAgendaRsvps,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: EdgeInsets.fromLTRB(
+          16,
+          0,
+          16,
+          24 + MediaQuery.paddingOf(context).bottom,
+        ),
+        children: [
+          _HomeTabHeader(
+            title: 'Aanmeldingen',
+            trailing: _loadingAgendaRsvps
+                ? const SizedBox(
+                    height: 18,
+                    width: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.primary,
+                    ),
+                  )
+                : null,
+          ),
+          const SizedBox(height: 12),
+          if (_agendaRsvpsError != null)
+            Text(
+              _agendaRsvpsError!,
+              style: const TextStyle(color: AppColors.error),
+            )
+          else ...[
+            if (_agendaItems.where((a) => a.canRsvp).isEmpty)
+              const Text(
+                'Geen agenda-items met aanmeldingen.',
+                style: TextStyle(color: AppColors.textSecondary),
+              )
+            else
+              ..._agendaItems.where((a) => a.canRsvp).map((a) {
+                final id = a.id ?? -1;
+                final signups = _rsvpsByAgendaId[id] ?? const [];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: GlassCard(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          a.title,
+                          style: const TextStyle(
+                            color: AppColors.onBackground,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          [a.when, a.where].where((s) => s.trim().isNotEmpty).join(' • '),
+                          style: const TextStyle(color: AppColors.textSecondary),
+                        ),
+                        const SizedBox(height: 10),
+                        if (signups.isEmpty)
+                          const Text(
+                            'Nog geen aanmeldingen.',
+                            style: TextStyle(color: AppColors.textSecondary),
+                          )
+                        else
+                          ...signups.map((s) {
+                            final teams = s.teamLabels.isEmpty ? '—' : s.teamLabels.join(', ');
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Icon(Icons.person_outline, size: 18, color: AppColors.iconMuted),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          s.name,
+                                          style: const TextStyle(
+                                            color: AppColors.onBackground,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'Team: $teams',
+                                          style: const TextStyle(
+                                            color: AppColors.textSecondary,
+                                            fontSize: 12.5,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }),
+                      ],
+                    ),
+                  ),
+                );
+              }),
+          ],
+        ],
+      ),
+    );
   }
 
   Future<void> _loadNews() async {
@@ -1351,33 +1783,39 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final titleController = TextEditingController(text: existing?.title ?? '');
     final subtitleController =
         TextEditingController(text: existing?.subtitle ?? '');
-    final iconController =
-        TextEditingController(text: existing?.iconText ?? '🏐');
 
     final result = await showDialog<_HighlightEditResult>(
       context: context,
       builder: (context) => AlertDialog(
         scrollable: true,
         title: Text(existing == null ? 'Punt toevoegen' : 'Punt aanpassen'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: titleController,
-              decoration: const InputDecoration(labelText: 'Titel'),
-            ),
-            TextField(
-              controller: subtitleController,
-              decoration: const InputDecoration(labelText: 'Tekst'),
-            ),
-            TextField(
-              controller: iconController,
-              decoration: const InputDecoration(
-                labelText: 'Icoon (emoji/tekst)',
-                hintText: '🏐',
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: titleController,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: 'Titel',
+                  hintText: 'Bijv. De Minerva app',
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              TextField(
+                controller: subtitleController,
+                minLines: 2,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: 'Tekst',
+                  hintText: 'Korte omschrijving',
+                  alignLabelWithHint: true,
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -1389,7 +1827,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               _HighlightEditResult.save(
                 titleController.text.trim(),
                 subtitleController.text.trim(),
-                iconController.text.trim(),
+                // Icon/emoji field removed; keep existing icon or use default.
+                existing?.iconText ?? '🏐',
               ),
             ),
             child: const Text('Opslaan'),
@@ -1402,7 +1841,6 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       titleController.dispose();
       subtitleController.dispose();
-      iconController.dispose();
     });
 
     if (result == null) return;
@@ -1432,6 +1870,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final canManageHighlights = userContext.canManageHighlights;
     final canManageAgenda = userContext.canManageAgenda;
     final canManageNews = userContext.canManageNews;
+    final canViewAgendaRsvps = userContext.canViewAgendaRsvps;
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -1473,8 +1912,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
               child: GlassCard(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                showBorder: false,
+                showShadow: false,
                 child: TabBar(
                   controller: _tabController,
+                  dividerColor: Colors.transparent,
                   indicator: BoxDecoration(
                     color: AppColors.darkBlue,
                     borderRadius: BorderRadius.circular(AppColors.cardRadius),
@@ -1566,73 +2008,36 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   ),
 
                   // Agenda
-                  RefreshIndicator(
-                    color: AppColors.primary,
-                    onRefresh: _refreshHome,
-                    child: ListView.separated(
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      padding: EdgeInsets.fromLTRB(
-                        16,
-                        0,
-                        16,
-                        24 + MediaQuery.paddingOf(context).bottom,
+                  Column(
+                    children: [
+                      if (canViewAgendaRsvps)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                          child: GlassCard(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            child: SegmentedButton<int>(
+                              segments: const [
+                                ButtonSegment(value: 0, label: Text('Agenda')),
+                                ButtonSegment(value: 1, label: Text('Aanmeldingen')),
+                              ],
+                              selected: {_agendaMode},
+                              onSelectionChanged: (set) {
+                                final next = set.first;
+                                setState(() => _agendaMode = next);
+                                if (next == 1) {
+                                  // ignore: unawaited_futures
+                                  _loadAgendaRsvps();
+                                }
+                              },
+                            ),
+                          ),
+                        ),
+                      Expanded(
+                        child: _agendaMode == 1 && canViewAgendaRsvps
+                            ? _buildAgendaRsvpsView()
+                            : _buildAgendaListView(canManageAgenda: canManageAgenda),
                       ),
-                      itemCount: 1 + (_agendaItems.isEmpty ? 1 : _agendaItems.length),
-                      separatorBuilder: (_, _) => const SizedBox(height: 12),
-                      itemBuilder: (context, i) {
-                        if (i == 0) {
-                          return _HomeTabHeader(
-                            title: 'Agenda',
-                            trailing: canManageAgenda
-                                ? IconButton(
-                                    tooltip: 'Activiteit toevoegen',
-                                    icon: const Icon(Icons.add_circle_outline),
-                                    color: AppColors.primary,
-                                    onPressed: () => _openAddAgendaDialog(),
-                                  )
-                                : (_loadingAgenda
-                                    ? const SizedBox(
-                                        height: 18,
-                                        width: 18,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          color: AppColors.primary,
-                                        ),
-                                      )
-                                    : null),
-                          );
-                        }
-
-                        if (_agendaItems.isEmpty) {
-                          if (_agendaError != null && canManageAgenda) {
-                            return Text(
-                              'Let op: agenda tabel/RSVP niet beschikbaar.\n'
-                              'Voeg Supabase tabellen `home_agenda` + `home_agenda_rsvps` toe.\n'
-                              'Details: $_agendaError',
-                              style: const TextStyle(color: AppColors.textSecondary),
-                            );
-                          }
-                          return const Text(
-                            'Geen items in de agenda.',
-                            style: TextStyle(color: AppColors.textSecondary),
-                          );
-                        }
-
-                        final item = _agendaItems[i - 1];
-                        final signedUp = item.id != null && _myRsvpAgendaIds.contains(item.id);
-                        final enabled = item.canRsvp && item.id != null;
-                        return _AgendaCard(
-                          item: item,
-                          signedUp: signedUp,
-                          enabled: enabled,
-                          canManage: canManageAgenda,
-                          onToggleRsvp: () => _toggleAgendaRsvp(item),
-                          onReadMore: () => _showAgendaDetail(item),
-                          onEdit: item.id != null ? () => _openEditAgendaDialog(item) : null,
-                          onDelete: item.id != null ? () => _deleteAgendaItem(item) : null,
-                        );
-                      },
-                    ),
+                    ],
                   ),
 
                   // Nieuws
@@ -1939,6 +2344,22 @@ class _AgendaItem {
     this.timeLabel,
     this.endDateLabel,
     this.endTimeLabel,
+  });
+}
+
+class _AgendaSignup {
+  final int agendaId;
+  final String profileId;
+  final String name;
+  final List<String> teamLabels;
+  final DateTime? createdAt;
+
+  const _AgendaSignup({
+    required this.agendaId,
+    required this.profileId,
+    required this.name,
+    required this.teamLabels,
+    required this.createdAt,
   });
 }
 

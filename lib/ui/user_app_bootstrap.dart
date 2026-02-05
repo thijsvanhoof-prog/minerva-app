@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart';
 import 'package:minerva_app/ui/notifications/notification_service.dart';
 
 /// Wrapt jouw app met AppUserContext.
@@ -95,6 +96,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     final prevLoggedIn = _loggedInProfileId;
     _loggedInProfileId = user.id;
     _email = user.email ?? '';
+    // Keep metadata as a fallback, but prefer `profiles.display_name` where available.
     _displayName = (user.userMetadata?['display_name']?.toString() ?? '').trim();
     if (prevLoggedIn.isNotEmpty && prevLoggedIn != user.id) {
       _suppressOuderKindReload = true;
@@ -218,25 +220,30 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
 
     // 6) Display name (gebruikersnaam) voor "ingelogd als" etc. – prefer profiles/metadata.
     // Best-effort: use SECURITY DEFINER RPC if available to avoid RLS problems.
-    String displayName = _displayName;
-    if (displayName.trim().isEmpty) {
-      try {
-        final res = await _client.rpc(
-          'get_profile_display_names',
-          params: {'profile_ids': [user.id]},
-        );
-        final rows = (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? const [];
-        if (rows.isNotEmpty) {
-          final name = (rows.first['display_name'] ?? '').toString().trim();
-          if (name.isNotEmpty) displayName = name;
-        }
-      } catch (_) {}
-    }
+    final metaName = (_displayName).trim();
+    String profileName = '';
+    try {
+      final res = await _client.rpc(
+        'get_profile_display_names',
+        params: {'profile_ids': [user.id]},
+      );
+      final rows = (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? const [];
+      if (rows.isNotEmpty) {
+        final name = (rows.first['display_name'] ?? '').toString().trim();
+        if (name.isNotEmpty) profileName = name;
+      }
+    } catch (_) {}
+
+    // Prefer auth user metadata (updated immediately from the app),
+    // then fall back to profiles (RPC), then email.
+    String displayName = metaName.isNotEmpty ? metaName : profileName;
     if (displayName.trim().isEmpty) {
       // last resort: email local-part
       final e = _email;
       displayName = e.contains('@') ? e.split('@').first : e;
     }
+
+    displayName = applyDisplayNameOverrides(displayName);
 
     // If this user only has the ouder/verzorger role (no own team memberships),
     // show a clearer label: "Naam (ouder/verzorger 'Gekoppeld account')".

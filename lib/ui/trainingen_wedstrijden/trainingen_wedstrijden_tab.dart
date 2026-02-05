@@ -65,8 +65,11 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
               child: GlassCard(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                showBorder: false,
+                showShadow: false,
                 child: TabBar(
                   controller: _tabController,
+                  dividerColor: Colors.transparent,
                   indicator: BoxDecoration(
                     color: AppColors.darkBlue,
                     borderRadius: BorderRadius.circular(AppColors.cardRadius),

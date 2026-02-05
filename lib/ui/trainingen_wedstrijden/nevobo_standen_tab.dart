@@ -38,6 +38,103 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     return s.contains('minerva');
   }
 
+  // Parse "Team A - Team B" and determine whether Minerva is home (left side).
+  bool _isMinervaHomeInSummary(String summary) {
+    final s = summary.trim();
+    final parts = s.split(' - ');
+    if (parts.length == 2) {
+      final home = parts[0].toLowerCase();
+      final away = parts[1].toLowerCase();
+      if (home.contains('minerva')) return true;
+      if (away.contains('minerva')) return false;
+    }
+    // Fallback: if format is unexpected, assume Minerva is "home" for highlighting.
+    return true;
+  }
+
+  // Highlight the Minerva team name in orange, keep the rest default.
+  Widget _buildMatchSummaryText(String summary, {TextStyle? style}) {
+    final base = style ??
+        const TextStyle(
+          color: AppColors.onBackground,
+          fontWeight: FontWeight.w800,
+        );
+    final lower = summary.toLowerCase();
+    final idx = lower.indexOf('minerva');
+    if (idx < 0) return Text(summary, style: base);
+
+    // Highlight from the first "minerva" occurrence until the next separator or end.
+    final endIdx = (() {
+      final nextSep = summary.indexOf(' - ', idx);
+      if (nextSep >= 0) return nextSep;
+      return summary.length;
+    })();
+
+    final before = summary.substring(0, idx);
+    final mid = summary.substring(idx, endIdx);
+    final after = summary.substring(endIdx);
+
+    return RichText(
+      text: TextSpan(
+        style: base,
+        children: [
+          if (before.isNotEmpty) TextSpan(text: before),
+          TextSpan(
+            text: mid,
+            style: base.copyWith(
+              color: AppColors.primary,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          if (after.isNotEmpty) TextSpan(text: after),
+        ],
+      ),
+      overflow: TextOverflow.ellipsis,
+      maxLines: 2,
+    );
+  }
+
+  // Render a set score like "25-20" with Minerva's points in orange.
+  Widget _buildSetScoreText(String raw, {required bool isMinervaHome}) {
+    final m = RegExp(r'^\s*(\d{1,2})\s*-\s*(\d{1,2})\s*$').firstMatch(raw);
+    if (m == null) {
+      return Text(
+        raw,
+        style: const TextStyle(
+          color: AppColors.textSecondary,
+          fontSize: 12.5,
+          fontWeight: FontWeight.w700,
+        ),
+      );
+    }
+    final a = m.group(1)!;
+    final b = m.group(2)!;
+    final leftStyle = TextStyle(
+      color: isMinervaHome ? AppColors.primary : AppColors.textSecondary,
+      fontSize: 12.5,
+      fontWeight: FontWeight.w900,
+    );
+    final rightStyle = TextStyle(
+      color: isMinervaHome ? AppColors.textSecondary : AppColors.primary,
+      fontSize: 12.5,
+      fontWeight: FontWeight.w900,
+    );
+    final dashStyle = const TextStyle(
+      color: AppColors.textSecondary,
+      fontSize: 12.5,
+      fontWeight: FontWeight.w700,
+    );
+    return RichText(
+      text: TextSpan(
+        children: [
+          TextSpan(text: a, style: leftStyle),
+          TextSpan(text: '-', style: dashStyle),
+          TextSpan(text: b, style: rightStyle),
+        ],
+      ),
+    );
+  }
+
   String _formatDateTime(DateTime dt) {
     final d = dt.toLocal();
     String two(int v) => v.toString().padLeft(2, '0');
@@ -160,7 +257,7 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              _buildMatchSummaryText(
                 m.summary,
                 style: const TextStyle(
                   color: AppColors.onBackground,
@@ -224,6 +321,14 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
         final when = m.start == null ? 'Onbekende datum' : _formatDateTime(m.start!);
         final where = (m.location ?? '').trim();
         final uitslag = _parseUitslagDisplay(m);
+        final minervaHome = _isMinervaHomeInSummary(m.summary);
+        final scoreMatch =
+            RegExp(r'^\s*([0-5])\s*-\s*([0-5])\s*$').firstMatch(uitslag.matchScore ?? '');
+        final homeSets = scoreMatch == null ? null : int.tryParse(scoreMatch.group(1)!);
+        final awaySets = scoreMatch == null ? null : int.tryParse(scoreMatch.group(2)!);
+        final minervaWon = (homeSets != null && awaySets != null)
+            ? (minervaHome ? (homeSets > awaySets) : (awaySets > homeSets))
+            : null;
 
         return GlassCard(
           margin: const EdgeInsets.only(top: 10),
@@ -234,7 +339,7 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
               Row(
                 children: [
                   Expanded(
-                    child: Text(
+                    child: _buildMatchSummaryText(
                       m.summary,
                       style: const TextStyle(
                         color: AppColors.onBackground,
@@ -246,13 +351,15 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
-                        color: AppColors.darkBlue,
+                        color: minervaWon == null
+                            ? AppColors.darkBlue
+                            : (minervaWon ? AppColors.success : AppColors.error),
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: Text(
                         uitslag.matchScore!,
                         style: const TextStyle(
-                          color: AppColors.primary,
+                          color: Colors.white,
                           fontWeight: FontWeight.w900,
                         ),
                       ),
@@ -262,14 +369,7 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
               if (uitslag.setScores.isNotEmpty) ...[
                 const SizedBox(height: 6),
                 ...uitslag.setScores.take(5).map(
-                      (s) => Text(
-                        s,
-                        style: const TextStyle(
-                          color: AppColors.textSecondary,
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
+                      (s) => _buildSetScoreText(s, isMinervaHome: minervaHome),
                     ),
               ],
               const SizedBox(height: 4),

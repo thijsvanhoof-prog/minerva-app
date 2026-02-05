@@ -84,21 +84,25 @@ class AppUI {
       ),
 
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: Colors.transparent,
+        // Give the nav bar an opaque background so the dark part of the
+        // branded background image can't show through as a "blue stripe".
+        backgroundColor: Colors.white,
         elevation: 0,
+        shadowColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,
-        indicatorColor: AppColors.darkBlue,
+        // No selection "pill/stripe" behind the active destination.
+        indicatorColor: Colors.transparent,
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
           return TextStyle(
             fontWeight: FontWeight.w700,
-            color: selected ? AppColors.primary : Colors.white,
+            color: selected ? AppColors.primary : AppColors.textSecondary,
           );
         }),
         iconTheme: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
           return IconThemeData(
-            color: selected ? AppColors.primary : Colors.white,
+            color: selected ? AppColors.primary : AppColors.textSecondary,
           );
         }),
       ),
@@ -158,6 +162,7 @@ class AppUI {
         labelColor: AppColors.primary,
         unselectedLabelColor: AppColors.textSecondary,
         labelStyle: TextStyle(fontWeight: FontWeight.w800),
+        dividerColor: Colors.transparent,
       ),
 
       segmentedButtonTheme: SegmentedButtonThemeData(

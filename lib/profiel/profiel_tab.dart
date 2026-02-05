@@ -125,6 +125,85 @@ class _ProfielTabState extends State<ProfielTab> {
     await _client.auth.signOut();
   }
 
+  String _editableDisplayName(String displayName) {
+    // Strip the optional suffix added in UserAppBootstrap:
+    // "Naam (ouder/verzorger 'X')"
+    final s = displayName.trim();
+    final i = s.indexOf(" (ouder/verzorger '");
+    if (i > 0) return s.substring(0, i).trim();
+    return s;
+  }
+
+  Future<void> _changeMyDisplayNameFlow() async {
+    final user = _client.auth.currentUser;
+    if (user == null) return;
+
+    final ctx = AppUserContext.of(context);
+    final current = _editableDisplayName(ctx.displayName);
+
+    final controller = TextEditingController(text: current);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Gebruikersnaam wijzigen'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(
+            labelText: 'Nieuwe gebruikersnaam',
+            hintText: 'Naam zoals anderen jou zien',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(null),
+            child: const Text('Annuleren'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('Opslaan'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+
+    if (newName == null) return;
+    if (newName.trim().isEmpty) {
+      showTopMessage(context, 'Vul een gebruikersnaam in.', isError: true);
+      return;
+    }
+
+    try {
+      // 1) Update auth metadata (immediate + works even if profiles RLS is strict).
+      await _client.auth.updateUser(
+        UserAttributes(data: {'display_name': newName}),
+      );
+
+      // 2) Best-effort: also persist in profiles for consistency.
+      try {
+        await _client.from('profiles').upsert({
+          'id': user.id,
+          'display_name': newName,
+          'email': user.email ?? '',
+        });
+      } catch (_) {
+        // ignore (RLS or schema differences)
+      }
+
+      if (!mounted) return;
+      showTopMessage(context, 'Gebruikersnaam is bijgewerkt.');
+      await _reload();
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, e.message, isError: true);
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Kon gebruikersnaam niet wijzigen: $e', isError: true);
+    }
+  }
+
   String _normalizeRole(String value) {
     final r = value.trim().toLowerCase();
     switch (r) {
@@ -143,6 +222,31 @@ class _ProfielTabState extends State<ProfielTab> {
       final r = (row['role']?.toString() ?? '').toLowerCase();
       return r == 'trainer' || r == 'coach';
     });
+  }
+
+  List<String> _buildRoleLabels(AppUserContext ctx) {
+    final roles = <String>[];
+
+    final isPlayer = _teamRoles.any((row) {
+      final r = (row['role']?.toString() ?? '').toLowerCase();
+      return r == 'player' || r == 'speler';
+    });
+    final isOuder = ctx.isOuderVerzorger || ctx.memberships.any((m) => m.isGuardian);
+    final isTrainer = _isTrainerOrCoach || ctx.memberships.any((m) => m.canManageTeam);
+
+    // Keep order as requested by the user.
+    if (isPlayer) roles.add('Speler');
+    if (isOuder) roles.add('Ouder');
+    if (isTrainer) roles.add('Trainer/coach');
+    if (ctx.isInBestuur) roles.add('Bestuurslid');
+    if (ctx.isInTechnischeCommissie) roles.add('TC lid');
+    if (ctx.isInCommunicatie) roles.add('Communicatie lid');
+    if (ctx.isInWedstrijdzaken) roles.add('Wedstrijdzaken lid');
+    if (_isGlobalAdmin || ctx.hasFullAdminRights) roles.add('Algemeen admin');
+
+    // De-duplicate while preserving order.
+    final seen = <String>{};
+    return roles.where((r) => seen.add(r)).toList();
   }
 
   String _roleLabel(String role) {
@@ -662,6 +766,7 @@ class _ProfielTabState extends State<ProfielTab> {
     final email = user?.email ?? 'Onbekend';
     final ctx = AppUserContext.of(context);
     final displayName = ctx.displayName.trim().isNotEmpty ? ctx.displayName.trim() : (user?.email ?? 'Onbekend');
+    final roleLabels = _buildRoleLabels(ctx);
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -718,38 +823,44 @@ class _ProfielTabState extends State<ProfielTab> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Global admin status
                     GlassCard(
                       child: ListTile(
-                        leading: Icon(
-                          _isGlobalAdmin ? Icons.verified : Icons.person_outline,
-                          color:
-                              _isGlobalAdmin ? AppColors.primary : AppColors.iconMuted,
-                        ),
+                        leading: const Icon(Icons.edit_outlined, color: AppColors.iconMuted),
                         title: const Text(
-                          'Rol',
+                          'Gebruikersnaam wijzigen',
+                          style: TextStyle(color: AppColors.onBackground),
+                        ),
+                        subtitle: const Text(
+                          'Pas aan hoe anderen jou zien in de app.',
                           style: TextStyle(color: AppColors.textSecondary),
                         ),
-                        subtitle: Text(
-                          _isGlobalAdmin
-                              ? 'Algemeen admin'
-                              : (() {
-                                  final ctx = AppUserContext.of(context);
-                                  final roles = <String>[];
-                                  final isPlayer = _teamRoles.any((row) {
-                                    final r = (row['role']?.toString() ?? '').toLowerCase();
-                                    return r == 'player' || r == 'speler';
-                                  });
-                                  if (isPlayer) roles.add('Speler');
-                                  if (_isTrainerOrCoach) roles.add('Trainer/coach');
-                                  if (ctx.isOuderVerzorger) roles.add('Ouder/verzorger');
-                                  if (roles.isEmpty) roles.add('Speler');
-                                  return roles.join(' • ');
-                                })(),
-                          style: const TextStyle(color: AppColors.onBackground),
-                        ),
+                        onTap: _changeMyDisplayNameFlow,
                       ),
                     ),
+                    const SizedBox(height: 12),
+
+                    // Rollen: toon alleen als de gebruiker minstens één rol heeft.
+                    if (roleLabels.isNotEmpty)
+                      GlassCard(
+                        child: ListTile(
+                          leading: Icon(
+                            roleLabels.contains('Algemeen admin')
+                                ? Icons.verified
+                                : Icons.person_outline,
+                            color: roleLabels.contains('Algemeen admin')
+                                ? AppColors.primary
+                                : AppColors.iconMuted,
+                          ),
+                          title: const Text(
+                            'Rollen',
+                            style: TextStyle(color: AppColors.textSecondary),
+                          ),
+                          subtitle: Text(
+                            roleLabels.join(' • '),
+                            style: const TextStyle(color: AppColors.onBackground),
+                          ),
+                        ),
+                      ),
 
                     const SizedBox(height: 12),
 

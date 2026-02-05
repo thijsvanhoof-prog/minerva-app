@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
@@ -64,7 +65,9 @@ class _InfoTabState extends State<InfoTab> {
     for (final p in raw) {
       final id = p['id']?.toString() ?? '';
       if (id.isEmpty) continue;
-      final name = (p['display_name'] ?? p['full_name'] ?? p['name'] ?? '').toString().trim();
+      final name = applyDisplayNameOverrides(
+        (p['display_name'] ?? p['full_name'] ?? p['name'] ?? '').toString().trim(),
+      );
       final email = (p['email'] ?? '').toString().trim();
       list.add(_ProfileOption(
         profileId: id,
@@ -143,8 +146,8 @@ class _InfoTabState extends State<InfoTab> {
         final displayNameFromRow =
             (row['display_name'] ?? row['name'])?.toString().trim();
         final memberName = (displayNameFromRow?.isNotEmpty == true)
-            ? displayNameFromRow!
-            : (nameByProfileId[pid] ?? '').trim();
+            ? applyDisplayNameOverrides(displayNameFromRow!)
+            : applyDisplayNameOverrides((nameByProfileId[pid] ?? '').trim());
         final displayName = memberName.isNotEmpty ? memberName : _shortId(pid);
 
         final function = (row['function'] ?? row['role'] ?? row['title'])?.toString();
@@ -249,7 +252,7 @@ class _InfoTabState extends State<InfoTab> {
                 row['email'] ??
                 '')
             .toString();
-        if (id.isNotEmpty) map[id] = name;
+        if (id.isNotEmpty) map[id] = applyDisplayNameOverrides(name);
       }
       return map;
     } catch (_) {

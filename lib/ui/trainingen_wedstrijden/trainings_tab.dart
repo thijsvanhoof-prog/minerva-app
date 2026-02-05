@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart'; // TeamMembership
+import 'package:minerva_app/ui/display_name_overrides.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/add_training_page.dart';
 
 /// playing = speler, coach = trainer/coach. Aanwezig = één van beide; Afwezig = delete.
@@ -202,6 +203,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> ids) async {
     if (ids.isEmpty) return {};
     final list = ids.toList();
+    final me = _client.auth.currentUser;
+    final myId = me?.id ?? '';
+    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '').trim();
 
     // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
     try {
@@ -211,8 +215,12 @@ class _TrainingsTabState extends State<TrainingsTab> {
       for (final r in rows) {
         final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
         if (id.isEmpty) continue;
-        final name = (r['display_name'] ?? '').toString().trim();
+        final raw = (r['display_name'] ?? '').toString().trim();
+        final name = applyDisplayNameOverrides(raw);
         map[id] = name.isNotEmpty ? name : _shortId(id);
+      }
+      if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
+        map[myId] = applyDisplayNameOverrides(myMetaName);
       }
       if (map.isNotEmpty) return map;
     } catch (_) {
@@ -240,7 +248,11 @@ class _TrainingsTabState extends State<TrainingsTab> {
       final n = (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
           .toString()
           .trim();
-      map[id] = n.isNotEmpty ? n : _shortId(id);
+      final name = applyDisplayNameOverrides(n);
+      map[id] = name.isNotEmpty ? name : _shortId(id);
+    }
+    if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
+      map[myId] = applyDisplayNameOverrides(myMetaName);
     }
     return map;
   }

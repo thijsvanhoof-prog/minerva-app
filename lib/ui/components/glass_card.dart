@@ -10,6 +10,8 @@ class GlassCard extends StatelessWidget {
   final EdgeInsetsGeometry padding;
   final EdgeInsetsGeometry? margin;
   final double borderRadius;
+  final bool showBorder;
+  final bool showShadow;
 
   const GlassCard({
     super.key,
@@ -17,6 +19,8 @@ class GlassCard extends StatelessWidget {
     this.padding = const EdgeInsets.all(14),
     this.margin,
     this.borderRadius = AppColors.cardRadius,
+    this.showBorder = true,
+    this.showShadow = true,
   });
 
   @override
@@ -28,17 +32,21 @@ class GlassCard extends StatelessWidget {
       decoration: BoxDecoration(
         borderRadius: r,
         color: AppColors.card,
-        border: Border.all(
-          color: const Color(0xFF1A2B4A).withValues(alpha: 0.15),
-          width: AppColors.cardBorderWidth,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF1A2B4A).withValues(alpha: 0.12),
-            blurRadius: 16,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        border: showBorder
+            ? Border.all(
+                color: const Color(0xFF1A2B4A).withValues(alpha: 0.15),
+                width: AppColors.cardBorderWidth,
+              )
+            : null,
+        boxShadow: showShadow
+            ? [
+                BoxShadow(
+                  color: const Color(0xFF1A2B4A).withValues(alpha: 0.12),
+                  blurRadius: 16,
+                  offset: const Offset(0, 4),
+                ),
+              ]
+            : const [],
       ),
       child: ClipRRect(
         borderRadius: r,

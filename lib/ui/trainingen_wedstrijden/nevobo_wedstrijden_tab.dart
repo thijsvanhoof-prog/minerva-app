@@ -4,6 +4,7 @@ import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -53,6 +54,46 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     return s.contains('minerva');
   }
 
+  Widget _buildMatchSummaryText(String summary, {TextStyle? style}) {
+    final base = style ??
+        const TextStyle(
+          color: AppColors.onBackground,
+          fontWeight: FontWeight.w800,
+        );
+    final lower = summary.toLowerCase();
+    final idx = lower.indexOf('minerva');
+    if (idx < 0) return Text(summary, style: base);
+
+    final endIdx = (() {
+      final nextSep = summary.indexOf(' - ', idx);
+      if (nextSep >= 0) return nextSep;
+      return summary.length;
+    })();
+
+    final before = summary.substring(0, idx);
+    final mid = summary.substring(idx, endIdx);
+    final after = summary.substring(endIdx);
+
+    return RichText(
+      text: TextSpan(
+        style: base,
+        children: [
+          if (before.isNotEmpty) TextSpan(text: before),
+          TextSpan(
+            text: mid,
+            style: base.copyWith(
+              color: AppColors.primary,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          if (after.isNotEmpty) TextSpan(text: after),
+        ],
+      ),
+      overflow: TextOverflow.ellipsis,
+      maxLines: 2,
+    );
+  }
+
   String _matchKey({required String teamCode, required DateTime start}) {
     return 'nevobo_match:${teamCode.trim().toUpperCase()}:${start.toUtc().toIso8601String()}';
   }
@@ -65,6 +106,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
+    final me = _client.auth.currentUser;
+    final myId = me?.id ?? '';
+    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '').trim();
 
     // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
     try {
@@ -74,8 +118,12 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       for (final r in rows) {
         final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
         if (id.isEmpty) continue;
-        final name = (r['display_name'] ?? '').toString().trim();
+        final raw = (r['display_name'] ?? '').toString().trim();
+        final name = applyDisplayNameOverrides(raw);
         map[id] = name.isNotEmpty ? name : _shortId(id);
+      }
+      if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
+        map[myId] = applyDisplayNameOverrides(myMetaName);
       }
       if (map.isNotEmpty) return map;
     } catch (_) {
@@ -107,7 +155,11 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
               .toString()
               .trim();
-      map[id] = name.isNotEmpty ? name : _shortId(id);
+      final overridden = applyDisplayNameOverrides(name);
+      map[id] = overridden.isNotEmpty ? overridden : _shortId(id);
+    }
+    if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
+      map[myId] = applyDisplayNameOverrides(myMetaName);
     }
     return map;
   }
@@ -825,7 +877,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                             ),
                           ),
                           const SizedBox(height: 2),
-                          Text(
+                          _buildMatchSummaryText(
                             m.summary,
                             style: const TextStyle(
                               color: AppColors.onBackground,
