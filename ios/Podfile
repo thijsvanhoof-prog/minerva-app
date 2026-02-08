@@ -41,6 +41,19 @@ post_install do |installer|
     flutter_additional_ios_build_settings(target)
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+      # Onderdruk compiler-waarschuwingen in OneSignal/url_launcher (compatibiliteit SDK-versies)
+      if target.name.include?('onesignal') || target.name.include?('url_launcher')
+        config.build_settings['GCC_WARN_NULL_PASSED_TO_NON_NULL_PARAMETER'] = 'NO'
+        config.build_settings['CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER'] = 'NO'
+        config.build_settings['CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS'] = 'NO'
+        config.build_settings['GCC_TREAT_WARNINGS_AS_ERRORS'] = 'NO'
+        flags = config.build_settings['OTHER_CFLAGS'] || ['$(inherited)']
+        flags = [flags] if flags.is_a?(String)
+        %w[-Wno-nonnull -Wno-incompatible-pointer-types].each do |f|
+          flags << f unless flags.include?(f)
+        end
+        config.build_settings['OTHER_CFLAGS'] = flags
+      end
     end
   end
 end
