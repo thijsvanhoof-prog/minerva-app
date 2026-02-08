@@ -37,24 +37,40 @@ target 'Runner' do
 end
 
 post_install do |installer|
+  flutter_engine = File.join(flutter_root, 'bin', 'cache', 'artifacts', 'engine')
+  flutter_debug = File.join(flutter_engine, 'ios', 'Flutter.xcframework', 'ios-arm64')
+  flutter_release = File.join(flutter_engine, 'ios-release', 'Flutter.xcframework', 'ios-arm64')
+
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
-      # Onderdruk compiler-waarschuwingen in OneSignal (compatibiliteit SDK 5.2.2)
+      # OneSignal: Flutter.h vinden, umbrella-header, nullability, module verifier
       if target.name.downcase.include?('onesignal')
         config.build_settings['GCC_WARN_NULL_PASSED_TO_NON_NULL_PARAMETER'] = 'NO'
         config.build_settings['CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER'] = 'NO'
         config.build_settings['CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS'] = 'NO'
         config.build_settings['GCC_TREAT_WARNINGS_AS_ERRORS'] = 'NO'
+        config.build_settings['ENABLE_MODULE_VERIFIER'] = 'NO'
+        # Expliciet Flutter framework path voor Archive-builds
+        inherited = config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]'] || '$(inherited)'
+        path = config.type == :debug ? flutter_debug : flutter_release
+        config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]'] = "\"#{path}\" #{inherited}"
+        sim_inherited = config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]'] || '$(inherited)'
+        sim_dir = config.type == :debug ? File.join(flutter_engine, 'ios') : File.join(flutter_engine, 'ios-release')
+        sim_path = File.join(sim_dir, 'Flutter.xcframework', 'ios-arm64_x86_64-simulator')
+        config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]'] = "\"#{sim_path}\" #{sim_inherited}"
         extra = '-w -Wno-nonnull -Wno-incompatible-pointer-types -Wno-incomplete-implementation'
         wrap = lambda { |v| v.is_a?(Array) ? v.join(' ') : (v || '$(inherited)') }
         config.build_settings['WARNING_CFLAGS'] = "#{wrap.call(config.build_settings['WARNING_CFLAGS'])} #{extra}"
         config.build_settings['OTHER_CFLAGS'] = "#{wrap.call(config.build_settings['OTHER_CFLAGS'])} #{extra}"
       end
-      # url_launcher deprecation
+      # url_launcher Swift deprecation (keyWindow)
       if target.name.include?('url_launcher')
         config.build_settings['CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS'] = 'NO'
+        sw = config.build_settings['OTHER_SWIFT_FLAGS']
+        sw = sw.is_a?(Array) ? sw.join(' ') : (sw || '$(inherited)')
+        config.build_settings['OTHER_SWIFT_FLAGS'] = "#{sw} -suppress-warnings"
       end
     end
   end
