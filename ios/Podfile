@@ -4,7 +4,7 @@ platform :ios, '13.0'
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
-# Voorkom "specs too out-of-date" en lockfile-conflict bij OneSignal-versiewissel
+# Voorkom "specs too out-of-date". Bij OneSignal-versiewissel: scripts/ios_pod_fix.sh
 pre_install do |installer|
   system('pod repo update')
 end

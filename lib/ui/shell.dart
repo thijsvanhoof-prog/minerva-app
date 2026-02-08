@@ -122,7 +122,7 @@ class _ShellState extends State<Shell> {
       ),
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        extendBody: true,
+        extendBody: false,
         body: Stack(
           fit: StackFit.expand,
           children: [
@@ -158,7 +158,7 @@ class _ShellState extends State<Shell> {
             ),
           ),
           child: ColoredBox(
-            color: Colors.transparent,
+            color: AppColors.darkBlue.withValues(alpha: 0.92),
             child: SafeArea(
               top: false,
               child: NavigationBar(
