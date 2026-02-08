@@ -59,9 +59,8 @@ android {
                 signingConfigs.getByName("release")
             else
                 signingConfigs.getByName("debug")
-            // Minify/shrink kunnen later ingeschakeld; proguard-rules.pro ligt klaar.
-            isMinifyEnabled = false
-            isShrinkResources = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
