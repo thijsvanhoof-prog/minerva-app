@@ -44,7 +44,9 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
   @override
   Widget build(BuildContext context) {
     final userContext = AppUserContext.of(context);
+    // Trainingsleden kunnen zich niet aanmelden voor wedstrijden.
     final linkedCodes = userContext.memberships
+        .where((m) => m.role != 'trainingslid')
         .map((m) => NevoboApi.extractCodeFromTeamName(m.teamName))
         .whereType<String>()
         .toSet()

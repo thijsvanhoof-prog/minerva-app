@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -110,6 +111,17 @@ class MinervaApp extends StatelessWidget {
       title: 'VV Minerva',
       debugShowCheckedModeBanner: false,
 
+      // Force Dutch locale (calendars Monday-first, Dutch month/day names).
+      locale: const Locale('nl', 'NL'),
+      supportedLocales: const [
+        Locale('nl', 'NL'),
+      ],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+
       // 🔶 Centrale styling (cards, kleuren, iconen, tekst)
       theme: AppUI.theme(),
 
@@ -139,6 +151,15 @@ class _StartupErrorApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+      locale: const Locale('nl', 'NL'),
+      supportedLocales: const [
+        Locale('nl', 'NL'),
+      ],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       theme: AppUI.theme(),
       home: Scaffold(
         body: Center(

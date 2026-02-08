@@ -1,7 +1,7 @@
 name: minerva_app
 description: Minerva verenigingsapp
 publish_to: "none"
-version: 1.0.0+6
+version: 1.0.0+7
 
 environment:
   sdk: ">=3.10.4 <4.0.0"
@@ -10,7 +10,11 @@ dependencies:
   flutter:
     sdk: flutter
 
+  flutter_localizations:
+    sdk: flutter
+
   http: ^1.2.0
+  url_launcher: ^6.3.0
 
   supabase_flutter: ^2.9.0
   onesignal_flutter: ^5.2.2

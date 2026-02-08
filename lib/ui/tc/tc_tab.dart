@@ -49,8 +49,10 @@ class _TcTabState extends State<TcTab> {
     }
   }
 
-  bool _isAuthorized(AppUserContext ctx) =>
-      ctx.hasFullAdminRights || ctx.isInTechnischeCommissie;
+  /// Bestuur mag kijken, alleen admins en TC mogen bewerken.
+  bool _canView(AppUserContext ctx) =>
+      ctx.hasFullAdminRights || ctx.isInTechnischeCommissie || ctx.isInBestuur;
+  bool _canManage(AppUserContext ctx) => ctx.canManageTc;
 
   Future<void> _load() async {
     if (mounted) {
@@ -62,7 +64,7 @@ class _TcTabState extends State<TcTab> {
 
     try {
       final ctx = AppUserContext.of(context);
-      if (!_isAuthorized(ctx)) {
+      if (!_canView(ctx)) {
         if (mounted) {
           setState(() {
             _teams = const [];
@@ -117,7 +119,11 @@ class _TcTabState extends State<TcTab> {
             .trim();
         final email = (pro?['email'] ?? '').toString().trim();
         final role = (row['role'] ?? 'player').toString().trim().toLowerCase();
-        final normalizedRole = role == 'coach' ? 'trainer' : (role == 'trainer' ? 'trainer' : 'player');
+        final normalizedRole = role == 'coach'
+            ? 'trainer'
+            : (role == 'trainer'
+                ? 'trainer'
+                : (role == 'trainingslid' ? 'trainingslid' : 'player'));
         teamAssignments.putIfAbsent(tid, () => []).add(
           _AssignedMember(
             profileId: pid,
@@ -225,7 +231,7 @@ class _TcTabState extends State<TcTab> {
 
   Future<void> _assignMemberToTeam(_Member member) async {
     final ctx = AppUserContext.of(context);
-    if (!_isAuthorized(ctx)) return;
+    if (!_canView(ctx)) return;
     if (_teams.isEmpty) {
       showTopMessage(context, 'Geen teams gevonden.', isError: true);
       return;
@@ -272,6 +278,7 @@ class _TcTabState extends State<TcTab> {
               items: const [
                 DropdownMenuItem(value: 'player', child: Text('Speler')),
                 DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
+                DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
               ],
               onChanged: (v) => selectedRole = v ?? selectedRole,
               decoration: const InputDecoration(labelText: 'Rol'),
@@ -306,6 +313,13 @@ class _TcTabState extends State<TcTab> {
             _unassignedMembers.where((m) => m.profileId != member.profileId).toList();
       });
       showTopMessage(context, 'Lid gekoppeld aan team.');
+      await _load(); // ensure in-app refresh reflects the change immediately
+      // If the current user just got linked (or role changed), refresh user context
+      // so Trainingen/Wedstrijden updates without requiring app restart.
+      try {
+        if (!mounted) return;
+        await AppUserContext.of(context).reloadUserContext?.call();
+      } catch (_) {}
     } catch (e) {
       if (!mounted) return;
       showTopMessage(context, 'Koppelen mislukt: $e', isError: true);
@@ -323,7 +337,14 @@ class _TcTabState extends State<TcTab> {
   }
 
   String _roleLabel(String role) {
-    return role == 'trainer' ? 'Trainer/coach' : 'Speler';
+    switch (role) {
+      case 'trainer':
+        return 'Trainer/coach';
+      case 'trainingslid':
+        return 'Trainingslid';
+      default:
+        return 'Speler';
+    }
   }
 
   Future<void> _addMemberToTeam(int teamId, String teamLabel) async {
@@ -420,6 +441,7 @@ class _TcTabState extends State<TcTab> {
                 items: const [
                   DropdownMenuItem(value: 'player', child: Text('Speler')),
                   DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
+                  DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
                 ],
                 onChanged: (v) => setDialogState(() => selectedRole = v ?? selectedRole),
                 decoration: const InputDecoration(labelText: 'Rol'),
@@ -484,6 +506,7 @@ class _TcTabState extends State<TcTab> {
                 items: const [
                   DropdownMenuItem(value: 'player', child: Text('Speler')),
                   DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
+                  DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
                 ],
                 onChanged: (v) => setDialogState(() => chosenRole = v ?? chosenRole),
                 decoration: const InputDecoration(labelText: 'Rol'),
@@ -542,7 +565,8 @@ class _TcTabState extends State<TcTab> {
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
-    final authorized = _isAuthorized(ctx);
+    final canView = _canView(ctx);
+    final canManage = _canManage(ctx);
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -557,7 +581,7 @@ class _TcTabState extends State<TcTab> {
             16,
             16 + MediaQuery.paddingOf(context).bottom,
           ),
-          children: !authorized
+          children: !canView
               ? [
                   const SizedBox(
                     height: 200,
@@ -644,6 +668,15 @@ class _TcTabState extends State<TcTab> {
                                   fontSize: 13,
                                 ),
                               ),
+                              const SizedBox(height: 10),
+                              Text(
+                                'Tip: Teambeheer werkt ook op de computer via de browser — dat is vaak makkelijker dan alles in de app te doen.',
+                                style: TextStyle(
+                                  color: AppColors.primary.withValues(alpha: 0.75),
+                                  fontSize: 12,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -700,11 +733,11 @@ class _TcTabState extends State<TcTab> {
                                             color: AppColors.textSecondary,
                                           ),
                                         ),
-                                  trailing: const Icon(
+                                  trailing: Icon(
                                     Icons.link,
-                                    color: AppColors.primary,
+                                    color: canManage ? AppColors.primary : AppColors.iconMuted,
                                   ),
-                                  onTap: () => _assignMemberToTeam(m),
+                                  onTap: canManage ? () => _assignMemberToTeam(m) : null,
                                 ),
                               ),
                             );
@@ -838,32 +871,33 @@ class _TcTabState extends State<TcTab> {
                                               fontSize: 12,
                                             ),
                                           ),
-                                          trailing: const Icon(
+                                          trailing: Icon(
                                             Icons.edit_outlined,
-                                            color: AppColors.primary,
+                                            color: canManage ? AppColors.primary : AppColors.iconMuted,
                                             size: 20,
                                           ),
-                                          onTap: () => _editAssignment(t.teamId, m),
+                                          onTap: canManage ? () => _editAssignment(t.teamId, m) : null,
                                         ),
                                       ),
                                     const Divider(height: 1),
-                                    ListTile(
-                                      dense: true,
-                                      leading: const Icon(
-                                        Icons.person_add_outlined,
-                                        color: AppColors.primary,
-                                        size: 22,
-                                      ),
-                                      title: const Text(
-                                        'Lid toevoegen aan dit team',
-                                        style: TextStyle(
+                                    if (canManage)
+                                      ListTile(
+                                        dense: true,
+                                        leading: const Icon(
+                                          Icons.person_add_outlined,
                                           color: AppColors.primary,
-                                          fontWeight: FontWeight.w600,
-                                          fontSize: 14,
+                                          size: 22,
                                         ),
+                                        title: const Text(
+                                          'Lid toevoegen aan dit team',
+                                          style: TextStyle(
+                                            color: AppColors.primary,
+                                            fontWeight: FontWeight.w600,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                        onTap: () => _addMemberToTeam(t.teamId, t.label),
                                       ),
-                                      onTap: () => _addMemberToTeam(t.teamId, t.label),
-                                    ),
                                   ],
                                 ],
                               ),

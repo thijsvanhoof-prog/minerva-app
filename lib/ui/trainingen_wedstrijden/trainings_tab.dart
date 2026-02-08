@@ -59,6 +59,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
   }
 
   Future<void> _refresh() async {
+    // Also reload memberships/committees so newly linked teams show up immediately.
+    try {
+      await AppUserContext.of(context).reloadUserContext?.call();
+    } catch (_) {}
     setState(() {
       _loadFuture = _loadData(teamIds: _allowedTeamIds);
     });
@@ -447,14 +451,36 @@ class _TrainingsTabState extends State<TrainingsTab> {
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
     if (ctx.memberships.isEmpty) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(16),
-          child: Text(
-            'Je bent nog niet gekoppeld aan een team.\n'
-            'Koppel eerst je account aan een team om trainingen te zien.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: AppColors.textSecondary),
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Je bent nog niet gekoppeld aan een team.\n'
+                'Koppel eerst je account aan een team om trainingen te zien.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: AppColors.textSecondary),
+              ),
+              const SizedBox(height: 12),
+              ElevatedButton.icon(
+                onPressed: ctx.reloadUserContext == null
+                    ? null
+                    : () async => ctx.reloadUserContext!.call(),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Opnieuw laden'),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Tip: als je net via TC bent gekoppeld, druk op opnieuw laden.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: AppColors.textSecondary.withValues(alpha: 0.9),
+                  fontSize: 12.5,
+                ),
+              ),
+            ],
           ),
         ),
       );
@@ -573,6 +599,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
                 final session = _trainings[_canCreateTrainings ? index - 1 : index];
                 final sessionId = (session['session_id'] as num).toInt();
                 final teamId = (session['team_id'] as num?)?.toInt() ?? 0;
+                final isCancelled = (session['is_cancelled'] == true);
 
                 final title = (session['title'] ?? 'Training').toString();
                 final location = (session['location'] ?? '').toString();
@@ -604,24 +631,61 @@ class _TrainingsTabState extends State<TrainingsTab> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  title,
-                                  style: const TextStyle(
-                                    color: AppColors.onBackground,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w700,
-                                  ),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        title,
+                                        style: TextStyle(
+                                          color: AppColors.onBackground,
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w700,
+                                          decoration: isCancelled
+                                              ? TextDecoration.lineThrough
+                                              : TextDecoration.none,
+                                        ),
+                                      ),
+                                    ),
+                                    if (isCancelled)
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.error.withValues(alpha: 0.14),
+                                          borderRadius: BorderRadius.circular(999),
+                                          border: Border.all(
+                                            color: AppColors.error.withValues(alpha: 0.35),
+                                          ),
+                                        ),
+                                        child: const Text(
+                                          'Geannuleerd',
+                                          style: TextStyle(
+                                            color: AppColors.error,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
                                 ),
                                 const SizedBox(height: 4),
                                 if (location.isNotEmpty)
                                   Text(
                                     location,
-                                    style: const TextStyle(color: AppColors.textSecondary),
+                                    style: TextStyle(
+                                      color: AppColors.textSecondary,
+                                      decoration: isCancelled
+                                          ? TextDecoration.lineThrough
+                                          : TextDecoration.none,
+                                    ),
                                   ),
                                 const SizedBox(height: 4),
                                 Text(
                                   _formatRange(start, end),
-                                  style: const TextStyle(color: AppColors.textSecondary),
+                                  style: TextStyle(
+                                    color: AppColors.textSecondary,
+                                    decoration: isCancelled
+                                        ? TextDecoration.lineThrough
+                                        : TextDecoration.none,
+                                  ),
                                 ),
                               ],
                             ),
@@ -629,12 +693,26 @@ class _TrainingsTabState extends State<TrainingsTab> {
                         ],
                       ),
                       const SizedBox(height: 8),
+                      if (isCancelled) ...[
+                        const Text(
+                          'Deze training is geannuleerd (bijv. vakantie/feestdag).',
+                          style: TextStyle(color: AppColors.textSecondary),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
                       Wrap(
                         spacing: 8,
                         runSpacing: 8,
                         children: [
                           ElevatedButton(
-                            onPressed: () => _updateAttendance(sessionId, _isTrainerOrCoachForTeam(teamId) ? AttendanceStatus.coach : AttendanceStatus.playing),
+                            onPressed: isCancelled
+                                ? null
+                                : () => _updateAttendance(
+                                      sessionId,
+                                      _isTrainerOrCoachForTeam(teamId)
+                                          ? AttendanceStatus.coach
+                                          : AttendanceStatus.playing,
+                                    ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: isPresent ? AppColors.primary : AppColors.card,
                               foregroundColor: isPresent ? AppColors.background : AppColors.onBackground,
@@ -643,7 +721,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
                             child: const Text('Aanwezig'),
                           ),
                           ElevatedButton(
-                            onPressed: () => _updateAttendance(sessionId, null),
+                            onPressed: isCancelled ? null : () => _updateAttendance(sessionId, null),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: !isPresent ? AppColors.primary : AppColors.card,
                               foregroundColor: !isPresent ? AppColors.background : AppColors.onBackground,

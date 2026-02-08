@@ -279,11 +279,12 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
 
   String _normalizeRole(String value) {
     final r = value.trim().toLowerCase();
-    // Alleen speler en trainer/coach. Trainer en coach zijn één rol.
     switch (r) {
       case 'trainer':
       case 'coach':
         return 'trainer';
+      case 'trainingslid':
+        return 'trainingslid';
       case 'speler':
       case 'player':
       default:
@@ -359,8 +360,8 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     // Accept common variations.
     if (c == 'bestuur') return 'bestuur';
     if (c == 'tc' || c.contains('technische')) return 'technische-commissie';
-    if (c.contains('communicatie')) return 'communicatie';
-    if (c.contains('wedstrijd')) return 'wedstrijdzaken';
+    if (c == 'cc' || c.contains('communicatie')) return 'communicatie';
+    if (c == 'wz' || c.contains('wedstrijd')) return 'wedstrijdzaken';
     return c;
   }
 
@@ -398,6 +399,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       isGlobalAdmin: _isGlobalAdmin,
       memberships: _memberships,
       committees: _committees,
+      reloadUserContext: _reload,
       loggedInProfileId: _loggedInProfileId,
       viewingAsProfileId: _ouderKindNotifier.viewingAsProfileId,
       viewingAsDisplayName: _ouderKindNotifier.viewingAsDisplayName,

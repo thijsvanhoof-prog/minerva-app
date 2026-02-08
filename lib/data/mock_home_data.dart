@@ -10,6 +10,7 @@ final mockNews = <NewsItem>[
     author: 'Bestuur',
     category: NewsCategory.bestuur,
     pinned: true,
+    visibleUntil: null,
   ),
   NewsItem(
     id: '2',
@@ -19,6 +20,7 @@ final mockNews = <NewsItem>[
     date: DateTime.now().subtract(const Duration(days: 1)),
     author: 'TC',
     category: NewsCategory.tc,
+    visibleUntil: null,
   ),
   NewsItem(
     id: '3',
@@ -27,6 +29,7 @@ final mockNews = <NewsItem>[
     date: DateTime.now().subtract(const Duration(days: 2)),
     author: 'Communicatie',
     category: NewsCategory.communicatie,
+    visibleUntil: null,
   ),
 ];
 

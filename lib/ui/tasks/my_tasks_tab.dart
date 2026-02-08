@@ -8,13 +8,18 @@ import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class MyTasksTab extends StatelessWidget {
-  const MyTasksTab({super.key});
+  const MyTasksTab({super.key, this.forceFullView = false});
+
+  /// Als true (bijv. vanuit Commissies > WZ): altijd Teamtaken + Overzicht tonen.
+  final bool forceFullView;
 
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
-    final canSeeOverview =
-        ctx.hasFullAdminRights || ctx.isInBestuur || ctx.isInWedstrijdzaken;
+    final canSeeOverview = forceFullView ||
+        ctx.hasFullAdminRights ||
+        ctx.isInBestuur ||
+        ctx.isInWedstrijdzaken;
 
     if (!canSeeOverview) {
       return Scaffold(
@@ -27,6 +32,19 @@ class MyTasksTab extends StatelessWidget {
       );
     }
 
+    // Bij forceFullView (Commissies > WZ): alleen wedstrijdenlijst met koppel-optie.
+    if (forceFullView) {
+      return Scaffold(
+        backgroundColor: Colors.transparent,
+        body: SafeArea(
+          top: true,
+          bottom: false,
+          child: const _OverviewHomeMatchesView(allowManage: true),
+        ),
+      );
+    }
+
+    // Overzicht-tab in Taken: alleen weergave, geen verdelen/koppelen.
     return DefaultTabController(
       length: 2,
       child: Scaffold(
@@ -50,7 +68,7 @@ class MyTasksTab extends StatelessWidget {
                     ),
                     indicatorSize: TabBarIndicatorSize.tab,
                     tabs: const [
-                      Tab(text: 'Verenigingstaken'),
+                      Tab(text: 'Teamtaken'),
                       Tab(text: 'Overzicht'),
                     ],
                   ),
@@ -60,7 +78,7 @@ class MyTasksTab extends StatelessWidget {
                 child: TabBarView(
                   children: [
                     const _TeamTasksView(),
-                    const _OverviewHomeMatchesView(),
+                    const _OverviewHomeMatchesView(allowManage: false),
                   ],
                 ),
               ),
@@ -92,6 +110,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
   Set<int> _signedUpTaskIds = const {}; // task_ids I am signed up for
   Map<int, String> _teamNameById = const {};
   Map<int, List<String>> _signupNamesByTaskId = const {}; // task_id -> names
+  String? _myDisplayName; // cached for optimistic updates
 
   @override
   void didChangeDependencies() {
@@ -207,6 +226,8 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       final teamNameById = await _loadTeamNames(teamIds: allTeamIds);
 
       final signupNamesByTaskId = await _loadSignupNamesByTaskId(matchKeys: matchKeys);
+      final myNames = await _loadProfileDisplayNames({targetProfileId});
+      final myDisplayName = myNames[targetProfileId] ?? _shortId(targetProfileId);
 
       if (!mounted) return;
       setState(() {
@@ -214,6 +235,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         _signedUpTaskIds = signedUp;
         _teamNameById = teamNameById;
         _signupNamesByTaskId = signupNamesByTaskId;
+        _myDisplayName = myDisplayName;
         _loading = false;
       });
     } catch (e) {
@@ -422,9 +444,40 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
   Future<void> _toggleSignup(int taskId) async {
     final user = _client.auth.currentUser;
     if (user == null) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
     final targetProfileId = AppUserContext.of(context).attendanceProfileId;
 
     final signedUp = _signedUpTaskIds.contains(taskId);
+    String myName = _myDisplayName ?? '';
+    if (myName.isEmpty) {
+      final map = await _loadProfileDisplayNames({targetProfileId});
+      myName = map[targetProfileId] ?? _shortId(targetProfileId);
+      if (mounted) _myDisplayName = myName;
+    }
+
+    // Optimistic update: update UI immediately
+    final prevSignedUp = Set<int>.from(_signedUpTaskIds);
+    final prevNames = Map<int, List<String>>.from(
+      _signupNamesByTaskId.map((k, v) => MapEntry(k, List<String>.from(v))),
+    );
+    setState(() {
+      if (signedUp) {
+        _signedUpTaskIds = Set<int>.from(_signedUpTaskIds)..remove(taskId);
+        final names = List<String>.from(_signupNamesByTaskId[taskId] ?? []);
+        names.remove(myName);
+        _signupNamesByTaskId = Map<int, List<String>>.from(_signupNamesByTaskId)
+          ..[taskId] = names;
+      } else {
+        _signedUpTaskIds = Set<int>.from(_signedUpTaskIds)..add(taskId);
+        final names = List<String>.from(_signupNamesByTaskId[taskId] ?? [])
+          ..add(myName);
+        names.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+        _signupNamesByTaskId = Map<int, List<String>>.from(_signupNamesByTaskId)
+          ..[taskId] = names;
+      }
+    });
+
     try {
       if (signedUp) {
         await _client
@@ -432,23 +485,19 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
             .delete()
             .eq('task_id', taskId)
             .eq('profile_id', targetProfileId);
-        if (!mounted) return;
-        setState(() {
-          _signedUpTaskIds = {..._signedUpTaskIds}..remove(taskId);
-        });
       } else {
         await _client.from('club_task_signups').insert({
           'task_id': taskId,
           'profile_id': targetProfileId,
         });
-        if (!mounted) return;
-        setState(() {
-          _signedUpTaskIds = {..._signedUpTaskIds}..add(taskId);
-        });
       }
     } catch (e) {
       if (!mounted) return;
-      showTopMessage(context, 'Kan aanmelding niet wijzigen: $e', isError: true);
+      setState(() {
+        _signedUpTaskIds = prevSignedUp;
+        _signupNamesByTaskId = prevNames;
+      });
+      showTopMessageWithMessenger(messenger, 'Kan aanmelding niet wijzigen: $e', isError: true);
     }
   }
 
@@ -503,7 +552,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Text(
-                      'Verenigingstaken konden niet laden',
+                      'Teamtaken konden niet laden',
                       style: TextStyle(
                         color: AppColors.onBackground,
                         fontWeight: FontWeight.w900,
@@ -753,7 +802,10 @@ class _TaskSignupButton extends StatelessWidget {
 }
 
 class _OverviewHomeMatchesView extends StatefulWidget {
-  const _OverviewHomeMatchesView();
+  const _OverviewHomeMatchesView({this.allowManage = false});
+
+  /// Bij commissies: true (koppelen/verdelen). Bij Taken-overzicht: false (alleen weergave).
+  final bool allowManage;
 
   @override
   State<_OverviewHomeMatchesView> createState() => _OverviewHomeMatchesViewState();
@@ -770,6 +822,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
   bool _supabaseLinkTableMissing = false;
   Map<String, Map<String, dynamic>> _linkRowsByKey = const {};
   Map<String, _MatchSignupSummary> _signupsByKey = const {};
+  Map<int, int> _teamIdByTaskId = const {}; // task_id -> team_id (from club_task_team_assignments)
 
   bool _teamsLoading = false;
   List<_TeamOption> _teams = const [];
@@ -800,6 +853,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       _supabaseLinkTableMissing = false;
       _linkRowsByKey = const {};
       _signupsByKey = const {};
+      _teamIdByTaskId = const {};
     });
 
     try {
@@ -852,9 +906,13 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         _supabaseLinkTableMissing = true;
       }
 
+      final teamIdByTaskId = linkRows != null
+          ? await _loadTeamAssignmentsForLinkRows(linkRows)
+          : <int, int>{};
+
       final statuses = linkRows == null
           ? <String, _MatchLinkStatus>{}
-          : _statusesFromLinkRows(keys: keys, rows: linkRows);
+          : _statusesFromLinkRows(keys: keys, rows: linkRows, teamIdByTaskId: teamIdByTaskId);
 
       final signups = linkRows == null
           ? <String, _MatchSignupSummary>{}
@@ -867,6 +925,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         _statusByKey = statuses;
         _linkRowsByKey = linkRows ?? const {};
         _signupsByKey = signups;
+        _teamIdByTaskId = teamIdByTaskId;
         _loading = false;
       });
     } catch (e) {
@@ -1061,9 +1120,30 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     return out;
   }
 
-  int? _linkedTeamIdForMatch(_HomeMatch m) {
+  /// Laadt team_id per task_id uit club_task_team_assignments.
+  Future<Map<int, int>> _loadTeamAssignmentsForLinkRows(
+    Map<String, Map<String, dynamic>> linkRows,
+  ) async {
+    final taskIds = <int>{};
+    for (final row in linkRows.values) {
+      final fl = (row['fluiten_task_id'] as num?)?.toInt();
+      final te = (row['tellen_task_id'] as num?)?.toInt();
+      if (fl != null) taskIds.add(fl);
+      if (te != null) taskIds.add(te);
+    }
+    return _loadTeamAssignmentsForTaskIds(taskIds.toList());
+  }
+
+  int? _linkedTeamIdForFluiten(_HomeMatch m) {
     final row = _linkRowsByKey[_matchKey(m)];
-    return (row?['linked_team_id'] as num?)?.toInt();
+    final taskId = (row?['fluiten_task_id'] as num?)?.toInt();
+    return taskId != null ? _teamIdByTaskId[taskId] : null;
+  }
+
+  int? _linkedTeamIdForTellen(_HomeMatch m) {
+    final row = _linkRowsByKey[_matchKey(m)];
+    final taskId = (row?['tellen_task_id'] as num?)?.toInt();
+    return taskId != null ? _teamIdByTaskId[taskId] : null;
   }
 
   Future<void> _ensureTeamsLoaded() async {
@@ -1147,23 +1227,24 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
   Map<String, _MatchLinkStatus> _statusesFromLinkRows({
     required List<String> keys,
     required Map<String, Map<String, dynamic>> rows,
+    required Map<int, int> teamIdByTaskId,
   }) {
     final out = <String, _MatchLinkStatus>{};
     for (final key in keys) {
       final r = rows[key];
-      final linkedTeamId = (r?['linked_team_id'] as num?)?.toInt();
       final fluitenId = (r?['fluiten_task_id'] as num?)?.toInt();
       final tellenId = (r?['tellen_task_id'] as num?)?.toInt();
 
       final hasFluiten = fluitenId != null;
       final hasTellen = tellenId != null;
-      final assigned = linkedTeamId != null;
+      final fluitenAssigned = hasFluiten && teamIdByTaskId[fluitenId] != null;
+      final tellenAssigned = hasTellen && teamIdByTaskId[tellenId] != null;
 
       out[key] = _MatchLinkStatus(
         hasFluiten: hasFluiten,
         hasTellen: hasTellen,
-        fluitenAssigned: hasFluiten && assigned,
-        tellenAssigned: hasTellen && assigned,
+        fluitenAssigned: fluitenAssigned,
+        tellenAssigned: tellenAssigned,
       );
     }
     return out;
@@ -1218,70 +1299,165 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       final Map<String, dynamic>? row = res;
       if (!mounted) return;
       if (row == null) return;
+
+      final flId = (row['fluiten_task_id'] as num?)?.toInt();
+      final teId = (row['tellen_task_id'] as num?)?.toInt();
+      final taskIds = <int>[
+        if (flId != null) flId,
+        if (teId != null) teId,
+      ];
+      final teamIdByTaskId = taskIds.isNotEmpty
+          ? await _loadTeamAssignmentsForTaskIds(taskIds)
+          : <int, int>{};
+
+      if (!mounted) return;
       setState(() {
         _linkRowsByKey = {..._linkRowsByKey, key: row};
+        _teamIdByTaskId = {..._teamIdByTaskId, ...teamIdByTaskId};
       });
     } catch (_) {
       // ignore
     }
   }
 
-  Widget _statusChipForMatch(_HomeMatch match) {
+  Future<Map<int, int>> _loadTeamAssignmentsForTaskIds(List<int> taskIds) async {
+    if (taskIds.isEmpty) return {};
+    try {
+      final res = await _client
+          .from('club_task_team_assignments')
+          .select('task_id, team_id')
+          .inFilter('task_id', taskIds);
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final out = <int, int>{};
+      for (final r in rows) {
+        final tid = (r['task_id'] as num?)?.toInt();
+        final teamId = (r['team_id'] as num?)?.toInt();
+        if (tid != null && teamId != null && !out.containsKey(tid)) {
+          out[tid] = teamId;
+        }
+      }
+      return out;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Widget _statusButtonsForMatch(
+    _HomeMatch match,
+    int? linkedTeamIdFluiten,
+    int? linkedTeamIdTellen,
+    AppUserContext ctx,
+  ) {
     final key = _matchKey(match);
     final s = _statusByKey[key] ?? const _MatchLinkStatus.empty();
 
-    String label;
-    Color border;
-    Color text;
+    final canTap = widget.allowManage && ctx.canManageTasks;
 
-    if (!s.hasFluiten && !s.hasTellen) {
-      label = 'Niet gekoppeld';
-      border = AppColors.textSecondary;
-      text = AppColors.textSecondary;
-    } else if (s.fluitenAssigned && s.tellenAssigned) {
-      label = 'Gekoppeld';
-      border = AppColors.primary;
-      text = AppColors.primary;
-    } else if (s.fluitenAssigned || s.tellenAssigned) {
-      label = 'Deels';
-      border = AppColors.primary;
-      text = AppColors.primary;
-    } else {
-      label = 'Gemaakt';
-      border = AppColors.textSecondary;
-      text = AppColors.textSecondary;
+    Widget linkButton(
+      String label,
+      bool assigned,
+      String teamTextUnder, {
+      required bool onlyFluiten,
+      required bool onlyTellen,
+    }) {
+      final border = assigned ? AppColors.primary : AppColors.textSecondary;
+      final text = assigned ? AppColors.primary : AppColors.textSecondary;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: canTap
+                  ? () => _openLinkSheet(
+                        ctx: ctx,
+                        match: match,
+                        initialFluiten: onlyFluiten,
+                        initialTellen: onlyTellen,
+                      )
+                  : null,
+              borderRadius: BorderRadius.circular(999),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: border.withValues(alpha: 0.6)),
+                  color: Colors.transparent,
+                ),
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: text,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          SizedBox(
+            width: 70,
+            child: Text(
+              teamTextUnder,
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+              style: TextStyle(
+                color: teamTextUnder == 'Niet gekoppeld'
+                    ? AppColors.textSecondary.withValues(alpha: 0.8)
+                    : AppColors.textSecondary,
+                fontWeight: FontWeight.w700,
+                fontSize: 11,
+              ),
+            ),
+          ),
+        ],
+      );
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: border.withValues(alpha: 0.6)),
-        color: Colors.transparent,
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: text,
-          fontSize: 12,
-          fontWeight: FontWeight.w800,
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        linkButton(
+          'Fluiten',
+          s.fluitenAssigned,
+          linkedTeamIdFluiten != null ? _teamLabel(linkedTeamIdFluiten) : 'Niet gekoppeld',
+          onlyFluiten: true,
+          onlyTellen: false,
         ),
-      ),
+        const SizedBox(width: 12),
+        linkButton(
+          'Tellen',
+          s.tellenAssigned,
+          linkedTeamIdTellen != null ? _teamLabel(linkedTeamIdTellen) : 'Niet gekoppeld',
+          onlyFluiten: false,
+          onlyTellen: true,
+        ),
+      ],
     );
   }
 
   Future<void> _openLinkSheet({
     required AppUserContext ctx,
     required _HomeMatch match,
+    bool? initialFluiten,
+    bool? initialTellen,
   }) async {
     if (!ctx.canManageTasks) return;
     await _ensureTeamsLoaded();
     if (!mounted) return;
 
-    final key = _matchKey(match);
-    final currentLinked = _linkedTeamIdForMatch(match);
+    final fluiten = initialFluiten == true;
+    final tellen = initialTellen == true;
+    final currentLinked = fluiten
+        ? _linkedTeamIdForFluiten(match)
+        : tellen
+            ? _linkedTeamIdForTellen(match)
+            : null;
     final suggested = _teamIdByCode[match.teamCode.trim().toUpperCase()];
-    final existingKinds = await _existingTaskKindsForMatchKey(key);
     if (!mounted) return;
 
     final result = await showModalBottomSheet<bool>(
@@ -1291,8 +1467,10 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       builder: (sheetContext) {
         var selectedTeamId =
             currentLinked ?? suggested ?? (_teams.isNotEmpty ? _teams.first.teamId : 0);
-        var fluiten = true;
-        var tellen = true;
+        // Alleen de gekozen taak: Fluiten-knop → fluiten, Tellen-knop → tellen
+        final fluiten = initialFluiten == true;
+        final tellen = initialTellen == true;
+        final taskLabel = fluiten ? 'Fluiten' : 'Tellen';
 
         return SafeArea(
           child: Padding(
@@ -1310,9 +1488,9 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                     children: [
                       Row(
                         children: [
-                          const Text(
-                            'Wedstrijd koppelen',
-                            style: TextStyle(
+                          Text(
+                            '$taskLabel koppelen',
+                            style: const TextStyle(
                               color: AppColors.onBackground,
                               fontWeight: FontWeight.w900,
                               fontSize: 18,
@@ -1384,75 +1562,6 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                         ),
                       ),
 
-                      if (currentLinked != null) ...[
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            const Icon(Icons.link, size: 18, color: AppColors.textSecondary),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                'Huidig gekoppeld: ${_teamLabel(currentLinked)}',
-                                style: const TextStyle(color: AppColors.textSecondary),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            TextButton(
-                              onPressed: () async {
-                                Navigator.of(sheetContext).pop(false);
-                                await _unlinkTasksForMatchKey(key);
-                                if (!context.mounted) return;
-                                await _refreshLinkRowForKey(key);
-                                await _refreshStatusForKey(key);
-                              },
-                              child: const Text('Ontkoppelen'),
-                            ),
-                          ],
-                        ),
-                      ],
-
-                      const SizedBox(height: 14),
-                      const Text(
-                        'Taken',
-                        style: TextStyle(
-                          color: AppColors.textSecondary,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
-                        children: [
-                          FilterChip(
-                            selected: fluiten,
-                            label: Text(
-                              existingKinds.contains('fluiten')
-                                  ? 'Fluiten (bestaat al)'
-                                  : 'Fluiten',
-                            ),
-                            onSelected: (v) => setState(() => fluiten = v),
-                            selectedColor: AppColors.primary.withValues(alpha: 0.20),
-                            checkmarkColor: AppColors.primary,
-                            side: BorderSide(
-                              color: AppColors.primary.withValues(alpha: fluiten ? 0.8 : 0.25),
-                            ),
-                          ),
-                          FilterChip(
-                            selected: tellen,
-                            label: Text(
-                              existingKinds.contains('tellen') ? 'Tellen (bestaat al)' : 'Tellen',
-                            ),
-                            onSelected: (v) => setState(() => tellen = v),
-                            selectedColor: AppColors.primary.withValues(alpha: 0.20),
-                            checkmarkColor: AppColors.primary,
-                            side: BorderSide(
-                              color: AppColors.primary.withValues(alpha: tellen ? 0.8 : 0.25),
-                            ),
-                          ),
-                        ],
-                      ),
-
                       const SizedBox(height: 14),
                       SizedBox(
                         width: double.infinity,
@@ -1470,7 +1579,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                                   );
                                 },
                           icon: const Icon(Icons.link),
-                          label: Text('Koppel aan ${_teamLabel(selectedTeamId)}'),
+                          label: Text('Koppel $taskLabel aan ${_teamLabel(selectedTeamId)}'),
                         ),
                       ),
                     ],
@@ -1602,6 +1711,8 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     if (!ctx.canManageTasks) return;
     final user = _client.auth.currentUser;
     if (user == null) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
 
     final key = _matchKey(match);
     int created = 0;
@@ -1655,17 +1766,13 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       final existingTaskIds = await _taskIdByKindForMatchKey(key);
       final toAssign = <int>[];
 
+      // Alleen de gekozen taak aanpassen; de andere laten we met rust.
       if (fluiten) {
         final existing = existingTaskIds['fluiten'];
         if (existing != null) {
           toAssign.add(existing);
         } else {
           await createTask('fluiten', 'Fluiten (${match.teamCode})');
-        }
-      } else {
-        final existing = existingTaskIds['fluiten'];
-        if (existing != null) {
-          await _client.from('club_task_team_assignments').delete().eq('task_id', existing);
         }
       }
 
@@ -1675,11 +1782,6 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
           toAssign.add(existing);
         } else {
           await createTask('tellen', 'Tellen (${match.teamCode})');
-        }
-      } else {
-        final existing = existingTaskIds['tellen'];
-        if (existing != null) {
-          await _client.from('club_task_team_assignments').delete().eq('task_id', existing);
         }
       }
 
@@ -1700,10 +1802,10 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       if (!mounted) return;
       await _refreshStatusForKey(key);
       if (!mounted) return;
-      showTopMessage(context, 'Gekoppeld. ($created aangemaakt)');
+      showTopMessageWithMessenger(messenger, 'Gekoppeld. ($created aangemaakt)');
     } catch (e) {
       if (!mounted) return;
-      showTopMessage(context, 'Koppelen mislukt: $e', isError: true);
+      showTopMessageWithMessenger(messenger, 'Koppelen mislukt: $e', isError: true);
     }
   }
 
@@ -1754,26 +1856,6 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     return const [];
   }
 
-  Future<Set<String>> _existingTaskKindsForMatchKey(String key) async {
-    // Best-effort check to prevent duplicates.
-    // Requires notes to start with the key and the type to match.
-    try {
-      final res = await _client
-          .from('club_tasks')
-          .select('type, notes')
-          .ilike('notes', '$key%');
-      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
-      final kinds = <String>{};
-      for (final row in rows) {
-        final type = (row['type'] ?? '').toString().trim().toLowerCase();
-        if (type.isNotEmpty) kinds.add(type);
-      }
-      return kinds;
-    } catch (_) {
-      return const {};
-    }
-  }
-
   Future<Map<String, int>> _taskIdByKindForMatchKey(String key) async {
     // Prefer the dedicated Supabase table (for spreadsheet syncing).
     try {
@@ -1817,29 +1899,16 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     }
   }
 
-  Future<void> _unlinkTasksForMatchKey(String key) async {
-    final byKind = await _taskIdByKindForMatchKey(key);
-    final taskIds = byKind.values.toSet().toList();
-    if (taskIds.isEmpty) return;
-    await _client.from('club_task_team_assignments').delete().inFilter('task_id', taskIds);
-    try {
-      await _client.from('nevobo_home_matches').update({
-        'linked_team_id': null,
-        'linked_by': _client.auth.currentUser?.id,
-        'linked_at': null,
-        'updated_by': _client.auth.currentUser?.id,
-      }).eq('match_key', key);
-    } catch (_) {
-      // ignore
-    }
-  }
-
   Future<void> _setAssignmentForTaskIds({
     required List<int> taskIds,
     required int teamId,
     required String assignedBy,
   }) async {
     if (taskIds.isEmpty) return;
+    // Bij koppelen aan ander team: reset fluiter/teller-aanmeldingen, zodat opnieuw ingedeeld moet worden.
+    try {
+      await _client.from('club_task_signups').delete().inFilter('task_id', taskIds);
+    } catch (_) {}
     await _client.from('club_task_team_assignments').delete().inFilter('task_id', taskIds);
     final rows = taskIds
         .map((tid) => {'task_id': tid, 'team_id': teamId, 'assigned_by': assignedBy})
@@ -2023,116 +2092,95 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         ),
       );
       for (final m in byDate[d]!) {
-        final linkedTeamId = _linkedTeamIdForMatch(m);
+        final linkedTeamIdFluiten = _linkedTeamIdForFluiten(m);
+        final linkedTeamIdTellen = _linkedTeamIdForTellen(m);
         final signup = _signupsByKey[_matchKey(m)];
-        children.add(
+          children.add(
           GlassCard(
-            child: InkWell(
-              borderRadius: BorderRadius.circular(AppColors.cardRadius),
-              onTap: ctx.canManageTasks ? () => _openLinkSheet(ctx: ctx, match: m) : null,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Text(
-                                m.teamCode,
-                                style: const TextStyle(
-                                  color: AppColors.onBackground,
-                                  fontWeight: FontWeight.w900,
-                                  fontSize: 16,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  m.teamCode,
+                                  style: const TextStyle(
+                                    color: AppColors.onBackground,
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 16,
+                                  ),
                                 ),
+                                const SizedBox(width: 10),
+                                Text(
+                                  _formatTime(m.start),
+                                  style: const TextStyle(
+                                    color: AppColors.textSecondary,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              m.summary,
+                              style: const TextStyle(
+                                color: AppColors.onBackground,
+                                fontWeight: FontWeight.w700,
                               ),
-                              const SizedBox(width: 10),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (m.location.isNotEmpty) ...[
+                              const SizedBox(height: 4),
                               Text(
-                                _formatTime(m.start),
-                                style: const TextStyle(
-                                  color: AppColors.textSecondary,
-                                  fontWeight: FontWeight.w800,
-                                ),
+                                m.location,
+                                style: const TextStyle(color: AppColors.textSecondary),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ],
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            m.summary,
-                            style: const TextStyle(
-                              color: AppColors.onBackground,
-                              fontWeight: FontWeight.w700,
-                            ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          if (m.location.isNotEmpty) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              m.location,
-                              style: const TextStyle(color: AppColors.textSecondary),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
                           ],
-                          if (signup != null &&
-                              (signup.fluitenNames.isNotEmpty ||
-                                  signup.tellenNames.isNotEmpty)) ...[
-                            const SizedBox(height: 8),
-                            if (signup.fluitenNames.isNotEmpty)
-                              Text(
-                                'Fluiten: ${_formatNames(signup.fluitenNames)}',
-                                style: const TextStyle(color: AppColors.textSecondary),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            if (signup.tellenNames.isNotEmpty)
-                              Text(
-                                'Tellen: ${_formatNames(signup.tellenNames)}',
-                                style: const TextStyle(color: AppColors.textSecondary),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                          ],
-                        ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        _statusChipForMatch(m),
-                        if (linkedTeamId != null) ...[
-                          const SizedBox(height: 8),
-                          ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 120),
-                            child: Text(
-                              _teamLabel(linkedTeamId),
-                              textAlign: TextAlign.right,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: AppColors.textSecondary,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 12,
-                              ),
-                            ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerRight,
+                          child: _statusButtonsForMatch(
+                            m,
+                            linkedTeamIdFluiten,
+                            linkedTeamIdTellen,
+                            ctx,
                           ),
-                        ],
-                        if (ctx.canManageTasks) ...[
-                          const SizedBox(height: 6),
-                          IconButton(
-                            tooltip: 'Koppelen aan team',
-                            icon: const Icon(Icons.link, color: AppColors.primary),
-                            onPressed: () => _openLinkSheet(ctx: ctx, match: m),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ],
-                ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'Fluiten: ${signup != null && signup.fluitenNames.isNotEmpty ? _formatNames(signup.fluitenNames) : '-'}',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Tellen: ${signup != null && signup.tellenNames.isNotEmpty ? _formatNames(signup.tellenNames) : '-'}',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
               ),
             ),
           ),
@@ -2248,7 +2296,7 @@ class MyTasksTab extends StatelessWidget {
               fontWeight: FontWeight.w800,
             ),
             tabs: const [
-              Tab(text: 'Verenigingstaken'),
+              Tab(text: 'Teamtaken'),
               Tab(text: 'Overzicht'),
             ],
           ),
@@ -2256,7 +2304,7 @@ class MyTasksTab extends StatelessWidget {
         body: TabBarView(
           children: [
             const _EmptyTasksView(
-              title: 'Verenigingstaken',
+              title: 'Teamtaken',
               subtitle: 'Leeg — dit bouwen we stap voor stap opnieuw.',
             ),
             ctx.canViewAllTasks
@@ -2427,7 +2475,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
       final userContext = ctx ?? AppUserContext.of(context);
       final myTeamIds = userContext.memberships.map((m) => m.teamId).toSet().toList();
 
-      // Verenigingstaken: ONLY tasks assigned to my teams.
+      // Teamtaken: ONLY tasks assigned to my teams.
       List<int> taskIds = const [];
       List<_ClubTask> tasks = const [];
       if (myTeamIds.isNotEmpty) {
@@ -2708,7 +2756,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Verenigingstaken',
+                'Teamtaken',
                 style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                       color: AppColors.onBackground,
                       fontWeight: FontWeight.w800,
@@ -2717,7 +2765,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
               const SizedBox(height: 6),
               Text(
                 ctx.canViewAllTasks
-                    ? 'Taken voor jouw teams. (Tab "Overzicht" is alleen voor Bestuur/Wedstrijdzaken.)'
+                    ? 'Taken voor jouw teams waarin je speelt. Schrijf je in voor fluiten of tellen.'
                     : 'Taken die aan jouw teams zijn toegewezen.',
                 style: const TextStyle(
                   color: AppColors.textSecondary,
@@ -2827,17 +2875,30 @@ class _MyTasksTabState extends State<MyTasksTab> {
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             color: AppColors.background,
             borderRadius: BorderRadius.circular(AppColors.cardRadius),
           ),
-          child: Text(
-            'Overzicht',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: AppColors.onBackground,
-                  fontWeight: FontWeight.w900,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Overzicht',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w900,
+                    ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Alle taken voor alle teams.',
+                style: TextStyle(
+                  color: AppColors.textSecondary.withValues(alpha: 0.9),
+                  fontSize: 13,
                 ),
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 16),
@@ -2975,6 +3036,8 @@ class _MyTasksTabState extends State<MyTasksTab> {
   Future<void> _toggleSignup(int taskId) async {
     final user = _client.auth.currentUser;
     if (user == null) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
     final targetProfileId = AppUserContext.of(context).attendanceProfileId;
 
     final signedUp = _signedUpTaskIds.contains(taskId);
@@ -2994,7 +3057,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
       await _load();
     } catch (e) {
       if (!mounted) return;
-      showTopMessage(context, 'Kan aanmelding niet wijzigen: $e', isError: true);
+      showTopMessageWithMessenger(messenger, 'Kan aanmelding niet wijzigen: $e', isError: true);
     }
   }
 
@@ -3057,6 +3120,9 @@ class _MyTasksTabState extends State<MyTasksTab> {
 
     final user = _client.auth.currentUser;
     if (user == null) return;
+
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
 
     final ok = await showDialog<bool>(
       context: context,
@@ -3174,8 +3240,8 @@ class _MyTasksTabState extends State<MyTasksTab> {
       }
 
       if (!mounted) return;
-      showTopMessage(
-        context,
+      showTopMessageWithMessenger(
+        messenger,
         'Import klaar: $created taken toegevoegd, $skipped overgeslagen.'
         '${missingTeamId > 0 ? ' ($missingTeamId teams konden we niet mappen)' : ''}',
       );
@@ -3246,7 +3312,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
               fontWeight: FontWeight.w800,
             ),
             tabs: const [
-              Tab(text: 'Verenigingstaken'),
+              Tab(text: 'Teamtaken'),
               Tab(text: 'Overzicht'),
             ],
           ),

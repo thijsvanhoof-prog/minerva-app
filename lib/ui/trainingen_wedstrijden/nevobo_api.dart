@@ -78,7 +78,9 @@ class NevoboApi {
     final normalized = raw.trim().toUpperCase().replaceAll(' ', '');
 
     // Already a compact team code?
-    if (RegExp(r'^(HS|DS|JA|JB|JC|JD|MA|MB|MC|MD|MR)\d+$').hasMatch(normalized)) {
+    if (RegExp(r'^(HS|DS|JA|JB|JC|JD|MA|MB|MC|MD|MR|XR)\d+$').hasMatch(normalized)) {
+      // App uses XR as display alias for MR (recreanten/mix). Canonicalize to MR.
+      if (normalized.startsWith('XR')) return 'MR${normalized.substring(2)}';
       return normalized;
     }
 
@@ -136,6 +138,7 @@ class NevoboApi {
       'DS' => 0, // dames
       'HS' => 1, // heren
       'MR' => 2, // recreanten/mix
+      'XR' => 2, // display alias for recreanten/mix
       'MA' => 3, // meiden A
       'JA' => 4, // jongens A
       'MB' => 5, // meiden B
@@ -221,11 +224,13 @@ class NevoboApi {
 
   static NevoboTeam? _fromCode(String code) {
     final normalized = code.trim().toUpperCase().replaceAll(' ', '');
-    final m = RegExp(r'^(HS|DS|JA|JB|JC|JD|MA|MB|MC|MD|MR)(\d+)$')
+    final m = RegExp(r'^(HS|DS|JA|JB|JC|JD|MA|MB|MC|MD|MR|XR)(\d+)$')
         .firstMatch(normalized);
     if (m == null) return null;
-    final prefix = m.group(1)!;
+    var prefix = m.group(1)!;
     final number = int.tryParse(m.group(2)!) ?? 1;
+    // XR is an alias used in the app; treat it as MR for API purposes.
+    if (prefix == 'XR') prefix = 'MR';
 
     switch (prefix) {
       case 'HS':

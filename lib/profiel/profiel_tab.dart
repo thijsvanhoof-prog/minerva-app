@@ -4,7 +4,6 @@ import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/profiel/ouder_kind_koppel_page.dart';
-import 'package:minerva_app/profiel/admin_gebruikersnamen_page.dart';
 import 'package:minerva_app/ui/notifications/notification_settings_page.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -170,6 +169,7 @@ class _ProfielTabState extends State<ProfielTab> {
     controller.dispose();
 
     if (newName == null) return;
+    if (!mounted) return;
     if (newName.trim().isEmpty) {
       showTopMessage(context, 'Vul een gebruikersnaam in.', isError: true);
       return;
@@ -210,6 +210,8 @@ class _ProfielTabState extends State<ProfielTab> {
       case 'trainer':
       case 'coach':
         return 'trainer';
+      case 'trainingslid':
+        return 'trainingslid';
       case 'speler':
       case 'player':
       default:
@@ -224,6 +226,25 @@ class _ProfielTabState extends State<ProfielTab> {
     });
   }
 
+  String _formatCommitteeName(String key) {
+    final k = key.trim();
+    if (k.isEmpty) return key;
+    switch (k.toLowerCase()) {
+      case 'bestuur':
+        return 'Bestuur';
+      case 'technische-commissie':
+        return 'Technische commissie';
+      case 'communicatie':
+        return 'Communicatie';
+      case 'wedstrijdzaken':
+        return 'Wedstrijdzaken';
+      case 'jeugd':
+        return 'Jeugdcommissie';
+      default:
+        return '${k[0].toUpperCase()}${k.substring(1).replaceAll('-', ' ')}';
+    }
+  }
+
   List<String> _buildRoleLabels(AppUserContext ctx) {
     final roles = <String>[];
 
@@ -231,11 +252,16 @@ class _ProfielTabState extends State<ProfielTab> {
       final r = (row['role']?.toString() ?? '').toLowerCase();
       return r == 'player' || r == 'speler';
     });
+    final isTrainingslid = _teamRoles.any((row) {
+      final r = (row['role']?.toString() ?? '').toLowerCase();
+      return r == 'trainingslid';
+    });
     final isOuder = ctx.isOuderVerzorger || ctx.memberships.any((m) => m.isGuardian);
     final isTrainer = _isTrainerOrCoach || ctx.memberships.any((m) => m.canManageTeam);
 
-    // Keep order as requested by the user.
+    // Keep order: eerst teamrollen, dan commissies.
     if (isPlayer) roles.add('Speler');
+    if (isTrainingslid) roles.add('Trainingslid');
     if (isOuder) roles.add('Ouder');
     if (isTrainer) roles.add('Trainer/coach');
     if (ctx.isInBestuur) roles.add('Bestuurslid');
@@ -254,6 +280,8 @@ class _ProfielTabState extends State<ProfielTab> {
       case 'trainer':
       case 'coach':
         return 'Trainer/coach';
+      case 'trainingslid':
+        return 'Trainingslid';
       case 'player':
       default:
         return 'Speler';
@@ -367,10 +395,16 @@ class _ProfielTabState extends State<ProfielTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const ListTile(
-            title: Text(
+          ListTile(
+            title: const Text(
               'Gekoppelde accounts',
               style: TextStyle(color: AppColors.textSecondary),
+            ),
+            subtitle: const Text(
+              'Wat kan wel: elkaars trainingen en wedstrijden bekijken, aanwezigheid voor een gekoppeld kind invullen. '
+              'Wat kan niet: wachtwoorden of e-mail van anderen wijzigen. '
+              'Beide partijen moeten de koppeling bevestigen via e-mail.',
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
             ),
           ),
           FutureBuilder<List<Map<String, dynamic>>>(
@@ -691,7 +725,7 @@ class _ProfielTabState extends State<ProfielTab> {
                     ),
                     subtitle: Text(
                       linked.isEmpty
-                          ? 'Koppel een ander account. De ouder/verzorger kan daarna meekijken en aanwezigheid aanpassen.'
+                          ? 'Start een koppeling. De ouder/verzorger kan daarna als kind meekijken en aanwezigheid voor trainingen/wedstrijden invullen. Koppeling wordt bevestigd via e-mail.'
                           : 'Nog een account toevoegen.',
                       style: const TextStyle(color: AppColors.textSecondary),
                     ),
@@ -862,6 +896,27 @@ class _ProfielTabState extends State<ProfielTab> {
                         ),
                       ),
 
+                    // Commissies: expliciet tonen als de gebruiker commissielid is
+                    if (ctx.committees.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      GlassCard(
+                        child: ListTile(
+                          leading: const Icon(
+                            Icons.badge_outlined,
+                            color: AppColors.iconMuted,
+                          ),
+                          title: const Text(
+                            'Commissies',
+                            style: TextStyle(color: AppColors.textSecondary),
+                          ),
+                          subtitle: Text(
+                            ctx.committees.map(_formatCommitteeName).join(' • '),
+                            style: const TextStyle(color: AppColors.onBackground),
+                          ),
+                        ),
+                      ),
+                    ],
+
                     const SizedBox(height: 12),
 
                     // Teamrollen
@@ -927,9 +982,51 @@ class _ProfielTabState extends State<ProfielTab> {
                           Icons.notifications_outlined,
                           color: AppColors.iconMuted,
                         ),
-                        title: const Text(
-                          'Notificaties',
-                          style: TextStyle(color: AppColors.onBackground),
+                        title: Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                'Notificaties',
+                                style: TextStyle(color: AppColors.onBackground),
+                              ),
+                            ),
+                            Tooltip(
+                              message: 'Agenda: bij nieuwe of gewijzigde agenda-items. '
+                                  'Nieuws: bij nieuwe berichten. Uitgelicht: bij nieuwe uitgelichte items. '
+                                  'Stand: bij wijziging van de stand. Trainingen: bij nieuwe of gewijzigde trainingen.',
+                              child: GestureDetector(
+                                onTap: () {
+                                  showDialog(
+                                    context: context,
+                                    builder: (ctx) => AlertDialog(
+                                      title: const Text('Wanneer krijg je notificaties?'),
+                                      content: const SingleChildScrollView(
+                                        child: Text(
+                                          '• Agenda: bij nieuwe of gewijzigde agenda-items\n'
+                                          '• Nieuws: bij nieuwe berichten op de homepagina\n'
+                                          '• Uitgelicht: bij nieuwe uitgelichte items\n'
+                                          '• Stand: bij wijziging van de stand van je team\n'
+                                          '• Trainingen: bij nieuwe of gewijzigde trainingen',
+                                          style: TextStyle(color: AppColors.onBackground),
+                                        ),
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(ctx),
+                                          child: const Text('Ok'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                },
+                                child: const Icon(
+                                  Icons.info_outline,
+                                  size: 20,
+                                  color: AppColors.iconMuted,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                         subtitle: const Text(
                           'Kies waar je meldingen van wilt krijgen.',
@@ -947,34 +1044,6 @@ class _ProfielTabState extends State<ProfielTab> {
 
                     const SizedBox(height: 12),
 
-                    // Gebruikersnamen beheren (alleen voor admins; wijzig namen van anderen)
-                    if (AppUserContext.of(context).hasFullAdminRights) ...[
-                      GlassCard(
-                        child: ListTile(
-                          leading: const Icon(
-                            Icons.badge_outlined,
-                            color: AppColors.iconMuted,
-                          ),
-                          title: const Text(
-                            'Gebruikersnaam wijzigen',
-                            style: TextStyle(color: AppColors.onBackground),
-                          ),
-                          subtitle: const Text(
-                            'Wijzig gebruikersnamen van leden.',
-                            style: TextStyle(color: AppColors.textSecondary),
-                          ),
-                          onTap: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => const AdminGebruikersnamenPage(),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                    ],
-
                     // Email wijzigen
                     GlassCard(
                       child: ListTile(
@@ -987,7 +1056,7 @@ class _ProfielTabState extends State<ProfielTab> {
                           style: TextStyle(color: AppColors.onBackground),
                         ),
                         subtitle: const Text(
-                          'Je ontvangt mogelijk een bevestigingsmail.',
+                          'Er wordt altijd een bevestigingsmail gestuurd naar het nieuwe adres. Pas na bevestiging is de wijziging actief.',
                           style: TextStyle(color: AppColors.textSecondary),
                         ),
                         onTap: () => _changeEmailFlow(currentEmail: email),

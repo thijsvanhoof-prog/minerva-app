@@ -68,6 +68,59 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     }
   }
 
+  DateTime? _parseVisibleUntil(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is DateTime) {
+      final local = raw.toLocal();
+      if (local.hour == 0 &&
+          local.minute == 0 &&
+          local.second == 0 &&
+          local.millisecond == 0) {
+        return DateTime(local.year, local.month, local.day, 23, 59, 59);
+      }
+      return local;
+    }
+    final s = raw.toString().trim();
+    if (s.isEmpty) return null;
+    // Date-only (YYYY-MM-DD) -> treat as end-of-day local.
+    if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(s)) {
+      final d = DateTime.tryParse(s);
+      if (d == null) return null;
+      return DateTime(d.year, d.month, d.day, 23, 59, 59);
+    }
+    final dt = DateTime.tryParse(s);
+    if (dt == null) return null;
+    final local = dt.toLocal();
+    if (local.hour == 0 &&
+        local.minute == 0 &&
+        local.second == 0 &&
+        local.millisecond == 0) {
+      return DateTime(local.year, local.month, local.day, 23, 59, 59);
+    }
+    return local;
+  }
+
+  bool _isVisibleNow(DateTime? visibleUntil) {
+    if (visibleUntil == null) return true;
+    // show through the end moment (inclusive)
+    return !DateTime.now().isAfter(visibleUntil);
+  }
+
+  Future<DateTime?> _pickVisibleUntilDate(DateTime? current) async {
+    final now = DateTime.now();
+    final initial = current ?? now;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime(initial.year, initial.month, initial.day),
+      firstDate: DateTime(now.year - 1, 1, 1),
+      lastDate: DateTime(now.year + 5, 12, 31),
+      helpText: 'Tonen tot (optioneel)',
+    );
+    if (picked == null) return current;
+    // Treat as end-of-day local.
+    return DateTime(picked.year, picked.month, picked.day, 23, 59, 59);
+  }
+
   Future<void> _refreshHome() async {
     await _loadHighlights();
     await _loadAgenda();
@@ -96,20 +149,31 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     });
 
     try {
-      final res = await _client
-          .from('home_highlights')
-          .select('highlight_id, title, subtitle, icon_name')
-          .order('created_at', ascending: false);
+      // Best-effort: support optional `visible_until` column.
+      List<dynamic> res;
+      try {
+        res = await _client
+            .from('home_highlights')
+            .select('highlight_id, title, subtitle, icon_name, visible_until')
+            .order('created_at', ascending: false);
+      } catch (_) {
+        res = await _client
+            .from('home_highlights')
+            .select('highlight_id, title, subtitle, icon_name')
+            .order('created_at', ascending: false);
+      }
 
-      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final rows = res.cast<Map<String, dynamic>>();
       final list = rows.map((r) {
+        final until = _parseVisibleUntil(r['visible_until']);
         return _Highlight(
           id: (r['highlight_id'] as num).toInt(),
           title: (r['title'] as String?) ?? '',
           subtitle: (r['subtitle'] as String?) ?? '',
           iconText: (r['icon_name'] as String?) ?? '🏐',
+          visibleUntil: until,
         );
-      }).toList();
+      }).where((h) => _isVisibleNow(h.visibleUntil)).toList();
 
       setState(() {
         _highlights = list;
@@ -248,6 +312,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       // Best-effort: if the user is allowed to view RSVPs and has selected the RSVPs tab,
       // load RSVPs after agenda is available.
       try {
+        if (!mounted) return;
         final ctx = AppUserContext.of(context);
         if (ctx.canViewAgendaRsvps && _agendaMode == 1) {
           // Don't await; keep agenda UI responsive.
@@ -494,6 +559,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   }
 
   Widget _buildAgendaListView({required bool canManageAgenda}) {
+    final hasRsvp = _agendaItems.any((a) => a.canRsvp);
+    final showRsvpInfo = hasRsvp && _agendaItems.isNotEmpty;
+    final extraRows = showRsvpInfo ? 1 : 0;
     return RefreshIndicator(
       color: AppColors.primary,
       onRefresh: _refreshHome,
@@ -505,7 +573,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           16,
           24 + MediaQuery.paddingOf(context).bottom,
         ),
-        itemCount: 1 + (_agendaItems.isEmpty ? 1 : _agendaItems.length),
+        itemCount: 1 + (_agendaItems.isEmpty ? 1 : _agendaItems.length + extraRows),
         separatorBuilder: (_, _) => const SizedBox(height: 12),
         itemBuilder: (context, i) {
           if (i == 0) {
@@ -546,7 +614,19 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             );
           }
 
-          final item = _agendaItems[i - 1];
+          if (showRsvpInfo && i == 1) {
+            return Text(
+              'Bij aanmelden slaan we je naam en (spelers)team op. '
+              'Dit is zichtbaar voor Bestuur/Communicatie. Je kunt altijd weer afmelden.',
+              style: TextStyle(
+                color: AppColors.textSecondary.withValues(alpha: 0.9),
+                fontSize: 12.5,
+              ),
+            );
+          }
+
+          final itemIndex = showRsvpInfo ? (i - 2) : (i - 1);
+          final item = _agendaItems[itemIndex];
           final signedUp = item.id != null && _myRsvpAgendaIds.contains(item.id);
           final enabled = item.canRsvp && item.id != null;
           return _AgendaCard(
@@ -689,6 +769,15 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       List<Map<String, dynamic>> rows = const [];
       String idField = 'news_id';
       for (final attempt in const [
+        // Preferred: supports optional `visible_until`.
+        ('news_id, title, description, created_at, author, category, source, visible_until', 'news_id'),
+        ('id, title, description, created_at, author, category, source, visible_until', 'id'),
+        ('news_id, title, body, created_at, author, category, source, visible_until', 'news_id'),
+        ('id, title, body, created_at, author, category, source, visible_until', 'id'),
+        ('news_id, title, description, created_at, visible_until', 'news_id'),
+        ('id, title, description, created_at, visible_until', 'id'),
+        ('news_id, title, body, created_at, visible_until', 'news_id'),
+        ('id, title, body, created_at, visible_until', 'id'),
         ('news_id, title, description, created_at, author, category, source', 'news_id'),
         ('id, title, description, created_at, author, category, source', 'id'),
         // Older schemas may use "body" instead of "description"
@@ -734,6 +823,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         date ??= DateTime.now();
         final author = (r['author'] ?? '').toString().trim();
         final category = _categoryFromDb(r['category']);
+        final visibleUntil = _parseVisibleUntil(r['visible_until']);
+        if (!_isVisibleNow(visibleUntil)) continue;
         list.add(NewsItem(
           id: idStr,
           title: title,
@@ -741,6 +832,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           date: date,
           author: author.isNotEmpty ? author : 'Bestuur',
           category: category,
+          visibleUntil: visibleUntil,
         ));
       }
 
@@ -922,6 +1014,40 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     );
   }
 
+  void _showHighlightDetail(_Highlight item) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(item.title),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                item.subtitle,
+                style: const TextStyle(color: AppColors.onBackground, height: 1.4),
+              ),
+              if (item.visibleUntil != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'Tonen t/m ${_formatDateShort(item.visibleUntil!)}',
+                  style: const TextStyle(color: AppColors.textSecondary),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Sluiten'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _openAddNewsDialog() async {
     final authorName = (() {
       try {
@@ -935,48 +1061,78 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 
     final titleController = TextEditingController();
     final descriptionController = TextEditingController();
+    DateTime? visibleUntil;
 
     final ok = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        scrollable: true,
-        title: const Text('Nieuwsbericht toevoegen'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextField(
-              controller: titleController,
-              decoration: const InputDecoration(
-                labelText: 'Titel *',
-                hintText: 'bijv. Update vanuit het bestuur',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocalState) => AlertDialog(
+          scrollable: true,
+          title: const Text('Nieuwsbericht toevoegen'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: titleController,
+                decoration: const InputDecoration(
+                  labelText: 'Titel *',
+                  hintText: 'bijv. Update vanuit het bestuur',
+                ),
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: descriptionController,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                  labelText: 'Beschrijving',
+                  hintText: 'Volledige tekst van het bericht',
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Tonen tot',
+                      style: TextStyle(color: AppColors.textSecondary),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      final next = await _pickVisibleUntilDate(visibleUntil);
+                      setLocalState(() => visibleUntil = next);
+                    },
+                    child: Text(
+                      visibleUntil == null ? 'Geen' : _formatDate(visibleUntil!),
+                    ),
+                  ),
+                  if (visibleUntil != null)
+                    IconButton(
+                      tooltip: 'Wissen',
+                      onPressed: () => setLocalState(() => visibleUntil = null),
+                      icon: const Icon(Icons.close, size: 18),
+                      color: AppColors.textSecondary,
+                    ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Annuleren'),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: descriptionController,
-              maxLines: 6,
-              decoration: const InputDecoration(
-                labelText: 'Beschrijving',
-                hintText: 'Volledige tekst van het bericht',
-                alignLabelWithHint: true,
-              ),
+            ElevatedButton(
+              onPressed: () {
+                if (titleController.text.trim().isEmpty) return;
+                Navigator.of(context).pop(true);
+              },
+              child: const Text('Opslaan'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Annuleren'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (titleController.text.trim().isEmpty) return;
-              Navigator.of(context).pop(true);
-            },
-            child: const Text('Opslaan'),
-          ),
-        ],
       ),
     );
 
@@ -996,18 +1152,31 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         'description': descriptionController.text.trim(),
         'author': authorName,
         'category': 'bestuur',
+        'visible_until': visibleUntil?.toUtc().toIso8601String(),
       };
       // Some DB schemas require non-null `source` / `author` / `category` columns.
       try {
         await _client.from('home_news').insert({...payload, 'source': 'app'});
       } on PostgrestException catch (e) {
-        // Missing column -> retry without extra fields
+        // Missing column -> retry without optional `visible_until`, then fallback minimal.
         if (e.code == 'PGRST204' ||
-            (e.message.contains("Could not find the '") && e.message.contains("column"))) {
-          await _client.from('home_news').insert({
-            'title': title,
-            'description': descriptionController.text.trim(),
-          });
+            (e.message.contains("Could not find the '") &&
+                e.message.contains("column"))) {
+          try {
+            final retry = {...payload, 'source': 'app'}..remove('visible_until');
+            await _client.from('home_news').insert(retry);
+          } on PostgrestException catch (e2) {
+            if (e2.code == 'PGRST204' ||
+                (e2.message.contains("Could not find the '") &&
+                    e2.message.contains("column"))) {
+              await _client.from('home_news').insert({
+                'title': title,
+                'description': descriptionController.text.trim(),
+              });
+            } else {
+              rethrow;
+            }
+          }
         } else {
           rethrow;
         }
@@ -1037,48 +1206,78 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 
     final titleController = TextEditingController(text: existing.title);
     final descriptionController = TextEditingController(text: existing.body);
+    DateTime? visibleUntil = existing.visibleUntil;
 
     final ok = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        scrollable: true,
-        title: const Text('Nieuwsbericht aanpassen'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextField(
-              controller: titleController,
-              decoration: const InputDecoration(
-                labelText: 'Titel *',
-                hintText: 'bijv. Update vanuit het bestuur',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocalState) => AlertDialog(
+          scrollable: true,
+          title: const Text('Nieuwsbericht aanpassen'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: titleController,
+                decoration: const InputDecoration(
+                  labelText: 'Titel *',
+                  hintText: 'bijv. Update vanuit het bestuur',
+                ),
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: descriptionController,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                  labelText: 'Beschrijving',
+                  hintText: 'Volledige tekst van het bericht',
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Tonen tot',
+                      style: TextStyle(color: AppColors.textSecondary),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      final next = await _pickVisibleUntilDate(visibleUntil);
+                      setLocalState(() => visibleUntil = next);
+                    },
+                    child: Text(
+                      visibleUntil == null ? 'Geen' : _formatDate(visibleUntil!),
+                    ),
+                  ),
+                  if (visibleUntil != null)
+                    IconButton(
+                      tooltip: 'Wissen',
+                      onPressed: () => setLocalState(() => visibleUntil = null),
+                      icon: const Icon(Icons.close, size: 18),
+                      color: AppColors.textSecondary,
+                    ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Annuleren'),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: descriptionController,
-              maxLines: 6,
-              decoration: const InputDecoration(
-                labelText: 'Beschrijving',
-                hintText: 'Volledige tekst van het bericht',
-                alignLabelWithHint: true,
-              ),
+            ElevatedButton(
+              onPressed: () {
+                if (titleController.text.trim().isEmpty) return;
+                Navigator.of(context).pop(true);
+              },
+              child: const Text('Opslaan'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Annuleren'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (titleController.text.trim().isEmpty) return;
-              Navigator.of(context).pop(true);
-            },
-            child: const Text('Opslaan'),
-          ),
-        ],
       ),
     );
 
@@ -1098,6 +1297,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         'description': descriptionController.text.trim(),
         'author': authorName,
         'category': existing.category.label.toLowerCase(),
+        'visible_until': visibleUntil?.toUtc().toIso8601String(),
       };
       // Some DB schemas require non-null `source` / `author` / `category` columns.
       try {
@@ -1106,13 +1306,25 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             .update({...payload, 'source': 'app'})
             .eq(_newsIdField, idValue);
       } on PostgrestException catch (e) {
-        // Missing column -> retry without extra fields
+        // Missing column -> retry without optional `visible_until`, then fallback minimal.
         if (e.code == 'PGRST204' ||
-            (e.message.contains("Could not find the '") && e.message.contains("column"))) {
-          await _client.from('home_news').update({
-            'title': title,
-            'description': descriptionController.text.trim(),
-          }).eq(_newsIdField, idValue);
+            (e.message.contains("Could not find the '") &&
+                e.message.contains("column"))) {
+          try {
+            final retry = {...payload, 'source': 'app'}..remove('visible_until');
+            await _client.from('home_news').update(retry).eq(_newsIdField, idValue);
+          } on PostgrestException catch (e2) {
+            if (e2.code == 'PGRST204' ||
+                (e2.message.contains("Could not find the '") &&
+                    e2.message.contains("column"))) {
+              await _client.from('home_news').update({
+                'title': title,
+                'description': descriptionController.text.trim(),
+              }).eq(_newsIdField, idValue);
+            } else {
+              rethrow;
+            }
+          }
         } else {
           rethrow;
         }
@@ -1719,19 +1931,47 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     required String title,
     required String subtitle,
     required String iconText,
+    required DateTime? visibleUntil,
   }) async {
     final payload = <String, dynamic>{
       'title': title,
       'subtitle': subtitle,
       'icon_name': iconText,
+      'visible_until': visibleUntil?.toUtc().toIso8601String(),
     };
     if (id == null) {
-      await _client.from('home_highlights').insert(payload);
+      try {
+        await _client.from('home_highlights').insert(payload);
+      } on PostgrestException catch (e) {
+        // Missing column -> retry without optional visible_until
+        if (e.code == 'PGRST204' ||
+            (e.message.contains("Could not find the '") &&
+                e.message.contains("column"))) {
+          payload.remove('visible_until');
+          await _client.from('home_highlights').insert(payload);
+        } else {
+          rethrow;
+        }
+      }
     } else {
-      await _client
-          .from('home_highlights')
-          .update(payload)
-          .eq('highlight_id', id);
+      try {
+        await _client
+            .from('home_highlights')
+            .update(payload)
+            .eq('highlight_id', id);
+      } on PostgrestException catch (e) {
+        if (e.code == 'PGRST204' ||
+            (e.message.contains("Could not find the '") &&
+                e.message.contains("column"))) {
+          payload.remove('visible_until');
+          await _client
+              .from('home_highlights')
+              .update(payload)
+              .eq('highlight_id', id);
+        } else {
+          rethrow;
+        }
+      }
     }
   }
 
@@ -1783,57 +2023,88 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final titleController = TextEditingController(text: existing?.title ?? '');
     final subtitleController =
         TextEditingController(text: existing?.subtitle ?? '');
+    DateTime? visibleUntil = existing?.visibleUntil;
 
     final result = await showDialog<_HighlightEditResult>(
       context: context,
-      builder: (context) => AlertDialog(
-        scrollable: true,
-        title: Text(existing == null ? 'Punt toevoegen' : 'Punt aanpassen'),
-        content: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: titleController,
-                textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(
-                  labelText: 'Titel',
-                  hintText: 'Bijv. De Minerva app',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocalState) => AlertDialog(
+          scrollable: true,
+          title: Text(existing == null ? 'Punt toevoegen' : 'Punt aanpassen'),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextField(
+                  controller: titleController,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Titel',
+                    hintText: 'Bijv. De Minerva app',
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: subtitleController,
-                minLines: 2,
-                maxLines: 4,
-                decoration: const InputDecoration(
-                  labelText: 'Tekst',
-                  hintText: 'Korte omschrijving',
-                  alignLabelWithHint: true,
+                const SizedBox(height: 12),
+                TextField(
+                  controller: subtitleController,
+                  minLines: 2,
+                  maxLines: 4,
+                  decoration: const InputDecoration(
+                    labelText: 'Tekst',
+                    hintText: 'Korte omschrijving',
+                    alignLabelWithHint: true,
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(null),
-            child: const Text('Annuleren'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(
-              _HighlightEditResult.save(
-                titleController.text.trim(),
-                subtitleController.text.trim(),
-                // Icon/emoji field removed; keep existing icon or use default.
-                existing?.iconText ?? '🏐',
-              ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Tonen tot',
+                        style: TextStyle(color: AppColors.textSecondary),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () async {
+                        final next = await _pickVisibleUntilDate(visibleUntil);
+                        setLocalState(() => visibleUntil = next);
+                      },
+                      child: Text(
+                        visibleUntil == null ? 'Geen' : _formatDate(visibleUntil!),
+                      ),
+                    ),
+                    if (visibleUntil != null)
+                      IconButton(
+                        tooltip: 'Wissen',
+                        onPressed: () => setLocalState(() => visibleUntil = null),
+                        icon: const Icon(Icons.close, size: 18),
+                        color: AppColors.textSecondary,
+                      ),
+                  ],
+                ),
+              ],
             ),
-            child: const Text('Opslaan'),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: const Text('Annuleren'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(
+                _HighlightEditResult.save(
+                  titleController.text.trim(),
+                  subtitleController.text.trim(),
+                  // Icon/emoji field removed; keep existing icon or use default.
+                  existing?.iconText ?? '🏐',
+                  visibleUntil,
+                ),
+              ),
+              child: const Text('Opslaan'),
+            ),
+          ],
+        ),
       ),
     );
 
@@ -1855,6 +2126,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           subtitle: result.subtitle ?? '',
           iconText:
               (result.iconText?.isNotEmpty == true) ? result.iconText! : '🏐',
+          visibleUntil: result.visibleUntil,
         );
       }
       await _loadHighlights();
@@ -1981,28 +2253,34 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               style: const TextStyle(color: AppColors.textSecondary),
                             ),
                           ),
-                        SizedBox(
-                          height: 135,
-                          child: ListView.separated(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: _highlights.length,
-                            separatorBuilder: (_, _) => const SizedBox(width: 12),
-                            itemBuilder: (_, i) => SizedBox(
-                              width: 260,
+                        const Text(
+                          'Korte, belangrijke mededelingen en acties.',
+                          style: TextStyle(color: AppColors.textSecondary),
+                        ),
+                        const SizedBox(height: 12),
+                        if (_highlights.isEmpty)
+                          const Text(
+                            'Geen uitgelichte items.',
+                            style: TextStyle(color: AppColors.textSecondary),
+                          )
+                        else
+                          ..._highlights.map((h) {
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
                               child: _HighlightCard(
-                                item: _highlights[i],
+                                item: h,
                                 canManage: canManageHighlights,
+                                onMore: () => _showHighlightDetail(h),
                                 onEdit: () => _openEditHighlightDialog(
                                   canManage: canManageHighlights,
-                                  existing: _highlights[i],
+                                  existing: h,
                                 ),
-                                onDelete: _highlights[i].id != null
-                                    ? () => _confirmDeleteHighlight(_highlights[i])
+                                onDelete: h.id != null
+                                    ? () => _confirmDeleteHighlight(h)
                                     : null,
                               ),
-                            ),
-                          ),
-                        ),
+                            );
+                          }),
                       ],
                     ),
                   ),
@@ -2056,25 +2334,36 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                       separatorBuilder: (_, _) => const SizedBox(height: 12),
                       itemBuilder: (context, i) {
                         if (i == 0) {
-                          return _HomeTabHeader(
-                            title: 'Nieuws',
-                            trailing: canManageNews
-                                ? IconButton(
-                                    tooltip: 'Nieuwsbericht toevoegen',
-                                    icon: const Icon(Icons.add_circle_outline),
-                                    color: AppColors.primary,
-                                    onPressed: () => _openAddNewsDialog(),
-                                  )
-                                : (_loadingNews
-                                    ? const SizedBox(
-                                        height: 18,
-                                        width: 18,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          color: AppColors.primary,
-                                        ),
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _HomeTabHeader(
+                                title: 'Nieuws',
+                                trailing: canManageNews
+                                    ? IconButton(
+                                        tooltip: 'Nieuwsbericht toevoegen',
+                                        icon: const Icon(Icons.add_circle_outline),
+                                        color: AppColors.primary,
+                                        onPressed: () => _openAddNewsDialog(),
                                       )
-                                    : null),
+                                    : (_loadingNews
+                                        ? const SizedBox(
+                                            height: 18,
+                                            width: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: AppColors.primary,
+                                            ),
+                                          )
+                                        : null),
+                              ),
+                              const SizedBox(height: 12),
+                              const Text(
+                                'Berichten met wat meer context. '
+                                'Tip: stel optioneel “Tonen tot” in zodat een bericht automatisch verdwijnt.',
+                                style: TextStyle(color: AppColors.textSecondary),
+                              ),
+                            ],
                           );
                         }
 
@@ -2097,7 +2386,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         return _NewsCard(
                           item: n,
                           canManage: canManageNews,
-                          onReadMore: _needsLeesMeer(n) ? () => _showNewsDetail(n) : null,
+                          onReadMore: () => _showNewsDetail(n),
                           onEdit: _newsFromSupabase ? () => _openEditNewsDialog(n) : null,
                           onDelete: _newsFromSupabase ? () => _deleteNewsItem(n) : null,
                         );
@@ -2170,6 +2459,12 @@ class _CardBox extends StatelessWidget {
   }
 }
 
+String _formatDateShort(DateTime dt) {
+  final d = dt.toLocal();
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${two(d.day)}-${two(d.month)}-${d.year}';
+}
+
 /* ----------------------- HIGHLIGHTS ----------------------- */
 
 class _Highlight {
@@ -2177,24 +2472,28 @@ class _Highlight {
   final String title;
   final String subtitle;
   final String iconText;
+  final DateTime? visibleUntil;
 
   const _Highlight({
     required this.id,
     required this.title,
     required this.subtitle,
     required this.iconText,
+    required this.visibleUntil,
   });
 }
 
 class _HighlightCard extends StatelessWidget {
   final _Highlight item;
   final bool canManage;
+  final VoidCallback? onMore;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
 
   const _HighlightCard({
     required this.item,
     required this.canManage,
+    this.onMore,
     this.onEdit,
     this.onDelete,
   });
@@ -2223,8 +2522,37 @@ class _HighlightCard extends StatelessWidget {
                 const SizedBox(height: 6),
                 Text(
                   item.subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: AppColors.textSecondary),
                 ),
+                if (item.visibleUntil != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Tonen t/m ${_formatDateShort(item.visibleUntil!)}',
+                    style: TextStyle(
+                      color: AppColors.textSecondary.withValues(alpha: 0.9),
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+                if (onMore != null) ...[
+                  const SizedBox(height: 6),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: onMore,
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppColors.primary,
+                        padding: EdgeInsets.zero,
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text('Meer…'),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -2274,23 +2602,27 @@ class _HighlightEditResult {
   final String? title;
   final String? subtitle;
   final String? iconText;
+  final DateTime? visibleUntil;
 
   const _HighlightEditResult._({
     required this.isSave,
     this.title,
     this.subtitle,
     this.iconText,
+    this.visibleUntil,
   });
 
   const _HighlightEditResult.save(
     String title,
     String subtitle,
     String iconText,
+    DateTime? visibleUntil,
   ) : this._(
           isSave: true,
           title: title,
           subtitle: subtitle,
           iconText: iconText,
+          visibleUntil: visibleUntil,
         );
 }
 
@@ -2300,18 +2632,21 @@ List<_Highlight> _mockHighlights() => const [
         iconText: '📌',
         title: 'Seizoensstart',
         subtitle: 'Belangrijke clubafspraken en planning',
+        visibleUntil: null,
       ),
       _Highlight(
         id: null,
         iconText: '🏆',
         title: 'Toernooi',
         subtitle: 'Inschrijving geopend (jeugd & senioren)',
+        visibleUntil: null,
       ),
       _Highlight(
         id: null,
         iconText: '🤝',
         title: 'Vrijwilligers gezocht',
         subtitle: 'Tafelaars en scheidsrechters nodig',
+        visibleUntil: null,
       ),
     ];
 
@@ -2502,16 +2837,17 @@ class _AgendaCard extends StatelessWidget {
                     child: Text(signedUp ? 'Afmelden' : 'Aanmelden'),
                   ),
                 ),
-                const SizedBox(width: 12),
               ],
+              const Spacer(),
               TextButton(
                 onPressed: onReadMore,
                 style: TextButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  foregroundColor: AppColors.primary,
+                  padding: EdgeInsets.zero,
                   minimumSize: Size.zero,
                   tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
-                child: const Text('Lees meer'),
+                child: const Text('Meer…'),
               ),
             ],
           ),
@@ -2553,12 +2889,6 @@ List<_AgendaItem> _mockAgenda() => const [
     ];
 
 /* ----------------------- NIEUWS ----------------------- */
-
-/// Ongeveer 3 regels tekst (~40 karakters per regel). Bij overschrijding "Lees meer" tonen.
-const int _newsBodyLeesMeerThreshold = 120;
-
-bool _needsLeesMeer(NewsItem item) =>
-    item.body.trim().length > _newsBodyLeesMeerThreshold;
 
 String _newsDateLabel(DateTime d) {
   final now = DateTime.now();
@@ -2609,6 +2939,14 @@ class _NewsCard extends StatelessWidget {
                 _newsDateLabel(item.date),
                 style: const TextStyle(color: AppColors.textSecondary),
               ),
+              if (item.visibleUntil != null)
+                Text(
+                  'Tonen t/m ${_formatDateShort(item.visibleUntil!)}',
+                  style: TextStyle(
+                    color: AppColors.textSecondary.withValues(alpha: 0.9),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 10),
@@ -2673,11 +3011,14 @@ class _NewsCard extends StatelessWidget {
             Align(
               alignment: Alignment.centerRight,
               child: TextButton(
+                onPressed: onReadMore,
                 style: TextButton.styleFrom(
                   foregroundColor: AppColors.primary,
+                  padding: EdgeInsets.zero,
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
-                onPressed: onReadMore,
-                child: const Text('Lees meer'),
+                child: const Text('Meer…'),
               ),
             ),
           ],

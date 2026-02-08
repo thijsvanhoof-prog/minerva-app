@@ -84,6 +84,10 @@ class AppUserContext extends InheritedWidget {
   final List<TeamMembership> memberships;
   final List<String> committees;
 
+  /// Allows pages to request a full user-context reload (memberships/committees/names).
+  /// Useful after TC/admin changes (team link) without requiring app restart.
+  final Future<void> Function()? reloadUserContext;
+
   /// Ouder-kind: id van de ingelogde user (ouder).
   final String loggedInProfileId;
   /// Ouder-kind: als je "als kind" kijkt, de kind-profile-id en -naam.
@@ -100,6 +104,7 @@ class AppUserContext extends InheritedWidget {
     required this.isGlobalAdmin,
     required this.memberships,
     required this.committees,
+    this.reloadUserContext,
     required this.loggedInProfileId,
     this.viewingAsProfileId,
     this.viewingAsDisplayName,
@@ -132,16 +137,23 @@ class AppUserContext extends InheritedWidget {
   bool get isInWedstrijdzaken => isInCommittee('wedstrijdzaken');
 
   /// Central place for feature permissions (can be reused across the app).
+  /// Bestuur: alles inzien (view), alleen admins mogen aanpassen (manage).
   bool get canManageAgenda =>
-      hasFullAdminRights || isInBestuur || isInCommunicatie;
+      hasFullAdminRights || isInCommunicatie;
   bool get canViewAgendaRsvps =>
       hasFullAdminRights || isInBestuur || isInCommunicatie;
   bool get canManageNews =>
-      hasFullAdminRights || isInBestuur || isInCommunicatie;
+      hasFullAdminRights || isInCommunicatie;
   bool get canManageHighlights =>
-      hasFullAdminRights || isInBestuur || isInCommunicatie;
+      hasFullAdminRights || isInCommunicatie;
   bool get canManageTeams => hasFullAdminRights || isInTechnischeCommissie;
   bool get canManageMatches => hasFullAdminRights || isInWedstrijdzaken;
+
+  /// Bestuur-tab: bestuursleden en admins mogen bewerken.
+  bool get canManageBestuur => hasFullAdminRights || isInBestuur;
+
+  /// TC-tab: alleen admins en TC mogen bewerken; Bestuur mag alleen kijken.
+  bool get canManageTc => hasFullAdminRights || isInTechnischeCommissie;
 
   // Tasks
   bool get canViewAllTasks => hasFullAdminRights || isInBestuur || isInWedstrijdzaken;
@@ -167,6 +179,7 @@ class AppUserContext extends InheritedWidget {
         isGlobalAdmin != oldWidget.isGlobalAdmin ||
         memberships != oldWidget.memberships ||
         committees != oldWidget.committees ||
+        reloadUserContext != oldWidget.reloadUserContext ||
         loggedInProfileId != oldWidget.loggedInProfileId ||
         viewingAsProfileId != oldWidget.viewingAsProfileId ||
         viewingAsDisplayName != oldWidget.viewingAsDisplayName ||

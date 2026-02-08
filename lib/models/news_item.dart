@@ -6,6 +6,7 @@ class NewsItem {
   final String author;
   final NewsCategory category;
   final bool pinned;
+  final DateTime? visibleUntil;
 
   const NewsItem({
     required this.id,
@@ -15,6 +16,7 @@ class NewsItem {
     required this.author,
     required this.category,
     this.pinned = false,
+    this.visibleUntil,
   });
 }
 

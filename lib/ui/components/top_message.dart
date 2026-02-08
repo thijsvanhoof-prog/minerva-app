@@ -10,8 +10,19 @@ void showTopMessage(
   bool isError = false,
   Duration duration = const Duration(seconds: 4),
 }) {
-  final messenger = ScaffoldMessenger.of(context);
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  if (messenger == null) return;
+  showTopMessageWithMessenger(messenger, message, isError: isError, duration: duration);
+}
 
+/// Toon een bericht via de gegeven messenger. Gebruik dit na async gaps
+/// in plaats van context, om BuildContext-across-async-gaps te vermijden.
+void showTopMessageWithMessenger(
+  ScaffoldMessengerState messenger,
+  String message, {
+  bool isError = false,
+  Duration duration = const Duration(seconds: 4),
+}) {
   // Avoid stacking multiple banners/snackbars.
   messenger.clearSnackBars();
   messenger.hideCurrentMaterialBanner();
