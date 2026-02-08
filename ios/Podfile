@@ -4,6 +4,11 @@ platform :ios, '13.0'
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
+# Voorkom "specs too out-of-date" en lockfile-conflict bij OneSignal-versiewissel
+pre_install do |installer|
+  system('pod repo update')
+end
+
 project 'Runner', {
   'Debug' => :debug,
   'Profile' => :release,
@@ -52,14 +57,16 @@ post_install do |installer|
         config.build_settings['CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS'] = 'NO'
         config.build_settings['GCC_TREAT_WARNINGS_AS_ERRORS'] = 'NO'
         config.build_settings['ENABLE_MODULE_VERIFIER'] = 'NO'
-        # Expliciet Flutter framework path voor Archive-builds
-        inherited = config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]'] || '$(inherited)'
+        # Expliciet Flutter framework + header paths voor Archive-builds
         path = config.type == :debug ? flutter_debug : flutter_release
-        config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]'] = "\"#{path}\" #{inherited}"
-        sim_inherited = config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]'] || '$(inherited)'
+        header_path = File.join(path, 'Flutter.framework', 'Headers')
+        config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]'] = "\"#{path}\" $(inherited)"
+        config.build_settings['HEADER_SEARCH_PATHS[sdk=iphoneos*]'] = "\"#{header_path}\" $(inherited)"
         sim_dir = config.type == :debug ? File.join(flutter_engine, 'ios') : File.join(flutter_engine, 'ios-release')
         sim_path = File.join(sim_dir, 'Flutter.xcframework', 'ios-arm64_x86_64-simulator')
-        config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]'] = "\"#{sim_path}\" #{sim_inherited}"
+        sim_header = File.join(sim_path, 'Flutter.framework', 'Headers')
+        config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]'] = "\"#{sim_path}\" $(inherited)"
+        config.build_settings['HEADER_SEARCH_PATHS[sdk=iphonesimulator*]'] = "\"#{sim_header}\" $(inherited)"
         extra = '-w -Wno-nonnull -Wno-incompatible-pointer-types -Wno-incomplete-implementation'
         wrap = lambda { |v| v.is_a?(Array) ? v.join(' ') : (v || '$(inherited)') }
         config.build_settings['WARNING_CFLAGS'] = "#{wrap.call(config.build_settings['WARNING_CFLAGS'])} #{extra}"
