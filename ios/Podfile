@@ -67,7 +67,7 @@ post_install do |installer|
         sim_header = File.join(sim_path, 'Flutter.framework', 'Headers')
         config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]'] = "\"#{sim_path}\" $(inherited)"
         config.build_settings['HEADER_SEARCH_PATHS[sdk=iphonesimulator*]'] = "\"#{sim_header}\" $(inherited)"
-        extra = '-w -Wno-nonnull -Wno-incompatible-pointer-types -Wno-incomplete-implementation'
+        extra = '-w -Wno-nonnull -Wno-incompatible-pointer-types -Wno-incomplete-implementation -Wno-incomplete-umbrella'
         wrap = lambda { |v| v.is_a?(Array) ? v.join(' ') : (v || '$(inherited)') }
         config.build_settings['WARNING_CFLAGS'] = "#{wrap.call(config.build_settings['WARNING_CFLAGS'])} #{extra}"
         config.build_settings['OTHER_CFLAGS'] = "#{wrap.call(config.build_settings['OTHER_CFLAGS'])} #{extra}"
