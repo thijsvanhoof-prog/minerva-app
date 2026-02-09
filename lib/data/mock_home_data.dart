@@ -1,6 +1,7 @@
 import '../models/news_item.dart';
 
 final mockNews = <NewsItem>[
+  
   NewsItem(
     id: '1',
     title: 'Nieuwjaarsborrel: datum bekend',
