@@ -111,6 +111,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final initial = current ?? now;
     final picked = await showDatePicker(
       context: context,
+      locale: const Locale('nl', 'NL'),
       initialDate: DateTime(initial.year, initial.month, initial.day),
       firstDate: DateTime(now.year - 1, 1, 1),
       lastDate: DateTime(now.year + 5, 12, 31),
@@ -1439,6 +1440,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final now = DateTime.now();
                           final d = await showDatePicker(
                             context: context,
+                            locale: const Locale('nl', 'NL'),
                             initialDate: pickedDateTime ?? now,
                             firstDate: now.subtract(const Duration(days: 365)),
                             lastDate: now.add(const Duration(days: 365 * 2)),
@@ -1509,6 +1511,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final startOrNow = pickedDateTime ?? now;
                           final d = await showDatePicker(
                             context: context,
+                            locale: const Locale('nl', 'NL'),
                             initialDate: pickedEndDateTime ?? pickedDateTime ?? now,
                             firstDate: startOrNow,
                             lastDate: now.add(const Duration(days: 365 * 2)),
@@ -1696,6 +1699,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final now = DateTime.now();
                           final d = await showDatePicker(
                             context: context,
+                            locale: const Locale('nl', 'NL'),
                             initialDate: pickedDateTime ?? now,
                             firstDate: now.subtract(const Duration(days: 365)),
                             lastDate: now.add(const Duration(days: 365 * 2)),
@@ -1765,6 +1769,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final now = DateTime.now();
                           final d = await showDatePicker(
                             context: context,
+                            locale: const Locale('nl', 'NL'),
                             initialDate: pickedEndDateTime ?? pickedDateTime ?? now,
                             firstDate: now.subtract(const Duration(days: 365)),
                             lastDate: now.add(const Duration(days: 365 * 2)),

@@ -188,6 +188,7 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
     final now = DateTime.now();
     final picked = await showDatePicker(
       context: context,
+      locale: const Locale('nl', 'NL'),
       initialDate: _fromDateLocal ?? now,
       firstDate: DateTime(now.year - 2, 1, 1),
       lastDate: DateTime(now.year + 5, 12, 31),

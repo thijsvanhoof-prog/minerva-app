@@ -6,6 +6,7 @@ import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
+import 'package:minerva_app/utils/dutch_holidays.dart';
 
 class AddTrainingPage extends StatefulWidget {
   final List<TeamMembership> manageableTeams;
@@ -33,8 +34,12 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
   String _selectedLocation = _locations.first;
 
   DateTime _selectedDate = DateTime.now();
+  DateTime? _endDate; // null = één training, anders reeks tot einddatum
   TimeOfDay _startTime = const TimeOfDay(hour: 20, minute: 30);
   TimeOfDay _endTime = const TimeOfDay(hour: 22, minute: 30);
+
+  /// Feestdagen (zoals Kerst, Pasen) overslaan bij meerdere trainingen.
+  bool _excludeHolidays = false;
 
   bool _saving = false;
   int? _selectedTeamId;
@@ -58,6 +63,7 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
+      locale: const Locale('nl', 'NL'),
       initialDate: _selectedDate,
       firstDate: DateTime(2020),
       lastDate: DateTime(2100),
@@ -73,6 +79,31 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
       ),
     );
     if (picked != null) setState(() => _selectedDate = picked);
+  }
+
+  Future<void> _pickEndDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      locale: const Locale('nl', 'NL'),
+      initialDate: _endDate ?? _selectedDate,
+      firstDate: _selectedDate,
+      lastDate: DateTime(2100),
+      builder: (context, child) => Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: const ColorScheme.dark(
+            primary: AppColors.primary,
+            surface: AppColors.background,
+            onSurface: AppColors.onBackground,
+          ),
+        ),
+        child: child!,
+      ),
+    );
+    if (picked != null) setState(() => _endDate = picked);
+  }
+
+  void _clearEndDate() {
+    setState(() => _endDate = null);
   }
 
   Future<void> _pickStartTime() async {
@@ -296,6 +327,12 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
     setState(() => _saving = true);
 
     try {
+      final endDate = _endDate ?? _selectedDate;
+      if (endDate.isBefore(_selectedDate)) {
+        showTopMessage(context, 'Einddatum moet op of na startdatum liggen', isError: true);
+        return;
+      }
+
       final startDateTime = _combine(_selectedDate, _startTime);
       final endDateTime = _combine(_selectedDate, _endTime);
 
@@ -304,18 +341,34 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
         return;
       }
 
-      final insertMap = <String, dynamic>{
+      final baseMap = <String, dynamic>{
         'team_id': _selectedTeamId,
         'session_type': 'training',
         'title': title,
         'location': _selectedLocation,
-        'start_datetime': startDateTime.toUtc().toIso8601String(),
-        'end_timestamp': endDateTime.toUtc().toIso8601String(),
         'created_by': _uid,
         'is_cancelled': false,
       };
 
-      await _client.from('sessions').insert(insertMap);
+      var date = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
+      final last = DateTime(endDate.year, endDate.month, endDate.day);
+      final inserts = <Map<String, dynamic>>[];
+
+      while (!date.isAfter(last)) {
+        final skip = _excludeHolidays && isDutchHoliday(date);
+        if (!skip) {
+          final s = _combine(date, _startTime);
+          final e = _combine(date, _endTime);
+          inserts.add({
+            ...baseMap,
+            'start_datetime': s.toUtc().toIso8601String(),
+            'end_timestamp': e.toUtc().toIso8601String(),
+          });
+        }
+        date = date.add(const Duration(days: 1));
+      }
+
+      await _client.from('sessions').insert(inserts);
 
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
@@ -354,12 +407,15 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
               alignment: Alignment.centerLeft,
               child: IconButton(
                 onPressed: _saving ? null : () => Navigator.of(context).pop(),
-                icon: const Icon(Icons.arrow_back),
+                icon: const Icon(Icons.arrow_back, color: AppColors.onBackground),
               ),
             ),
             Text(
               'Team',
-              style: theme.textTheme.titleMedium?.copyWith(color: AppColors.onBackground),
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: AppColors.onBackground,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 8),
             GlassCard(
@@ -387,7 +443,10 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
 
             Text(
               'Algemeen',
-              style: theme.textTheme.titleMedium?.copyWith(color: AppColors.onBackground),
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: AppColors.onBackground,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 8),
             GlassCard(
@@ -395,7 +454,7 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
                 dense: true,
                 title: const Text(
                   'Titel',
-                  style: TextStyle(color: AppColors.textSecondary),
+                  style: TextStyle(color: AppColors.onBackground, fontWeight: FontWeight.w500),
                 ),
                 subtitle: Text(
                   _teamTitle(),
@@ -409,8 +468,10 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
             const SizedBox(height: 16),
             Text(
               'Locatie',
-              style:
-                  theme.textTheme.titleSmall?.copyWith(color: AppColors.textSecondary),
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: AppColors.onBackground,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 8),
             GlassCard(
@@ -443,39 +504,91 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
 
             Text(
               'Datum en tijd',
-              style: theme.textTheme.titleMedium?.copyWith(color: AppColors.onBackground),
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: AppColors.onBackground,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 8),
 
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.calendar_today, color: AppColors.textSecondary),
-              title: const Text('Datum', style: TextStyle(color: AppColors.textSecondary)),
-              subtitle: Text(_formatDate(_selectedDate),
-                  style: const TextStyle(color: AppColors.onBackground)),
-              trailing: IconButton(
-                icon: const Icon(Icons.edit_calendar, color: AppColors.primary),
-                onPressed: _pickDate,
+            GlassCard(
+              child: Column(
+                children: [
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.calendar_today, color: AppColors.onBackground),
+                    title: const Text('Startdatum', style: TextStyle(color: AppColors.onBackground, fontWeight: FontWeight.w500)),
+                    subtitle: Text(_formatDate(_selectedDate),
+                        style: const TextStyle(color: AppColors.textSecondary)),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.edit_calendar, color: AppColors.primary),
+                      onPressed: _pickDate,
+                    ),
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.event, color: AppColors.onBackground),
+                    title: const Text('Einddatum', style: TextStyle(color: AppColors.onBackground, fontWeight: FontWeight.w500)),
+                    subtitle: Text(
+                      _endDate == null ? 'Niet ingesteld (één training)' : _formatDate(_endDate!),
+                      style: const TextStyle(color: AppColors.textSecondary),
+                    ),
+                    trailing: _endDate == null
+                        ? IconButton(
+                            icon: const Icon(Icons.add_circle_outline, color: AppColors.primary),
+                            onPressed: _pickEndDate,
+                            tooltip: 'Meerdere trainingen toevoegen',
+                          )
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.edit_calendar, color: AppColors.primary),
+                                onPressed: _pickEndDate,
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.clear, color: AppColors.textSecondary),
+                                onPressed: _clearEndDate,
+                                tooltip: 'Eén training',
+                              ),
+                            ],
+                          ),
+                  ),
+                  if (_endDate != null) ...[
+                    const Divider(height: 1),
+                    SwitchListTile(
+                      value: _excludeHolidays,
+                      onChanged: (v) => setState(() => _excludeHolidays = v),
+                      title: const Text(
+                        'Feestdagen uitsluiten',
+                        style: TextStyle(color: AppColors.onBackground, fontWeight: FontWeight.w500),
+                      ),
+                      subtitle: const Text(
+                        'Kerst, Pasen, Koningsdag, etc. overslaan',
+                        style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                      ),
+                      activeColor: AppColors.primary,
+                    ),
+                  ],
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.schedule, color: AppColors.onBackground),
+                    title: const Text('Starttijd', style: TextStyle(color: AppColors.onBackground, fontWeight: FontWeight.w500)),
+                    subtitle: Text(_formatTime(_startTime),
+                        style: const TextStyle(color: AppColors.textSecondary)),
+                    onTap: _pickStartTime,
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.schedule_outlined, color: AppColors.onBackground),
+                    title: const Text('Eindtijd', style: TextStyle(color: AppColors.onBackground, fontWeight: FontWeight.w500)),
+                    subtitle: Text(_formatTime(_endTime),
+                        style: const TextStyle(color: AppColors.textSecondary)),
+                    onTap: _pickEndTime,
+                  ),
+                ],
               ),
-            ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.schedule, color: AppColors.textSecondary),
-              title: const Text('Starttijd', style: TextStyle(color: AppColors.textSecondary)),
-              subtitle: Text(_formatTime(_startTime),
-                  style: const TextStyle(color: AppColors.onBackground)),
-              onTap: _pickStartTime,
-            ),
-
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.schedule_outlined,
-                  color: AppColors.textSecondary),
-              title: const Text('Eindtijd',
-                  style: TextStyle(color: AppColors.textSecondary)),
-              subtitle: Text(_formatTime(_endTime),
-                  style: const TextStyle(color: AppColors.onBackground)),
-              onTap: _pickEndTime,
             ),
 
             const SizedBox(height: 16),

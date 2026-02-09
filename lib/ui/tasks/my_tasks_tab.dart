@@ -3921,6 +3921,7 @@ class _CreateTaskPageState extends State<_CreateTaskPage> {
                         onTap: () async {
                           final picked = await showDatePicker(
                             context: context,
+                            locale: const Locale('nl', 'NL'),
                             initialDate: _date,
                             firstDate: DateTime(2020),
                             lastDate: DateTime(2100),
