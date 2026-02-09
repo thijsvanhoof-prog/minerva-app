@@ -403,18 +403,22 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
             16 + MediaQuery.paddingOf(context).bottom,
           ),
           children: [
-            Align(
-              alignment: Alignment.centerLeft,
-              child: IconButton(
-                onPressed: _saving ? null : () => Navigator.of(context).pop(),
-                icon: const Icon(Icons.arrow_back, color: AppColors.onBackground),
-              ),
-            ),
-            Text(
-              'Team',
-              style: theme.textTheme.titleMedium?.copyWith(
-                color: AppColors.onBackground,
-                fontWeight: FontWeight.w600,
+            GlassCard(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+              child: Row(
+                children: [
+                  IconButton(
+                    onPressed: _saving ? null : () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.arrow_back, color: AppColors.onBackground),
+                  ),
+                  Text(
+                    'Team',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 8),

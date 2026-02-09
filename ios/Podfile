@@ -51,7 +51,8 @@ post_install do |installer|
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
       # OneSignal: Flutter.h vinden, umbrella-header, nullability, module verifier
-      if target.name.downcase.include?('onesignal')
+      # Incl. onesignal_flutter (nil passed to non-null in OneSignalPlugin.m, OSFlutterUser.m)
+      if target.name.downcase.include?('onesignal') || target.name == 'onesignal_flutter'
         config.build_settings['GCC_WARN_NULL_PASSED_TO_NON_NULL_PARAMETER'] = 'NO'
         config.build_settings['CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER'] = 'NO'
         config.build_settings['CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS'] = 'NO'
