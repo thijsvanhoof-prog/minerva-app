@@ -1,0 +1,36 @@
+Privacybeleid – VV Minerva app
+=============================
+
+Laatste bijwerking: februari 2025
+
+1. Wie zijn wij?
+----------------
+De VV Minerva app wordt beheerd door VV Minerva (of de vereniging die de app gebruikt). Dit privacybeleid beschrijft hoe we omgaan met je gegevens in de app.
+
+2. Welke gegevens verzamelen we?
+--------------------------------
+- E-mailadres: voor inloggen en accountbeheer
+- Naam/gebruikersnaam: om je te tonen in de app (aanmeldingen, aanwezigheid)
+- Gebruikers-ID's: voor koppeling aan teams, commissies en activiteiten
+- Apparaat-ID: voor pushnotificaties (OneSignal)
+
+3. Waarom verzamelen we deze gegevens?
+--------------------------------------
+- Accountbeheer: aanmaken, inloggen en beheren van je account
+- App-functionaliteit: aanmeldingen, aanwezigheid bij trainingen, teamkoppelingen
+
+4. Hoe worden gegevens opgeslagen?
+----------------------------------
+Gegevens worden opgeslagen bij Supabase (Europa). Alle gegevens worden versleuteld verzonden (HTTPS).
+
+5. Delen we gegevens met derden?
+--------------------------------
+Nee. We verkopen je gegevens niet en delen ze niet met adverteerders of andere derden. Supabase en OneSignal zijn onze technische leveranciers; zij verwerken gegevens alleen voor de werking van de app.
+
+6. Account verwijderen
+----------------------
+Je kunt je account en alle gegevens zelf verwijderen via de app: Profiel → Account verwijderen. Meer informatie: https://raw.githubusercontent.com/thijsvanhoof-prog/minerva-app/xcode-dev-team/docs/account-verwijderen.txt
+
+7. Vragen?
+----------
+Neem contact op via de contactpersonen in de app of via de vereniging.
