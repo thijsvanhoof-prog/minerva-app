@@ -22,7 +22,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "nl.minerva.clubapp"
+        applicationId = "nl.minerva.clubapp.v2"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
