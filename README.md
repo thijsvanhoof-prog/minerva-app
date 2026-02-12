@@ -18,19 +18,17 @@ Hiermee worden Android (mipmap-*), iOS (AppIcon.appiconset) en web‑icons bijge
 ### Versie verhogen
 Pas in `pubspec.yaml` `version` aan, bijv. `1.0.1+2` (semver + buildnummer).
 
-### Android
-1. **Signing (eenmalig):** Kopieer `android/key.properties.example` naar `android/key.properties`, vul storeFile/storePassword/keyAlias/keyPassword in. Maak eventueel een keystore met `keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload`. Voeg `android/key.properties` en `*.jks` toe aan `.gitignore`.
-2. **App Bundle (Play Store):**
+### Android (Play Store)
+
+Zie **`docs/PLAY_STORE_SETUP.md`** voor gedetailleerde stappen.
+
+**Kort:**
+1. **Signing (eenmalig):** Maak een keystore en `android/key.properties` (zie `key.properties.example`).
+2. **App Bundle bouwen:**
    ```bash
-   cd minerva_app
-   flutter build appbundle
+   flutter build appbundle --release
    ```
-   Output: `build/app/outputs/bundle/release/app-release.aab` → uploaden in Play Console.
-3. **APK (handmatig installeren):**
-   ```bash
-   flutter build apk --release
-   ```
-   Output: `build/app/outputs/flutter-apk/app-release.apk`.
+3. Upload `build/app/outputs/bundle/release/app-release.aab` in [Play Console](https://play.google.com/console).
 
 ### iOS
 1. Open `ios/Runner.xcworkspace` in Xcode.
