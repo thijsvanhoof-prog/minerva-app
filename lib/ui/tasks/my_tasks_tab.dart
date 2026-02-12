@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
@@ -25,9 +26,22 @@ class MyTasksTab extends StatelessWidget {
       return Scaffold(
         backgroundColor: Colors.transparent,
         body: SafeArea(
-          top: true,
+          top: false,
           bottom: false,
-          child: const _TeamTasksView(),
+          child: Column(
+            children: [
+              TabPageHeader(
+                child: Text(
+                  'Taken',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+              ),
+              const Expanded(child: _TeamTasksView()),
+            ],
+          ),
         ),
       );
     }
@@ -37,9 +51,22 @@ class MyTasksTab extends StatelessWidget {
       return Scaffold(
         backgroundColor: Colors.transparent,
         body: SafeArea(
-          top: true,
+          top: false,
           bottom: false,
-          child: const _OverviewHomeMatchesView(allowManage: true),
+          child: Column(
+            children: [
+              TabPageHeader(
+                child: Text(
+                  'Taken',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+              ),
+              const Expanded(child: _OverviewHomeMatchesView(allowManage: true)),
+            ],
+          ),
         ),
       );
     }
@@ -50,10 +77,19 @@ class MyTasksTab extends StatelessWidget {
       child: Scaffold(
         backgroundColor: Colors.transparent,
         body: SafeArea(
-          top: true,
+          top: false,
           bottom: false,
           child: Column(
             children: [
+              TabPageHeader(
+                child: Text(
+                  'Taken',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+              ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                 child: GlassCard(
@@ -763,26 +799,23 @@ class _TaskSignupButton extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ElevatedButton(
-          onPressed: disabled ? null : onToggle,
-          style: ElevatedButton.styleFrom(
-            backgroundColor: disabled
-                ? AppColors.card
-                : (effectiveSignedUp ? AppColors.card : AppColors.primary),
-            foregroundColor: disabled
-                ? AppColors.textSecondary
-                : (effectiveSignedUp ? AppColors.onBackground : AppColors.background),
-            side: (disabled || !effectiveSignedUp)
-                ? null
-                : BorderSide(color: AppColors.primary.withValues(alpha: 0.7)),
-          ),
-          child: Text(
-            disabled
-                ? label
-                : (effectiveSignedUp ? '$label: Afmelden' : '$label: Aanmelden'),
-            textAlign: TextAlign.center,
-          ),
-        ),
+        effectiveSignedUp
+            ? Tooltip(
+                message: 'Tik om af te melden',
+                child: FilledButton.icon(
+                  onPressed: disabled ? null : onToggle,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.success,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.check_circle, size: 18),
+                  label: Text('$label: Aangemeld'),
+                ),
+              )
+            : OutlinedButton(
+                onPressed: disabled ? null : onToggle,
+                child: Text(disabled ? label : '$label: Aanmelden'),
+              ),
         if (subtitle != null) ...[
           const SizedBox(height: 6),
           Text(
@@ -3407,10 +3440,27 @@ class _TaskCard extends StatelessWidget {
                     const SizedBox(height: 10),
                     Align(
                       alignment: Alignment.centerRight,
-                      child: TextButton(
-                        onPressed: onToggleSignup,
-                        child: Text(signedUp ? 'Afmelden' : 'Aanmelden'),
-                      ),
+                      child: signedUp
+                          ? Tooltip(
+                              message: 'Tik om af te melden',
+                              child: FilledButton.icon(
+                                onPressed: onToggleSignup,
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: AppColors.success,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                ),
+                                icon: const Icon(Icons.check_circle, size: 18),
+                                label: const Text('Aangemeld'),
+                              ),
+                            )
+                          : OutlinedButton(
+                              onPressed: onToggleSignup,
+                              child: const Text('Aanmelden'),
+                            ),
                     ),
                   ],
                 ],

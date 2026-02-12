@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/tab_page_header.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
@@ -59,10 +60,19 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: SafeArea(
-        top: true,
+        top: false,
         bottom: false,
         child: Column(
           children: [
+            TabPageHeader(
+              child: Text(
+                'Teams',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
               child: GlassCard(

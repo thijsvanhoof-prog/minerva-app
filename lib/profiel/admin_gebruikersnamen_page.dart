@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
-import 'package:minerva_app/ui/branded_background.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 
@@ -153,7 +152,7 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
         ],
       ),
     );
-    controller.dispose();
+    WidgetsBinding.instance.addPostFrameCallback((_) => controller.dispose());
 
     if (newName == null) return;
 
@@ -227,8 +226,7 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: BrandedBackground(
-        child: RefreshIndicator(
+      body: RefreshIndicator(
           color: AppColors.primary,
           onRefresh: _load,
           child: _loading
@@ -291,52 +289,53 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
                           ),
                         )
                       else
-                        ..._filtered.map((p) {
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: GlassCard(
-                              child: ListTile(
-                                leading: const Icon(
-                                  Icons.badge_outlined,
-                                  color: AppColors.iconMuted,
-                                ),
-                                title: Text(
-                                  p.displayName.isEmpty ? p.email : p.displayName,
-                                  style: const TextStyle(
-                                    color: AppColors.onBackground,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                subtitle: p.displayName.isNotEmpty && p.email.isNotEmpty
-                                    ? Text(
-                                        p.email,
-                                        style: const TextStyle(
-                                          color: AppColors.textSecondary,
-                                        ),
-                                      )
-                                    : null,
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    IconButton(
-                                      tooltip: 'Account verwijderen',
-                                      icon: const Icon(Icons.delete_outline),
-                                      color: AppColors.error,
-                                      onPressed: () => _deleteUser(p),
-                                    ),
-                                    const Icon(
-                                      Icons.edit_outlined,
-                                      color: AppColors.primary,
-                                    ),
-                                  ],
-                                ),
-                                onTap: () => _changeNameFor(p),
-                              ),
-                            ),
-                          );
-                        }),
+                        ..._filtered.map(_buildProfileTile),
                     ],
                   ),
+                ),
+              );
+  }
+
+  Widget _buildProfileTile(_ProfileRow p) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: GlassCard(
+        child: ListTile(
+          leading: const Icon(
+            Icons.badge_outlined,
+            color: AppColors.iconMuted,
+          ),
+          title: Text(
+            p.displayName.isEmpty ? p.email : p.displayName,
+            style: const TextStyle(
+              color: AppColors.onBackground,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          subtitle: p.displayName.isNotEmpty && p.email.isNotEmpty
+              ? Text(
+                  p.email,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                  ),
+                )
+              : null,
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                tooltip: 'Account verwijderen',
+                icon: const Icon(Icons.delete_outline),
+                color: AppColors.error,
+                onPressed: () => _deleteUser(p),
+              ),
+              const Icon(
+                Icons.edit_outlined,
+                color: AppColors.primary,
+              ),
+            ],
+          ),
+          onTap: () => _changeNameFor(p),
         ),
       ),
     );

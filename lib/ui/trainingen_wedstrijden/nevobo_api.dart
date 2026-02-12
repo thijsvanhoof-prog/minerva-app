@@ -74,6 +74,9 @@ class NevoboApi {
 
   static NevoboTeam? teamFromCode(String code) => _fromCode(code);
 
+  /// Path of the resolved team after a successful standings fetch (e.g. /competitie/teams/ckm0v2o/dames/1).
+  static String? resolvedTeamPath(String code) => _resolvedTeamByCode[code]?.teamPath;
+
   static String? extractCodeFromTeamName(String raw) {
     final normalized = raw.trim().toUpperCase().replaceAll(' ', '');
 
@@ -536,19 +539,28 @@ class NevoboApi {
   static List<String> _categoryCandidates(String code, String preferred) {
     final prefix = RegExp(r'^([A-Z]{2})').firstMatch(code)?.group(1) ?? '';
 
-    final list = <String>[preferred];
+    final list = <String>[];
     switch (prefix) {
       case 'MR':
+        // Recreanten/mix: probeer eerst specifieke recreanten-categorieën (Minerva XR1),
+        // anders kan generiek 'mix' dames-mix/DM1 opleveren.
         list.addAll(const [
-          'mix',
-          'mix-recreanten',
-          'recreanten',
           'recreanten-mix',
+          'recreanten',
+          'mix-recreanten',
           'mix-recreatie',
           'mix-recreatief',
           'mix-senioren',
+          'mix',
         ]);
+        if (!list.contains(preferred)) list.add(preferred);
         break;
+      default:
+        list.add(preferred);
+        break;
+    }
+    if (list.isEmpty) list.add(preferred);
+    switch (prefix) {
       case 'JA':
         list.addAll(const [
           'jongens-a',
@@ -720,40 +732,88 @@ class NevoboApi {
     }
   }
 
+  /// True if [standings] contain a row for this team.
+  /// Match by team path (e.g. /competitie/teams/ckm0v2o/dames/1) or by name (Minerva + code).
+  static bool _standingsContainTeam(
+    List<NevoboStandingEntry> standings,
+    String teamCode,
+    String teamPath,
+  ) {
+    final normPath = teamPath.trim().toLowerCase().replaceAll(r'\', '/');
+    final a = teamCode.trim().toUpperCase();
+
+    for (final s in standings) {
+      if (s.teamPath != null && s.teamPath!.trim().toLowerCase().replaceAll(r'\', '/') == normPath) {
+        return true;
+      }
+      final name = s.teamName.trim().toLowerCase();
+      if (!name.contains('minerva')) continue;
+      final extracted = extractCodeFromTeamName(s.teamName);
+      if (extracted == null || extracted.isEmpty) continue;
+      final b = extracted.trim().toUpperCase();
+      if (a.startsWith('XR') && b.startsWith('MR') && a.substring(2) == b.substring(2)) return true;
+      if (b.startsWith('XR') && a.startsWith('MR') && b.substring(2) == a.substring(2)) return true;
+      if (a == b) return true;
+    }
+    return false;
+  }
+
   static Future<List<NevoboStandingEntry>> fetchStandingsForTeam({
     required NevoboTeam team,
   }) async {
-    final resolvedTeam = await _resolveTeam(team);
-    // Step 1: resolve the poule URL for the team
-    final teamUri = Uri.parse(
-      'https://api.nevobo.nl/competitie/pouleindelingen?team=${Uri.encodeComponent(resolvedTeam.teamPath)}',
-    );
-    final teamRes = await http.get(teamUri);
-    if (teamRes.statusCode != 200) {
-      throw Exception('Team poule HTTP ${teamRes.statusCode}');
+    final candidates = _categoryCandidates(team.code, team.category);
+    Exception? lastError;
+
+    for (final category in candidates) {
+      final probeTeam = NevoboTeam(code: team.code, category: category, number: team.number);
+      final teamPath = probeTeam.teamPath;
+
+      try {
+        final teamUri = Uri.parse(
+          'https://api.nevobo.nl/competitie/pouleindelingen?team=${Uri.encodeComponent(teamPath)}',
+        );
+        final teamRes = await http.get(teamUri);
+        if (teamRes.statusCode != 200) {
+          lastError = Exception('Team poule HTTP ${teamRes.statusCode} ($teamPath)');
+          continue;
+        }
+
+        final decodedTeam = jsonDecode(utf8.decode(teamRes.bodyBytes));
+        final poulePath = _extractPoulePath(decodedTeam);
+        if (poulePath == null || poulePath.isEmpty) {
+          lastError = Exception('Kon poule niet bepalen voor ${team.code} ($teamPath)');
+          continue;
+        }
+
+        final pouleUri = Uri.parse(
+          'https://api.nevobo.nl/competitie/pouleindelingen?poule=${Uri.encodeComponent(poulePath)}',
+        );
+        final pouleRes = await http.get(pouleUri);
+        if (pouleRes.statusCode != 200) {
+          lastError = Exception('Poule HTTP ${pouleRes.statusCode}');
+          continue;
+        }
+
+        final decodedPoule = jsonDecode(utf8.decode(pouleRes.bodyBytes));
+        final rawStandings = _parseStandings(decodedPoule);
+        final standings = await _resolveStandingNames(rawStandings);
+
+        if (!_standingsContainTeam(standings, team.code, teamPath)) {
+          lastError = Exception('Poule bevat niet Minerva ${team.code} ($teamPath)');
+          continue;
+        }
+
+        _resolvedTeamByCode[team.code] = probeTeam;
+        if (kDebugMode) {
+          debugPrint('Nevobo standings: ${team.code} -> ${standings.length} entries (category: $category)');
+        }
+        return standings;
+      } catch (e) {
+        lastError = e is Exception ? e : Exception('$e');
+      }
     }
 
-    final decodedTeam = jsonDecode(utf8.decode(teamRes.bodyBytes));
-    final poulePath = _extractPoulePath(decodedTeam);
-    if (poulePath == null || poulePath.isEmpty) {
-      throw Exception('Kon poule niet bepalen voor ${team.code}');
-    }
-
-    // Step 2: fetch poule standings
-    final pouleUri = Uri.parse(
-      'https://api.nevobo.nl/competitie/pouleindelingen?poule=${Uri.encodeComponent(poulePath)}',
-    );
-    final pouleRes = await http.get(pouleUri);
-    if (pouleRes.statusCode != 200) {
-      throw Exception('Poule HTTP ${pouleRes.statusCode}');
-    }
-
-    final decodedPoule = jsonDecode(utf8.decode(pouleRes.bodyBytes));
-    final standings = await _resolveStandingNames(_parseStandings(decodedPoule));
-    if (kDebugMode) {
-      debugPrint('Nevobo standings: ${resolvedTeam.code} -> ${standings.length} entries');
-    }
-    return standings;
+    throw lastError ?? Exception('Kon standen niet laden voor ${team.code}');
   }
 
   static String? _extractPoulePath(dynamic decoded) {

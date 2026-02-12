@@ -32,7 +32,7 @@ class AppUI {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppColors.cardRadius),
           side: BorderSide(
-            color: const Color(0xFF1A2B4A).withValues(alpha: 0.15),
+            color: AppColors.darkBlue.withValues(alpha: 0.15),
             width: AppColors.cardBorderWidth,
           ),
         ),
@@ -198,7 +198,7 @@ class AppUI {
       ),
 
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: const Color(0xFF1A2B4A).withValues(alpha: 0.95),
+        backgroundColor: AppColors.darkBlue.withValues(alpha: 0.95),
         contentTextStyle: const TextStyle(color: Colors.white),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(
@@ -224,7 +224,7 @@ class AppUI {
         labelStyle: const TextStyle(color: AppColors.textSecondary),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppColors.cardRadius),
-          borderSide: BorderSide(color: const Color(0xFF1A2B4A).withValues(alpha: 0.2)),
+          borderSide: BorderSide(color: AppColors.darkBlue.withValues(alpha: 0.2)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppColors.cardRadius),

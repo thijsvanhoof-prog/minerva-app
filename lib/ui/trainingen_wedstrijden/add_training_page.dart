@@ -38,8 +38,14 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
   TimeOfDay _startTime = const TimeOfDay(hour: 20, minute: 30);
   TimeOfDay _endTime = const TimeOfDay(hour: 22, minute: 30);
 
+  /// Welke weekdagen hebben training (1=ma, 7=zo). Leeg = alle dagen.
+  Set<int> _selectedWeekdays = {1, 2, 3, 4, 5, 6, 7};
+
   /// Feestdagen (zoals Kerst, Pasen) overslaan bij meerdere trainingen.
   bool _excludeHolidays = false;
+
+  /// Specifieke data uitsluiten van de reeks (bijv. 9 feb, 16 feb, 6 apr).
+  final Set<DateTime> _excludedDates = {};
 
   bool _saving = false;
   int? _selectedTeamId;
@@ -103,7 +109,37 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
   }
 
   void _clearEndDate() {
-    setState(() => _endDate = null);
+    setState(() {
+      _endDate = null;
+      _excludedDates.clear();
+    });
+  }
+
+  Future<void> _addExcludedDate() async {
+    final rangeStart = _selectedDate;
+    final rangeEnd = _endDate ?? _selectedDate;
+    final picked = await showDatePicker(
+      context: context,
+      locale: const Locale('nl', 'NL'),
+      initialDate: rangeStart,
+      firstDate: rangeStart,
+      lastDate: rangeEnd,
+      builder: (context, child) => Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: const ColorScheme.dark(
+            primary: AppColors.primary,
+            surface: AppColors.background,
+            onSurface: AppColors.onBackground,
+          ),
+        ),
+        child: child!,
+      ),
+    );
+    if (picked != null) {
+      setState(() {
+        _excludedDates.add(DateTime(picked.year, picked.month, picked.day));
+      });
+    }
   }
 
   Future<void> _pickStartTime() async {
@@ -289,6 +325,25 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
     return 'Team $teamId';
   }
 
+  Widget _weekdayChip(String label, int weekday) {
+    final selected = _selectedWeekdays.contains(weekday);
+    return FilterChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (v) {
+        setState(() {
+          if (v) {
+            _selectedWeekdays = {..._selectedWeekdays, weekday};
+          } else {
+            _selectedWeekdays = _selectedWeekdays.where((d) => d != weekday).toSet();
+          }
+        });
+      },
+      selectedColor: AppColors.primary.withValues(alpha: 0.3),
+      checkmarkColor: AppColors.primary,
+    );
+  }
+
   String _teamAbbreviation(String raw) {
     final s = raw.trim();
     if (s.isEmpty) return '';
@@ -332,6 +387,10 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
         showTopMessage(context, 'Einddatum moet op of na startdatum liggen', isError: true);
         return;
       }
+      if (_endDate != null && _selectedWeekdays.isEmpty) {
+        showTopMessage(context, 'Kies minimaal één dag van de week', isError: true);
+        return;
+      }
 
       final startDateTime = _combine(_selectedDate, _startTime);
       final endDateTime = _combine(_selectedDate, _endTime);
@@ -355,8 +414,15 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
       final inserts = <Map<String, dynamic>>[];
 
       while (!date.isAfter(last)) {
-        final skip = _excludeHolidays && isDutchHoliday(date);
-        if (!skip) {
+        final normalDate = DateTime(date.year, date.month, date.day);
+        final skipWeekday = _selectedWeekdays.isNotEmpty &&
+            !_selectedWeekdays.contains(date.weekday);
+        final skipHoliday = _excludeHolidays && isDutchHoliday(date);
+        final skipExcluded = _excludedDates.any((d) =>
+            d.year == normalDate.year &&
+            d.month == normalDate.month &&
+            d.day == normalDate.day);
+        if (!skipWeekday && !skipHoliday && !skipExcluded) {
           final s = _combine(date, _startTime);
           final e = _combine(date, _endTime);
           inserts.add({
@@ -560,6 +626,36 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
                   ),
                   if (_endDate != null) ...[
                     const Divider(height: 1),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Dagen met training',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: AppColors.onBackground,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              _weekdayChip('Ma', 1),
+                              _weekdayChip('Di', 2),
+                              _weekdayChip('Wo', 3),
+                              _weekdayChip('Do', 4),
+                              _weekdayChip('Vr', 5),
+                              _weekdayChip('Za', 6),
+                              _weekdayChip('Zo', 7),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
                     SwitchListTile(
                       value: _excludeHolidays,
                       onChanged: (v) => setState(() => _excludeHolidays = v),
@@ -571,8 +667,62 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
                         'Kerst, Pasen, Koningsdag, etc. overslaan',
                         style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
                       ),
-                      activeColor: AppColors.primary,
+                      activeThumbColor: AppColors.primary,
                     ),
+                    const Divider(height: 1),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.event_busy, color: AppColors.onBackground),
+                      title: const Text(
+                        'Data uitsluiten',
+                        style: TextStyle(color: AppColors.onBackground, fontWeight: FontWeight.w500),
+                      ),
+                      subtitle: Text(
+                        _excludedDates.isEmpty
+                            ? 'Geen data uitgesloten'
+                            : '${_excludedDates.length} datum(s) uitgesloten',
+                        style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.add_circle_outline, color: AppColors.primary),
+                            onPressed: _addExcludedDate,
+                            tooltip: 'Datum toevoegen om uit te sluiten',
+                          ),
+                          if (_excludedDates.isNotEmpty)
+                            IconButton(
+                              icon: const Icon(Icons.clear_all, color: AppColors.textSecondary),
+                              onPressed: () => setState(() => _excludedDates.clear()),
+                              tooltip: 'Alles wissen',
+                            ),
+                        ],
+                      ),
+                    ),
+                    if (_excludedDates.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: (_excludedDates.toList()..sort((a, b) => a.compareTo(b)))
+                              .map((d) => Chip(
+                                    label: Text(_formatDate(d)),
+                                    deleteIcon: const Icon(
+                                        Icons.close, size: 18, color: AppColors.onBackground),
+                                    onDeleted: () {
+                                      setState(() {
+                                        _excludedDates.removeWhere((x) =>
+                                            x.year == d.year &&
+                                            x.month == d.month &&
+                                            x.day == d.day);
+                                      });
+                                    },
+                                  ))
+                              .toList(),
+                        ),
+                      ),
                   ],
                   const Divider(height: 1),
                   ListTile(

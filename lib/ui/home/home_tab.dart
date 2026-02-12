@@ -1,5 +1,9 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:share_plus/share_plus.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -19,7 +23,10 @@ import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 /// Stap 5: Nieuwsberichten – NewsItem + mockNews (zoals oorspronkelijk)
 /// Stap 6: Afronden – refresh, foutmeldingen, admin-actions (highlights)
 class HomeTab extends StatefulWidget {
-  const HomeTab({super.key});
+  /// Waar true: alleen Uitgelicht en Nieuws (geen Agenda). Voor gebruikers zonder teamkoppeling.
+  final bool showOnlyHighlightsAndNews;
+
+  const HomeTab({super.key, this.showOnlyHighlightsAndNews = false});
 
   @override
   State<HomeTab> createState() => _HomeTabState();
@@ -28,7 +35,7 @@ class HomeTab extends StatefulWidget {
 class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   final SupabaseClient _client = Supabase.instance.client;
 
-  late final TabController _tabController;
+  late TabController _tabController;
 
   bool _loadingHighlights = true;
   String? _highlightsError;
@@ -128,13 +135,27 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     await _loadNews();
   }
 
+  void _initTabController() {
+    final length = widget.showOnlyHighlightsAndNews ? 2 : 3;
+    _tabController = TabController(length: length, vsync: this, initialIndex: 0);
+  }
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this, initialIndex: 0);
+    _initTabController();
     _loadHighlights();
     _loadAgenda();
     _loadNews();
+  }
+
+  @override
+  void didUpdateWidget(covariant HomeTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.showOnlyHighlightsAndNews != widget.showOnlyHighlightsAndNews) {
+      _tabController.dispose();
+      _initTabController();
+    }
   }
 
   @override
@@ -143,6 +164,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     super.dispose();
   }
 
+  static const _loadTimeout = Duration(seconds: 10);
+
   Future<void> _loadHighlights() async {
     setState(() {
       _loadingHighlights = true;
@@ -150,20 +173,22 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     });
 
     try {
-      // Best-effort: support optional `visible_until` column.
       List<dynamic> res;
       try {
         res = await _client
             .from('home_highlights')
             .select('highlight_id, title, subtitle, icon_name, visible_until')
-            .order('created_at', ascending: false);
+            .order('created_at', ascending: false)
+            .timeout(_loadTimeout);
       } catch (_) {
         res = await _client
             .from('home_highlights')
             .select('highlight_id, title, subtitle, icon_name')
-            .order('created_at', ascending: false);
+            .order('created_at', ascending: false)
+            .timeout(_loadTimeout);
       }
 
+      if (!mounted) return;
       final rows = res.cast<Map<String, dynamic>>();
       final list = rows.map((r) {
         final until = _parseVisibleUntil(r['visible_until']);
@@ -176,11 +201,13 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         );
       }).where((h) => _isVisibleNow(h.visibleUntil)).toList();
 
+      if (!mounted) return;
       setState(() {
         _highlights = list;
         _loadingHighlights = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _highlights = _mockHighlights();
         _highlightsError = e.toString();
@@ -198,6 +225,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     try {
       List<Map<String, dynamic>> rows = [];
       for (final attempt in const [
+        ('agenda_id, title, description, start_datetime, end_datetime, location, can_rsvp, rsvp_label, rsvp_allowed_team_ids, rsvp_allowed_committee_keys', 'start_datetime'),
         ('agenda_id, title, description, start_datetime, end_datetime, location, can_rsvp', 'start_datetime'),
         ('agenda_id, title, description, start_datetime, location, can_rsvp', 'start_datetime'),
         ('agenda_id, title, start_datetime, end_datetime, location, can_rsvp', 'start_datetime'),
@@ -213,17 +241,19 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           final select = attempt.$1;
           final orderColumn = attempt.$2;
           final res = orderColumn == null
-              ? await _client.from('home_agenda').select(select)
+              ? await _client.from('home_agenda').select(select).timeout(_loadTimeout)
               : await _client
                   .from('home_agenda')
                   .select(select)
-                  .order(orderColumn, ascending: true);
+                  .order(orderColumn, ascending: true)
+                  .timeout(_loadTimeout);
           rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
           break;
         } catch (_) {}
       }
 
       if (rows.isEmpty) {
+        if (!mounted) return;
         setState(() {
           _agendaItems = _mockAgenda();
           _myRsvpAgendaIds = const {};
@@ -240,6 +270,30 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         final title = (row['title'] as String?) ?? '';
         final description = (row['description'] as String?)?.trim();
         final canRsvp = (row['can_rsvp'] as bool?) ?? false;
+        String? rsvpLabel;
+        List<int>? allowedTeamIds;
+        List<String>? allowedCommitteeKeys;
+        try {
+          rsvpLabel = (row['rsvp_label'] as String?)?.trim();
+          if (rsvpLabel?.isEmpty == true) rsvpLabel = null;
+          final teamIdsRaw = row['rsvp_allowed_team_ids'];
+          if (teamIdsRaw is List) {
+            allowedTeamIds = teamIdsRaw
+                .map((x) => (x is num) ? x.toInt() : int.tryParse(x.toString()))
+                .whereType<int>()
+                .toList();
+            if (allowedTeamIds.isEmpty) allowedTeamIds = null;
+          }
+          final committeeRaw = row['rsvp_allowed_committee_keys'];
+          if (committeeRaw is List) {
+            allowedCommitteeKeys = committeeRaw
+                .map((x) => x?.toString().trim())
+                .where((s) => s != null && s.isNotEmpty)
+                .cast<String>()
+                .toList();
+            if (allowedCommitteeKeys.isEmpty) allowedCommitteeKeys = null;
+          }
+        } catch (_) {}
         final location =
             (row['location'] ?? row['where'] ?? row['locatie'])?.toString() ?? '';
 
@@ -275,6 +329,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             when: whenLabel,
             where: location,
             canRsvp: canRsvp,
+            rsvpLabel: rsvpLabel,
+            allowedTeamIds: allowedTeamIds,
+            allowedCommitteeKeys: allowedCommitteeKeys,
             startDatetime: start,
             endDatetime: end,
             dateLabel: dateLabel,
@@ -295,7 +352,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               .from('home_agenda_rsvps')
               .select('agenda_id')
               .eq('profile_id', user.id)
-              .inFilter('agenda_id', agendaIdsWithRsvp);
+              .inFilter('agenda_id', agendaIdsWithRsvp)
+              .timeout(_loadTimeout);
           final rsvpRows = (res as List<dynamic>).cast<Map<String, dynamic>>();
           myRsvps = rsvpRows
               .map((r) => (r['agenda_id'] as num?)?.toInt())
@@ -304,6 +362,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         } catch (_) {}
       }
 
+      if (!mounted) return;
       setState(() {
         _agendaItems = items;
         _myRsvpAgendaIds = myRsvps;
@@ -322,6 +381,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         }
       } catch (_) {}
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _agendaItems = _mockAgenda();
         _myRsvpAgendaIds = const {};
@@ -459,7 +519,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           final res = await _client
               .from('home_agenda_rsvps')
               .select(select)
-              .inFilter('agenda_id', agendaIds);
+              .inFilter('agenda_id', agendaIds)
+              .timeout(_loadTimeout);
           rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
           break;
         } catch (_) {}
@@ -485,7 +546,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             res = await _client
                 .from('team_members')
                 .select('profile_id, team_id, role')
-                .inFilter('profile_id', profileIds.toList());
+                .inFilter('profile_id', profileIds.toList())
+                .timeout(_loadTimeout);
           } catch (_) {
             // If schema/RLS prevents selecting role, we can't reliably filter → show no teams.
             res = const [];
@@ -559,6 +621,51 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     }
   }
 
+  /// CSV-veld escapen (komma/newline/quote → quoted en " → "").
+  static String _csvEscape(String s) {
+    if (!s.contains(RegExp(r'[,\n"]'))) return s;
+    return '"${s.replaceAll('"', '""')}"';
+  }
+
+  Future<void> _exportSignupsToCsv(
+    BuildContext context, {
+    required String activityTitle,
+    required List<_AgendaSignup> signups,
+  }) async {
+    final buffer = StringBuffer();
+    buffer.writeln('Naam,Team');
+    for (final s in signups) {
+      final team = s.teamLabels.isEmpty ? '—' : s.teamLabels.join(', ');
+      buffer.writeln('${_csvEscape(s.name)},${_csvEscape(team)}');
+    }
+    final csv = buffer.toString();
+    if (!context.mounted) return;
+
+    final isMobile = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.iOS ||
+            defaultTargetPlatform == TargetPlatform.android);
+
+    if (isMobile) {
+      // Share als tekst opent het deelmenu (Mail, Opslaan, Kopiëren, etc.); werkt betrouwbaar op iOS/Android.
+      try {
+        await Share.share(
+          csv,
+          subject: 'Aanmeldingen: $activityTitle',
+        );
+      } catch (_) {
+        await Clipboard.setData(ClipboardData(text: csv));
+        if (context.mounted) {
+          showTopMessage(context, 'CSV gekopieerd. Plak in Excel of Google Sheets.');
+        }
+      }
+    } else {
+      await Clipboard.setData(ClipboardData(text: csv));
+      if (context.mounted) {
+        showTopMessage(context, 'CSV gekopieerd. Plak in Excel of Google Sheets.');
+      }
+    }
+  }
+
   Widget _buildAgendaListView({required bool canManageAgenda}) {
     final hasRsvp = _agendaItems.any((a) => a.canRsvp);
     final showRsvpInfo = hasRsvp && _agendaItems.isNotEmpty;
@@ -629,11 +736,13 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           final itemIndex = showRsvpInfo ? (i - 2) : (i - 1);
           final item = _agendaItems[itemIndex];
           final signedUp = item.id != null && _myRsvpAgendaIds.contains(item.id);
-          final enabled = item.canRsvp && item.id != null;
+          final canSignUp = item.canUserSignUp(AppUserContext.of(context));
+          final enabled = item.canRsvp && item.id != null && canSignUp;
           return _AgendaCard(
             item: item,
             signedUp: signedUp,
             enabled: enabled,
+            showSignupButton: canSignUp && item.canRsvp,
             canManage: canManageAgenda,
             onToggleRsvp: () => _toggleAgendaRsvp(item),
             onReadMore: () => _showAgendaDetail(item),
@@ -645,7 +754,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     );
   }
 
-  Widget _buildAgendaRsvpsView() {
+  Widget _buildAgendaRsvpsView({required bool canExportRsvps}) {
     return RefreshIndicator(
       color: AppColors.primary,
       onRefresh: _loadAgendaRsvps,
@@ -687,30 +796,72 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               ..._agendaItems.where((a) => a.canRsvp).map((a) {
                 final id = a.id ?? -1;
                 final signups = _rsvpsByAgendaId[id] ?? const [];
+                final secondaryStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppColors.textSecondary,
+                    );
+                final whenWhere = [a.when, a.where].where((s) => s.trim().isNotEmpty).join(' • ');
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 12),
-                  child: GlassCard(
-                    padding: const EdgeInsets.all(14),
+                  child: _CardBox(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          a.title,
-                          style: const TextStyle(
-                            color: AppColors.onBackground,
-                            fontWeight: FontWeight.w800,
-                          ),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    a.title,
+                                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                          color: AppColors.onBackground,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                  ),
+                                  if (whenWhere.isNotEmpty) ...[
+                                    const SizedBox(height: 6),
+                                    Row(
+                                      children: [
+                                        Icon(Icons.calendar_today, size: 14, color: AppColors.textSecondary),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(whenWhere, style: secondaryStyle),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                            if (canExportRsvps)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 8),
+                                child: FilledButton.icon(
+                                  onPressed: () => _exportSignupsToCsv(
+                                    context,
+                                    activityTitle: a.title,
+                                    signups: signups,
+                                  ),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: AppColors.primary,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  icon: const Icon(Icons.download, size: 18),
+                                  label: const Text('Export'),
+                                ),
+                              ),
+                          ],
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          [a.when, a.where].where((s) => s.trim().isNotEmpty).join(' • '),
-                          style: const TextStyle(color: AppColors.textSecondary),
-                        ),
-                        const SizedBox(height: 10),
+                        const SizedBox(height: 12),
                         if (signups.isEmpty)
-                          const Text(
+                          Text(
                             'Nog geen aanmeldingen.',
-                            style: TextStyle(color: AppColors.textSecondary),
+                            style: secondaryStyle,
                           )
                         else
                           ...signups.map((s) {
@@ -720,7 +871,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Icon(Icons.person_outline, size: 18, color: AppColors.iconMuted),
+                                  Icon(Icons.person_outline, size: 18, color: AppColors.primary.withValues(alpha: 0.8)),
                                   const SizedBox(width: 10),
                                   Expanded(
                                     child: Column(
@@ -728,18 +879,15 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                       children: [
                                         Text(
                                           s.name,
-                                          style: const TextStyle(
-                                            color: AppColors.onBackground,
-                                            fontWeight: FontWeight.w700,
-                                          ),
+                                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                                color: AppColors.onBackground,
+                                                fontWeight: FontWeight.w600,
+                                              ),
                                         ),
                                         const SizedBox(height: 2),
                                         Text(
                                           'Team: $teams',
-                                          style: const TextStyle(
-                                            color: AppColors.textSecondary,
-                                            fontSize: 12.5,
-                                          ),
+                                          style: TextStyle(color: AppColors.textSecondary, fontSize: 12.5),
                                         ),
                                       ],
                                     ),
@@ -796,7 +944,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           final res = await _client
               .from('home_news')
               .select(select)
-              .order('created_at', ascending: false);
+              .order('created_at', ascending: false)
+              .timeout(_loadTimeout);
           rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
           idField = candidateId;
           break;
@@ -837,6 +986,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         ));
       }
 
+      if (!mounted) return;
       setState(() {
         _newsIdField = idField;
         // If the DB table exists but has no rows yet, show an empty state (not mock data),
@@ -846,6 +996,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         _loadingNews = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _newsItems = mockNews;
         _newsFromSupabase = false;
@@ -1381,9 +1532,12 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final titleController = TextEditingController();
     final descriptionController = TextEditingController();
     final locationController = TextEditingController();
+    final rsvpLabelController = TextEditingController();
+    final rsvpTeamIdsController = TextEditingController();
     DateTime? pickedDateTime;
     DateTime? pickedEndDateTime;
     bool canRsvp = false;
+    List<String> rsvpCommittees = [];
 
     final ok = await showDialog<bool>(
       context: context,
@@ -1579,6 +1733,84 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                     contentPadding: EdgeInsets.zero,
                     controlAffinity: ListTileControlAffinity.leading,
                   ),
+                  if (canRsvp) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: rsvpLabelController,
+                      decoration: const InputDecoration(
+                        labelText: 'Titel aanmeldknop',
+                        hintText: 'bijv. Lunch deelnemen (leeg = Aanmelden)',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Beperk tot (leeg = iedereen mag aanmelden):',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        FilterChip(
+                          label: const Text('Bestuur'),
+                          selected: rsvpCommittees.contains('bestuur'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [...rsvpCommittees, 'bestuur'];
+                            } else {
+                              rsvpCommittees = rsvpCommittees.where((c) => c != 'bestuur').toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('TC'),
+                          selected: rsvpCommittees.contains('technische-commissie'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [...rsvpCommittees, 'technische-commissie'];
+                            } else {
+                              rsvpCommittees = rsvpCommittees.where((c) => c != 'technische-commissie').toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('Communicatie'),
+                          selected: rsvpCommittees.contains('communicatie'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [...rsvpCommittees, 'communicatie'];
+                            } else {
+                              rsvpCommittees = rsvpCommittees.where((c) => c != 'communicatie').toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('Wedstrijdzaken'),
+                          selected: rsvpCommittees.contains('wedstrijdzaken'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [...rsvpCommittees, 'wedstrijdzaken'];
+                            } else {
+                              rsvpCommittees = rsvpCommittees.where((c) => c != 'wedstrijdzaken').toList();
+                            }
+                          }),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: rsvpTeamIdsController,
+                      decoration: const InputDecoration(
+                        labelText: 'Team-IDs (komma-gescheiden, optioneel)',
+                        hintText: 'bijv. 1, 2, 3',
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                  ],
                 ],
               ),
               actions: [
@@ -1604,12 +1836,26 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       titleController.dispose();
       descriptionController.dispose();
       locationController.dispose();
+      rsvpLabelController.dispose();
+      rsvpTeamIdsController.dispose();
     });
 
     if (ok != true) return;
 
     final title = titleController.text.trim();
     if (title.isEmpty) return;
+
+    final rsvpLabelVal = rsvpLabelController.text.trim();
+    List<int>? teamIdsVal;
+    final teamIdsStr = rsvpTeamIdsController.text.trim();
+    if (teamIdsStr.isNotEmpty) {
+      teamIdsVal = teamIdsStr
+          .split(RegExp(r'[,\s]+'))
+          .map((s) => int.tryParse(s.trim()))
+          .whereType<int>()
+          .toList();
+      if (teamIdsVal.isEmpty) teamIdsVal = null;
+    }
 
     try {
       final payload = <String, dynamic>{
@@ -1618,6 +1864,16 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         'location': locationController.text.trim().isEmpty ? null : locationController.text.trim(),
         'can_rsvp': canRsvp,
       };
+      if (canRsvp) {
+        payload['rsvp_label'] = rsvpLabelVal.isEmpty ? null : rsvpLabelVal;
+        payload['rsvp_allowed_team_ids'] = teamIdsVal;
+        payload['rsvp_allowed_committee_keys'] =
+            rsvpCommittees.isEmpty ? null : rsvpCommittees;
+      } else {
+        payload['rsvp_label'] = null;
+        payload['rsvp_allowed_team_ids'] = null;
+        payload['rsvp_allowed_committee_keys'] = null;
+      }
       if (pickedDateTime != null) {
         payload['start_datetime'] = pickedDateTime!.toUtc().toIso8601String();
       }
@@ -1640,9 +1896,14 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final titleController = TextEditingController(text: existing.title);
     final descriptionController = TextEditingController(text: existing.description ?? '');
     final locationController = TextEditingController(text: existing.where);
+    final rsvpLabelController = TextEditingController(text: existing.rsvpLabel ?? '');
+    final rsvpTeamIdsController = TextEditingController(
+      text: existing.allowedTeamIds?.join(', ') ?? '',
+    );
     DateTime? pickedDateTime = existing.startDatetime?.toLocal();
     DateTime? pickedEndDateTime = existing.endDatetime?.toLocal();
     bool canRsvp = existing.canRsvp;
+    List<String> rsvpCommittees = List.from(existing.allowedCommitteeKeys ?? []);
 
     final ok = await showDialog<bool>(
       context: context,
@@ -1837,6 +2098,84 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                     contentPadding: EdgeInsets.zero,
                     controlAffinity: ListTileControlAffinity.leading,
                   ),
+                  if (canRsvp) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: rsvpLabelController,
+                      decoration: const InputDecoration(
+                        labelText: 'Titel aanmeldknop',
+                        hintText: 'bijv. Lunch deelnemen (leeg = Aanmelden)',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Beperk tot (leeg = iedereen mag aanmelden):',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        FilterChip(
+                          label: const Text('Bestuur'),
+                          selected: rsvpCommittees.contains('bestuur'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [...rsvpCommittees, 'bestuur'];
+                            } else {
+                              rsvpCommittees = rsvpCommittees.where((c) => c != 'bestuur').toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('TC'),
+                          selected: rsvpCommittees.contains('technische-commissie'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [...rsvpCommittees, 'technische-commissie'];
+                            } else {
+                              rsvpCommittees = rsvpCommittees.where((c) => c != 'technische-commissie').toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('Communicatie'),
+                          selected: rsvpCommittees.contains('communicatie'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [...rsvpCommittees, 'communicatie'];
+                            } else {
+                              rsvpCommittees = rsvpCommittees.where((c) => c != 'communicatie').toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('Wedstrijdzaken'),
+                          selected: rsvpCommittees.contains('wedstrijdzaken'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [...rsvpCommittees, 'wedstrijdzaken'];
+                            } else {
+                              rsvpCommittees = rsvpCommittees.where((c) => c != 'wedstrijdzaken').toList();
+                            }
+                          }),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: rsvpTeamIdsController,
+                      decoration: const InputDecoration(
+                        labelText: 'Team-IDs (komma-gescheiden, optioneel)',
+                        hintText: 'bijv. 1, 2, 3',
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                  ],
                 ],
               ),
               actions: [
@@ -1862,12 +2201,26 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       titleController.dispose();
       descriptionController.dispose();
       locationController.dispose();
+      rsvpLabelController.dispose();
+      rsvpTeamIdsController.dispose();
     });
 
     if (ok != true) return;
 
     final title = titleController.text.trim();
     if (title.isEmpty) return;
+
+    final rsvpLabelVal = rsvpLabelController.text.trim();
+    List<int>? teamIdsVal;
+    final teamIdsStr = rsvpTeamIdsController.text.trim();
+    if (teamIdsStr.isNotEmpty) {
+      teamIdsVal = teamIdsStr
+          .split(RegExp(r'[,\s]+'))
+          .map((s) => int.tryParse(s.trim()))
+          .whereType<int>()
+          .toList();
+      if (teamIdsVal.isEmpty) teamIdsVal = null;
+    }
 
     try {
       final payload = <String, dynamic>{
@@ -1876,6 +2229,16 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         'location': locationController.text.trim().isEmpty ? null : locationController.text.trim(),
         'can_rsvp': canRsvp,
       };
+      if (canRsvp) {
+        payload['rsvp_label'] = rsvpLabelVal.isEmpty ? null : rsvpLabelVal;
+        payload['rsvp_allowed_team_ids'] = teamIdsVal;
+        payload['rsvp_allowed_committee_keys'] =
+            rsvpCommittees.isEmpty ? null : rsvpCommittees;
+      } else {
+        payload['rsvp_label'] = null;
+        payload['rsvp_allowed_team_ids'] = null;
+        payload['rsvp_allowed_committee_keys'] = null;
+      }
       if (pickedDateTime != null) {
         payload['start_datetime'] = pickedDateTime!.toUtc().toIso8601String();
       }
@@ -2152,41 +2515,35 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: SafeArea(
-        top: true,
+        top: false,
         bottom: false,
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.darkBlue,
-                  borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Welkom bij VV Minerva',
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w800,
-                          ),
+            TabPageHeader(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Welkom bij VV Minerva',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    widget.showOnlyHighlightsAndNews
+                        ? 'Updates en nieuws vanuit de vereniging.'
+                        : 'Updates, agenda en nieuws vanuit de vereniging.',
+                    style: TextStyle(
+                      color: AppColors.primary.withValues(alpha: 0.9),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Updates, agenda en nieuws vanuit de vereniging.',
-                      style: TextStyle(
-                        color: AppColors.primary.withValues(alpha: 0.9),
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
               child: GlassCard(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 showBorder: false,
@@ -2199,11 +2556,16 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                     borderRadius: BorderRadius.circular(AppColors.cardRadius),
                   ),
                   indicatorSize: TabBarIndicatorSize.tab,
-                  tabs: const [
-                    Tab(text: 'Uitgelicht'),
-                    Tab(text: 'Agenda'),
-                    Tab(text: 'Nieuws'),
-                  ],
+                  tabs: widget.showOnlyHighlightsAndNews
+                      ? const [
+                          Tab(text: 'Uitgelicht'),
+                          Tab(text: 'Nieuws'),
+                        ]
+                      : const [
+                          Tab(text: 'Uitgelicht'),
+                          Tab(text: 'Agenda'),
+                          Tab(text: 'Nieuws'),
+                        ],
                 ),
               ),
             ),
@@ -2290,38 +2652,39 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                     ),
                   ),
 
-                  // Agenda
-                  Column(
-                    children: [
-                      if (canViewAgendaRsvps)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                          child: GlassCard(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                            child: SegmentedButton<int>(
-                              segments: const [
-                                ButtonSegment(value: 0, label: Text('Agenda')),
-                                ButtonSegment(value: 1, label: Text('Aanmeldingen')),
-                              ],
-                              selected: {_agendaMode},
-                              onSelectionChanged: (set) {
-                                final next = set.first;
-                                setState(() => _agendaMode = next);
-                                if (next == 1) {
-                                  // ignore: unawaited_futures
-                                  _loadAgendaRsvps();
-                                }
-                              },
+                  // Agenda (niet tonen wanneer alleen Uitgelicht + Nieuws)
+                  if (!widget.showOnlyHighlightsAndNews)
+                    Column(
+                      children: [
+                        if (canViewAgendaRsvps)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                            child: GlassCard(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              child: SegmentedButton<int>(
+                                segments: const [
+                                  ButtonSegment(value: 0, label: Text('Agenda')),
+                                  ButtonSegment(value: 1, label: Text('Aanmeldingen')),
+                                ],
+                                selected: {_agendaMode},
+                                onSelectionChanged: (set) {
+                                  final next = set.first;
+                                  setState(() => _agendaMode = next);
+                                  if (next == 1) {
+                                    // ignore: unawaited_futures
+                                    _loadAgendaRsvps();
+                                  }
+                                },
+                              ),
                             ),
                           ),
+                        Expanded(
+                          child: _agendaMode == 1 && canViewAgendaRsvps
+                              ? _buildAgendaRsvpsView(canExportRsvps: userContext.canExportAgendaRsvps)
+                              : _buildAgendaListView(canManageAgenda: canManageAgenda),
                         ),
-                      Expanded(
-                        child: _agendaMode == 1 && canViewAgendaRsvps
-                            ? _buildAgendaRsvpsView()
-                            : _buildAgendaListView(canManageAgenda: canManageAgenda),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
 
                   // Nieuws
                   RefreshIndicator(
@@ -2664,6 +3027,9 @@ class _AgendaItem {
   final String when;
   final String where;
   final bool canRsvp;
+  final String? rsvpLabel;
+  final List<int>? allowedTeamIds;
+  final List<String>? allowedCommitteeKeys;
   final DateTime? startDatetime;
   final DateTime? endDatetime;
   final String? dateLabel;
@@ -2678,6 +3044,9 @@ class _AgendaItem {
     required this.when,
     required this.where,
     required this.canRsvp,
+    this.rsvpLabel,
+    this.allowedTeamIds,
+    this.allowedCommitteeKeys,
     this.startDatetime,
     this.endDatetime,
     this.dateLabel,
@@ -2685,6 +3054,35 @@ class _AgendaItem {
     this.endDateLabel,
     this.endTimeLabel,
   });
+
+  /// Gebruiker mag aanmelden als: geen restricties, of in toegestaan team/commissie.
+  bool canUserSignUp(AppUserContext ctx) {
+    if (!canRsvp) return false;
+    final hasTeamRestrict = allowedTeamIds != null && allowedTeamIds!.isNotEmpty;
+    final hasCommitteeRestrict =
+        allowedCommitteeKeys != null && allowedCommitteeKeys!.isNotEmpty;
+    if (!hasTeamRestrict && !hasCommitteeRestrict) return true;
+    if (hasTeamRestrict &&
+        ctx.memberships.any((m) => allowedTeamIds!.contains(m.teamId))) {
+      return true;
+    }
+    if (hasCommitteeRestrict) {
+      final keys = allowedCommitteeKeys!.map((k) => k.trim().toLowerCase()).toSet();
+      final userCommittees =
+          ctx.committees.map((c) => c.trim().toLowerCase()).toSet();
+      if (userCommittees.any((uc) =>
+          keys.contains(uc) ||
+          keys.any((k) => uc == k || uc.contains(k) || k.contains(uc)))) {
+        return true;
+      }
+      if (ctx.hasFullAdminRights && keys.contains('admin')) return true;
+    }
+    return false;
+  }
+
+  String get signupButtonLabel => (rsvpLabel?.trim().isNotEmpty == true)
+      ? rsvpLabel!
+      : 'Aanmelden';
 }
 
 class _AgendaSignup {
@@ -2707,6 +3105,7 @@ class _AgendaCard extends StatelessWidget {
   final _AgendaItem item;
   final bool signedUp;
   final bool enabled;
+  final bool showSignupButton;
   final bool canManage;
   final VoidCallback onToggleRsvp;
   final VoidCallback onReadMore;
@@ -2717,6 +3116,7 @@ class _AgendaCard extends StatelessWidget {
     required this.item,
     required this.signedUp,
     required this.enabled,
+    this.showSignupButton = true,
     required this.canManage,
     required this.onToggleRsvp,
     required this.onReadMore,
@@ -2829,18 +3229,34 @@ class _AgendaCard extends StatelessWidget {
           const SizedBox(height: 12),
           Row(
             children: [
-              if (item.canRsvp) ...[
+              if (showSignupButton) ...[
                 SizedBox(
                   height: 36,
-                  child: OutlinedButton(
-                    onPressed: enabled ? onToggleRsvp : null,
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    child: Text(signedUp ? 'Afmelden' : 'Aanmelden'),
-                  ),
+                  child: signedUp
+                      ? Tooltip(
+                          message: 'Tik om af te melden',
+                          child: FilledButton.icon(
+                            onPressed: enabled ? onToggleRsvp : null,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: AppColors.success,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            icon: const Icon(Icons.check_circle, size: 18),
+                            label: const Text('Aangemeld'),
+                          ),
+                        )
+                      : OutlinedButton(
+                          onPressed: enabled ? onToggleRsvp : null,
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          child: Text(item.signupButtonLabel),
+                        ),
                 ),
               ],
               const Spacer(),

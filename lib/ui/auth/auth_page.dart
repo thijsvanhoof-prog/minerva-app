@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/primary_button.dart';
 import 'package:minerva_app/ui/auth/register_page.dart';
-import 'package:minerva_app/ui/branded_background.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -92,8 +91,7 @@ class _AuthPageState extends State<AuthPage> {
       ),
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: BrandedBackground(
-          child: ListView(
+        body: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.fromLTRB(
               16,
@@ -149,7 +147,6 @@ class _AuthPageState extends State<AuthPage> {
             ),
           ),
         ],
-          ),
         ),
       ),
     );

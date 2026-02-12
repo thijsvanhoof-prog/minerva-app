@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:minerva_app/ui/branded_background.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -105,8 +104,7 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
       ),
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: BrandedBackground(
-          child: ListView(
+        body: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.fromLTRB(
               16,
@@ -229,7 +227,6 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
             ),
           ),
         ],
-          ),
         ),
       ),
     );

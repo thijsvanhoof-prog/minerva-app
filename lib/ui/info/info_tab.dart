@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -87,8 +88,12 @@ class _InfoTabState extends State<InfoTab> {
       }
 
       // Fetch names en emails (alleen namen en mailadressen — geen andere privacygevoelige data).
-      final nameByProfileId = await _loadProfileNames(profileIds: profileIds.toList());
-      final emailByProfileId = await _loadProfileEmails(profileIds: profileIds.toList());
+      final nameByProfileId = await _loadProfileNames(
+        profileIds: profileIds.toList(),
+      );
+      final emailByProfileId = await _loadProfileEmails(
+        profileIds: profileIds.toList(),
+      );
 
       // Build members by committee
       for (final row in rows) {
@@ -97,22 +102,30 @@ class _InfoTabState extends State<InfoTab> {
         final key = _normalizeCommittee(rawName);
 
         final pid = row['profile_id']?.toString() ?? '';
-        final displayNameFromRow =
-            (row['display_name'] ?? row['name'])?.toString().trim();
+        final displayNameFromRow = (row['display_name'] ?? row['name'])
+            ?.toString()
+            .trim();
         final memberName = (displayNameFromRow?.isNotEmpty == true)
             ? applyDisplayNameOverrides(displayNameFromRow!)
             : applyDisplayNameOverrides((nameByProfileId[pid] ?? '').trim());
         final displayName = memberName.isNotEmpty ? memberName : _shortId(pid);
         final email = emailByProfileId[pid]?.trim();
         // Alleen @-adressen tonen (e-mail van Minerva)
-        final emailToShow = (email != null && email.contains('@')) ? email : null;
+        final emailToShow = (email != null && email.contains('@'))
+            ? email
+            : null;
 
-        final function = (row['function'] ?? row['role'] ?? row['title'])?.toString();
-        _membersByCommittee.putIfAbsent(key, () => []).add(
+        final function = (row['function'] ?? row['role'] ?? row['title'])
+            ?.toString();
+        _membersByCommittee
+            .putIfAbsent(key, () => [])
+            .add(
               _CommitteeMember(
                 profileId: pid,
                 name: displayName,
-                function: function?.trim().isEmpty == true ? null : function?.trim(),
+                function: function?.trim().isEmpty == true
+                    ? null
+                    : function?.trim(),
                 email: emailToShow,
               ),
             );
@@ -121,7 +134,9 @@ class _InfoTabState extends State<InfoTab> {
       final list = committeeKeys.toList()..sort();
       for (final k in list) {
         final members = _membersByCommittee[k] ?? [];
-        members.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        members.sort(
+          (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+        );
         _membersByCommittee[k] = members;
       }
 
@@ -138,7 +153,9 @@ class _InfoTabState extends State<InfoTab> {
     }
   }
 
-  Future<Map<String, String>> _loadProfileNames({required List<String> profileIds}) async {
+  Future<Map<String, String>> _loadProfileNames({
+    required List<String> profileIds,
+  }) async {
     if (profileIds.isEmpty) return {};
 
     try {
@@ -151,11 +168,9 @@ class _InfoTabState extends State<InfoTab> {
       final map = <String, String>{};
       for (final row in rows) {
         final id = row['id']?.toString() ?? '';
-        final name = (row['display_name'] ??
-                row['full_name'] ??
-                row['email'] ??
-                '')
-            .toString();
+        final name =
+            (row['display_name'] ?? row['full_name'] ?? row['email'] ?? '')
+                .toString();
         if (id.isNotEmpty) map[id] = applyDisplayNameOverrides(name);
       }
       return map;
@@ -164,7 +179,9 @@ class _InfoTabState extends State<InfoTab> {
     }
   }
 
-  Future<Map<String, String>> _loadProfileEmails({required List<String> profileIds}) async {
+  Future<Map<String, String>> _loadProfileEmails({
+    required List<String> profileIds,
+  }) async {
     if (profileIds.isEmpty) return {};
 
     try {
@@ -195,12 +212,22 @@ class _InfoTabState extends State<InfoTab> {
     if (c.contains('communicatie')) return 'communicatie';
     if (c.contains('wedstrijd')) return 'wedstrijdzaken';
     if (c.contains('jeugd')) return 'jeugd';
-    if (c.contains('algemeen') || c.contains('secretariaat')) return 'secretariaat';
+    if (c.contains('algemeen') || c.contains('secretariaat')) {
+      return 'secretariaat';
+    }
     return c;
   }
 
   String _committeeLabel(String key) {
-    return _committeeDisplayName[key] ?? key;
+    final raw = _committeeDisplayName[key] ?? key;
+    return raw
+        .split(' ')
+        .map(
+          (w) => w.isEmpty
+              ? w
+              : '${w[0].toUpperCase()}${w.substring(1).toLowerCase()}',
+        )
+        .join(' ');
   }
 
   String _shortId(String value) {
@@ -220,144 +247,185 @@ class _InfoTabState extends State<InfoTab> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: RefreshIndicator(
-        color: AppColors.primary,
-        onRefresh: _loadCommittees,
-        child: ListView(
-        padding: EdgeInsets.fromLTRB(
-          16,
-          16 + MediaQuery.paddingOf(context).top,
-          16,
-          16 + MediaQuery.paddingOf(context).bottom,
-        ),
-        children: [
-          // Commissies met contactpersonen
-          GlassCard(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: AppColors.darkBlue,
-                          borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.badge_outlined, color: AppColors.primary),
-                            const SizedBox(width: 10),
-                            Text(
-                              'Commissies',
-                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                    color: AppColors.primary,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                            ),
-                            const Spacer(),
-                            if (_loadingCommittees)
-                              const SizedBox(
-                                height: 16,
-                                width: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: AppColors.primary,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
+      body: SafeArea(
+        top: false,
+        bottom: false,
+        child: Column(
+          children: [
+            TabPageHeader(
+              child: Text(
+                'Contact',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w800,
                 ),
-                const SizedBox(height: 10),
-                if (_committeeError != null)
-                  Text(
-                    _committeeError!,
-                    style: const TextStyle(color: AppColors.error),
-                  )
-                else if (!_loadingCommittees && _committees.isEmpty)
-                  const Text(
-                    'Geen commissies gevonden.',
-                    style: TextStyle(color: AppColors.textSecondary),
-                  )
-                else
-                  ..._committees.map((c) {
-                    final members = _membersByCommittee[c] ?? const [];
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 12),
+              ),
+            ),
+            Expanded(
+              child: RefreshIndicator(
+                color: AppColors.primary,
+                onRefresh: _loadCommittees,
+                child: ListView(
+                  padding: EdgeInsets.fromLTRB(
+                    16,
+                    16,
+                    16,
+                    16 + MediaQuery.paddingOf(context).bottom,
+                  ),
+                  children: [
+                    // Commissies met contactpersonen
+                    GlassCard(
+                      padding: const EdgeInsets.all(16),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            _committeeLabel(c),
-                            style: const TextStyle(
-                              color: AppColors.onBackground,
-                              fontWeight: FontWeight.w800,
-                            ),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 10,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.darkBlue,
+                                    borderRadius: BorderRadius.circular(
+                                      AppColors.cardRadius,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.badge_outlined,
+                                        color: AppColors.primary,
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Text(
+                                        'Commissies',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium
+                                            ?.copyWith(
+                                              color: AppColors.primary,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                      ),
+                                      const Spacer(),
+                                      if (_loadingCommittees)
+                                        const SizedBox(
+                                          height: 16,
+                                          width: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: AppColors.primary,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 6),
-                          if (members.isEmpty)
+                          const SizedBox(height: 10),
+                          if (_committeeError != null)
+                            Text(
+                              _committeeError!,
+                              style: const TextStyle(color: AppColors.error),
+                            )
+                          else if (!_loadingCommittees && _committees.isEmpty)
                             const Text(
-                              '—',
+                              'Geen commissies gevonden.',
                               style: TextStyle(color: AppColors.textSecondary),
                             )
                           else
-                            ...members.map((m) {
-                              final suffix =
-                                  (m.function != null && m.function!.isNotEmpty)
-                                      ? ' (${m.function})'
-                                      : '';
+                            ..._committees.map((c) {
+                              final members =
+                                  _membersByCommittee[c] ?? const [];
                               return Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 4),
+                                padding: const EdgeInsets.only(top: 12),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      '- ${m.name}$suffix',
+                                      _committeeLabel(c),
                                       style: const TextStyle(
-                                        color: AppColors.textSecondary,
+                                        color: AppColors.onBackground,
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 18,
                                       ),
                                     ),
-                                    if (m.email != null) ...[
-                                      const SizedBox(height: 2),
-                                      GestureDetector(
-                                        onTap: () => _openMail(m.email!),
-                                        child: Row(
-                                          children: [
-                                            const Icon(
-                                              Icons.mail_outline,
-                                              size: 14,
-                                              color: AppColors.primary,
-                                            ),
-                                            const SizedBox(width: 6),
-                                            Text(
-                                              m.email!,
-                                              style: const TextStyle(
-                                                color: AppColors.primary,
-                                                fontSize: 13,
-                                                decoration: TextDecoration.underline,
-                                              ),
-                                            ),
-                                          ],
+                                    const SizedBox(height: 6),
+                                    if (members.isEmpty)
+                                      const Text(
+                                        '—',
+                                        style: TextStyle(
+                                          color: AppColors.textSecondary,
                                         ),
-                                      ),
-                                    ],
+                                      )
+                                    else
+                                      ...members.map((m) {
+                                        final suffix =
+                                            (m.function != null &&
+                                                m.function!.isNotEmpty)
+                                            ? ' (${m.function})'
+                                            : '';
+                                        return Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 4,
+                                          ),
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                '- ${m.name}$suffix',
+                                                style: const TextStyle(
+                                                  color:
+                                                      AppColors.textSecondary,
+                                                ),
+                                              ),
+                                              if (m.email != null) ...[
+                                                const SizedBox(height: 2),
+                                                GestureDetector(
+                                                  onTap: () =>
+                                                      _openMail(m.email!),
+                                                  child: Row(
+                                                    children: [
+                                                      const Icon(
+                                                        Icons.mail_outline,
+                                                        size: 14,
+                                                        color:
+                                                            AppColors.primary,
+                                                      ),
+                                                      const SizedBox(width: 6),
+                                                      Text(
+                                                        m.email!,
+                                                        style: const TextStyle(
+                                                          color:
+                                                              AppColors.primary,
+                                                          fontSize: 13,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        );
+                                      }),
                                   ],
                                 ),
                               );
                             }),
                         ],
                       ),
-                    );
-                  }),
-              ],
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
-        ],
+          ],
         ),
       ),
     );

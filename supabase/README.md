@@ -30,6 +30,8 @@ Daarna kun je in de app activiteiten toevoegen (bestuur/communicatie), bewerken,
 
 De tabel `home_agenda` bevat o.a.: **titel**, **beschrijving** (alleen zichtbaar bij Lees meer), **start_datetime**, **end_datetime**, **location**, **can_rsvp**.
 
+**Optioneel – custom titel en beperkingen:** Voer `home_agenda_rsvp_extended.sql` uit om per activiteit een eigen knoptitel (bijv. "Lunch deelnemen") in te stellen en aanmelden te beperken tot bepaalde teams of commissies.
+
 **Let op:** `home_agenda_schema.sql` gebruikt `is_global_admin()`. Als die functie nog niet bestaat, krijg je fouten bij de admin-policies. Zorg dat je eerst een globale admin-functie (en evt. `committee_members`) hebt, of pas het schema aan zodat alleen RLS voor select/insert/delete op RSVPs actief is.
 
 ## Nieuwsberichten (titel + beschrijving)
@@ -65,3 +67,24 @@ Daarna werken Speler, Trainer/coach, Speel niet en Afmelden in Sport → Wedstri
 **"Kon status niet opslaan" / `match_availability_status_check` (PostgrestException 23514)?** De constraint laat dan geen `coach` toe. Voer **`match_availability_fix_status_constraint.sql`** uit in de SQL Editor. Daarna zou Aanwezig/Afwezig weer moeten werken.
 
 Voor **admin-override** (globale beheer van alle availability): gebruik `match_availability_schema.sql` (vereist `is_global_admin`).
+
+## Wedstrijd-annuleringen (Commissie → Bestuur → Wedstrijden)
+
+Bestuur kan wedstrijden als geannuleerd markeren (bijv. vakantie, geen tegenstander). Zonder de tabel krijg je **"Could not find the table 'public.match_cancellations'"** bij het annuleren. De annulering is alleen zichtbaar in de app, niet gekoppeld aan Nevobo.
+
+**Setup:**
+
+1. Open **Supabase Dashboard** → jouw project → **SQL Editor**.
+2. Maak een nieuw query.
+3. Kopieer de inhoud van `match_cancellations_minimal.sql` en plak die in de editor.
+4. Klik **Run**.
+
+## Commissies: leden toevoegen (alle profielen zichtbaar)
+
+Bij **Commissie → Bestuur → Commissies → Lid toevoegen** kun je normaal alle leden kiezen. Als je alleen je eigen naam ziet, komt dat vaak door restrictieve RLS op de `profiles`-tabel. Los dit op met een RPC die bestuur toegang geeft tot alle profielen:
+
+1. Open **Supabase Dashboard** → jouw project → **SQL Editor**.
+2. Kopieer de inhoud van `committee_list_profiles_rpc.sql` en plak die in de editor.
+3. Klik **Run**.
+
+Vereist: `committee_members`-tabel met je bestuur-leden.

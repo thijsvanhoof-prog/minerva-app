@@ -1,6 +1,7 @@
 /// Nederlandse feestdagen (vrije dagen) voor uitsluiting bij trainingen.
 ///
 /// Gebaseerd op officiële feestdagen in Nederland.
+library;
 
 /// Berekent de datum van Paaszondag voor een gegeven jaar (Oudin-algoritme).
 DateTime _easterSunday(int year) {

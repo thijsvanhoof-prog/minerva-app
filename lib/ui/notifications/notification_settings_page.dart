@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
-import 'package:minerva_app/ui/branded_background.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:onesignal_flutter/onesignal_flutter.dart';
 
@@ -104,8 +103,7 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: BrandedBackground(
-        child: _loading
+      body: _loading
             ? const Center(
                 child: CircularProgressIndicator(color: AppColors.primary),
               )
@@ -183,7 +181,6 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
                 ],
               ],
             ),
-      ),
     );
   }
 }

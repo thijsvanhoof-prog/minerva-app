@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/profiel/ouder_kind_koppel_page.dart';
@@ -28,6 +29,7 @@ class _ProfielTabState extends State<ProfielTab> {
   Map<int, String> _teamNamesById = const {};
   final Set<String> _processingLinkRequestIds = {};
   bool _unlinking = false;
+  bool _savingDisplayName = false;
 
   @override
   void initState() {
@@ -140,33 +142,10 @@ class _ProfielTabState extends State<ProfielTab> {
     final ctx = AppUserContext.of(context);
     final current = _editableDisplayName(ctx.displayName);
 
-    final controller = TextEditingController(text: current);
     final newName = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Gebruikersnaam wijzigen'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          textCapitalization: TextCapitalization.words,
-          decoration: const InputDecoration(
-            labelText: 'Nieuwe gebruikersnaam',
-            hintText: 'Naam zoals anderen jou zien',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(null),
-            child: const Text('Annuleren'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-            child: const Text('Opslaan'),
-          ),
-        ],
-      ),
+      builder: (context) => _EditDisplayNameDialog(initialValue: current),
     );
-    controller.dispose();
 
     if (newName == null) return;
     if (!mounted) return;
@@ -175,6 +154,7 @@ class _ProfielTabState extends State<ProfielTab> {
       return;
     }
 
+    _safeSetState(() => _savingDisplayName = true);
     try {
       // 1) Update auth metadata (immediate + works even if profiles RLS is strict).
       await _client.auth.updateUser(
@@ -201,6 +181,8 @@ class _ProfielTabState extends State<ProfielTab> {
     } catch (e) {
       if (!mounted) return;
       showTopMessage(context, 'Kon gebruikersnaam niet wijzigen: $e', isError: true);
+    } finally {
+      if (mounted) _safeSetState(() => _savingDisplayName = false);
     }
   }
 
@@ -269,6 +251,9 @@ class _ProfielTabState extends State<ProfielTab> {
     if (ctx.isInCommunicatie) roles.add('Communicatie lid');
     if (ctx.isInWedstrijdzaken) roles.add('Wedstrijdzaken lid');
     if (_isGlobalAdmin || ctx.hasFullAdminRights) roles.add('Algemeen admin');
+
+    // Geen enkele rol → toeschouwer (alleen Uitgelicht, Agenda, Nieuws, Standen, Contact, Profiel)
+    if (roles.isEmpty) roles.add('Toeschouwer');
 
     // De-duplicate while preserving order.
     final seen = <String>{};
@@ -398,7 +383,10 @@ class _ProfielTabState extends State<ProfielTab> {
           ListTile(
             title: const Text(
               'Gekoppelde accounts',
-              style: TextStyle(color: AppColors.textSecondary),
+              style: TextStyle(
+                color: AppColors.onBackground,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             subtitle: const Text(
               'Wat kan wel: elkaars trainingen en wedstrijden bekijken, aanwezigheid voor een gekoppeld kind invullen. '
@@ -422,8 +410,8 @@ class _ProfielTabState extends State<ProfielTab> {
                     const Text(
                       'Koppelingsverzoeken',
                       style: TextStyle(
-                        color: AppColors.textSecondary,
-                        fontWeight: FontWeight.w700,
+                        color: AppColors.onBackground,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     const SizedBox(height: 6),
@@ -804,17 +792,32 @@ class _ProfielTabState extends State<ProfielTab> {
 
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: RefreshIndicator(
-        color: AppColors.primary,
-        onRefresh: _reload,
-        child: ListView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: EdgeInsets.fromLTRB(
-            16,
-            16 + MediaQuery.paddingOf(context).top,
-            16,
-            16 + MediaQuery.paddingOf(context).bottom,
-          ),
+      body: SafeArea(
+        top: false,
+        bottom: false,
+        child: Column(
+          children: [
+            TabPageHeader(
+              child: Text(
+                'Profiel',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+            ),
+            Expanded(
+              child: RefreshIndicator(
+                color: AppColors.primary,
+                onRefresh: _reload,
+                child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: EdgeInsets.fromLTRB(
+                    16,
+                    16,
+                    16,
+                    16 + MediaQuery.paddingOf(context).bottom,
+                  ),
           children: _loading
               ? [
                   const SizedBox(
@@ -847,7 +850,10 @@ class _ProfielTabState extends State<ProfielTab> {
                       child: ListTile(
                         title: const Text(
                           'Ingelogd als',
-                          style: TextStyle(color: AppColors.textSecondary),
+                          style: TextStyle(
+                            color: AppColors.onBackground,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                         subtitle: Text(
                           displayName,
@@ -862,13 +868,23 @@ class _ProfielTabState extends State<ProfielTab> {
                         leading: const Icon(Icons.edit_outlined, color: AppColors.iconMuted),
                         title: const Text(
                           'Gebruikersnaam wijzigen',
-                          style: TextStyle(color: AppColors.onBackground),
+                          style: TextStyle(
+                            color: AppColors.onBackground,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                         subtitle: const Text(
                           'Pas aan hoe anderen jou zien in de app.',
                           style: TextStyle(color: AppColors.textSecondary),
                         ),
-                        onTap: _changeMyDisplayNameFlow,
+                        onTap: _savingDisplayName ? null : _changeMyDisplayNameFlow,
+                        trailing: _savingDisplayName
+                            ? const SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : null,
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -887,7 +903,10 @@ class _ProfielTabState extends State<ProfielTab> {
                           ),
                           title: const Text(
                             'Rollen',
-                            style: TextStyle(color: AppColors.textSecondary),
+                            style: TextStyle(
+                              color: AppColors.onBackground,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                           subtitle: Text(
                             roleLabels.join(' • '),
@@ -907,7 +926,10 @@ class _ProfielTabState extends State<ProfielTab> {
                           ),
                           title: const Text(
                             'Commissies',
-                            style: TextStyle(color: AppColors.textSecondary),
+                            style: TextStyle(
+                              color: AppColors.onBackground,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                           subtitle: Text(
                             ctx.committees.map(_formatCommitteeName).join(' • '),
@@ -924,10 +946,13 @@ class _ProfielTabState extends State<ProfielTab> {
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       child: Column(
                         children: [
-                          const ListTile(
-                            title: Text(
+                          ListTile(
+                            title: const Text(
                               'Teams & rollen',
-                              style: TextStyle(color: AppColors.textSecondary),
+                              style: TextStyle(
+                                color: AppColors.onBackground,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
                           if (_teamRoles.isEmpty)
@@ -987,7 +1012,10 @@ class _ProfielTabState extends State<ProfielTab> {
                             const Expanded(
                               child: Text(
                                 'Notificaties',
-                                style: TextStyle(color: AppColors.onBackground),
+                                style: TextStyle(
+                                  color: AppColors.onBackground,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
                             Tooltip(
@@ -1053,7 +1081,10 @@ class _ProfielTabState extends State<ProfielTab> {
                         ),
                         title: const Text(
                           'E-mail wijzigen',
-                          style: TextStyle(color: AppColors.onBackground),
+                          style: TextStyle(
+                            color: AppColors.onBackground,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                         subtitle: const Text(
                           'Er wordt altijd een bevestigingsmail gestuurd naar het nieuwe adres. Pas na bevestiging is de wijziging actief.',
@@ -1074,7 +1105,10 @@ class _ProfielTabState extends State<ProfielTab> {
                         ),
                         title: const Text(
                           'Account verwijderen',
-                          style: TextStyle(color: AppColors.onBackground),
+                          style: TextStyle(
+                            color: AppColors.onBackground,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                         subtitle: const Text(
                           'Verwijdert je account en logt je uit.',
@@ -1097,6 +1131,10 @@ class _ProfielTabState extends State<ProfielTab> {
                       onPressed: _signOut,
                     ),
                   ],
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1109,34 +1147,10 @@ class _ProfielTabState extends State<ProfielTab> {
   }
 
   Future<void> _changeEmailFlow({required String currentEmail}) async {
-    final controller = TextEditingController();
     final newEmail = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('E-mail wijzigen'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          keyboardType: TextInputType.emailAddress,
-          autocorrect: false,
-          decoration: InputDecoration(
-            labelText: 'Nieuw e-mailadres',
-            hintText: currentEmail,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(null),
-            child: const Text('Annuleren'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-            child: const Text('Opslaan'),
-          ),
-        ],
-      ),
+      builder: (context) => _EditEmailDialog(hint: currentEmail),
     );
-    controller.dispose();
 
     if (!mounted) return;
     if (newEmail == null || newEmail.trim().isEmpty) return;
@@ -1226,5 +1240,108 @@ class _ProfielTabState extends State<ProfielTab> {
         isError: true,
       );
     }
+  }
+}
+
+class _EditDisplayNameDialog extends StatefulWidget {
+  final String initialValue;
+
+  const _EditDisplayNameDialog({required this.initialValue});
+
+  @override
+  State<_EditDisplayNameDialog> createState() => _EditDisplayNameDialogState();
+}
+
+class _EditDisplayNameDialogState extends State<_EditDisplayNameDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialValue);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Gebruikersnaam wijzigen'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        textCapitalization: TextCapitalization.words,
+        decoration: const InputDecoration(
+          labelText: 'Nieuwe gebruikersnaam',
+          hintText: 'Naam zoals anderen jou zien',
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(null),
+          child: const Text('Annuleren'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: const Text('Opslaan'),
+        ),
+      ],
+    );
+  }
+}
+
+class _EditEmailDialog extends StatefulWidget {
+  final String hint;
+
+  const _EditEmailDialog({required this.hint});
+
+  @override
+  State<_EditEmailDialog> createState() => _EditEmailDialogState();
+}
+
+class _EditEmailDialogState extends State<_EditEmailDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('E-mail wijzigen'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        keyboardType: TextInputType.emailAddress,
+        autocorrect: false,
+        decoration: InputDecoration(
+          labelText: 'Nieuw e-mailadres',
+          hintText: widget.hint,
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(null),
+          child: const Text('Annuleren'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: const Text('Opslaan'),
+        ),
+      ],
+    );
   }
 }

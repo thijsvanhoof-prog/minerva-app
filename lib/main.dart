@@ -88,8 +88,12 @@ Future<void> main() async {
 
       // OneSignal init after first frame (safer on cold-start iOS).
       WidgetsBinding.instance.addPostFrameCallback((_) async {
-        final oneSignalAppId = dotenv.env['ONESIGNAL_APP_ID'] ?? '';
-        await NotificationService.initialize(oneSignalAppId: oneSignalAppId);
+        try {
+          final oneSignalAppId = dotenv.env['ONESIGNAL_APP_ID'] ?? '';
+          await NotificationService.initialize(oneSignalAppId: oneSignalAppId);
+        } catch (e) {
+          debugPrint('OneSignal init failed: $e');
+        }
       });
     } catch (e, stackTrace) {
       debugPrint('Startup error: $e');

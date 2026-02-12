@@ -523,6 +523,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   }
 
   Future<void> _loadAll() async {
+    if (!mounted) return;
     setState(() {
       _loading = true;
       _error = null;
@@ -598,6 +599,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       await _loadCancellationsForMatches(matchRefs);
       await _loadAvailabilityForMatches(matchRefs);
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = 'Kon Nevobo data niet laden.\n$e';
         _loading = false;
@@ -661,24 +663,34 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
             spacing: 8,
             runSpacing: 8,
             children: [
-              ElevatedButton(
-                onPressed: _setMyStatusForAllMatchesAanwezig,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: allPresent ? AppColors.primary : AppColors.card,
-                  foregroundColor: allPresent ? AppColors.background : AppColors.onBackground,
-                  side: allPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
-                ),
-                child: const Text('Aanwezig'),
-              ),
-              ElevatedButton(
-                onPressed: () => _setMyStatusForAllMatches(null),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: !anyPresent ? AppColors.primary : AppColors.card,
-                  foregroundColor: !anyPresent ? AppColors.background : AppColors.onBackground,
-                  side: !anyPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
-                ),
-                child: const Text('Afwezig'),
-              ),
+              allPresent
+                  ? FilledButton.icon(
+                      onPressed: _setMyStatusForAllMatchesAanwezig,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.success,
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.check_circle, size: 18),
+                      label: const Text('Aanwezig'),
+                    )
+                  : OutlinedButton(
+                      onPressed: _setMyStatusForAllMatchesAanwezig,
+                      child: const Text('Aanwezig'),
+                    ),
+              anyPresent
+                  ? OutlinedButton(
+                      onPressed: () => _setMyStatusForAllMatches(null),
+                      child: const Text('Afwezig'),
+                    )
+                  : FilledButton.icon(
+                      onPressed: () => _setMyStatusForAllMatches(null),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.textSecondary.withValues(alpha: 0.25),
+                        foregroundColor: AppColors.onBackground,
+                      ),
+                      icon: const Icon(Icons.person_off, size: 18),
+                      label: const Text('Afwezig'),
+                    ),
             ],
           ),
         ],
@@ -881,7 +893,23 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                       style: TextStyle(color: AppColors.textSecondary),
                     )
                   else
-                    ...leaderboard.map((s) {
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            children: [
+                              const SizedBox(width: 28, child: Text('', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600))),
+                              const Expanded(child: Text('Team', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600))),
+                              const SizedBox(width: 10),
+                              SizedBox(width: 36, child: Text('Wedstr.', style: const TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600), textAlign: TextAlign.right)),
+                              const SizedBox(width: 10),
+                              SizedBox(width: 36, child: Text('Punten', style: const TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600), textAlign: TextAlign.right)),
+                            ],
+                          ),
+                        ),
+                        ...leaderboard.map((s) {
                       final isMinerva = _isMinervaTeamName(s.teamName);
                       return Padding(
                         padding: const EdgeInsets.symmetric(vertical: 4),
@@ -948,6 +976,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                         ),
                       );
                     }),
+                      ],
+                    ),
                 ],
 
                 const SizedBox(height: 14),
@@ -1063,33 +1093,52 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                             spacing: 8,
                             runSpacing: 8,
                             children: [
-                              ElevatedButton(
-                                onPressed: isCancelled
-                                    ? null
-                                    : () => _setMyStatus(
-                                          match: ref,
-                                          status: _isTrainerOrCoachForTeamCode(ref.teamCode)
-                                              ? 'coach'
-                                              : 'playing',
-                                        ),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: isPresent ? AppColors.primary : AppColors.card,
-                                  foregroundColor: isPresent ? AppColors.background : AppColors.onBackground,
-                                  side: isPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
-                                ),
-                                child: const Text('Aanwezig'),
-                              ),
-                              ElevatedButton(
-                                onPressed: isCancelled
-                                    ? null
-                                    : () => _setMyStatus(match: ref, status: null),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: !isPresent ? AppColors.primary : AppColors.card,
-                                  foregroundColor: !isPresent ? AppColors.background : AppColors.onBackground,
-                                  side: !isPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
-                                ),
-                                child: const Text('Afwezig'),
-                              ),
+                              isPresent
+                                  ? FilledButton.icon(
+                                      onPressed: isCancelled
+                                          ? null
+                                          : () => _setMyStatus(
+                                                match: ref,
+                                                status: _isTrainerOrCoachForTeamCode(ref.teamCode)
+                                                    ? 'coach'
+                                                    : 'playing',
+                                              ),
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: AppColors.success,
+                                        foregroundColor: Colors.white,
+                                      ),
+                                      icon: const Icon(Icons.check_circle, size: 18),
+                                      label: const Text('Aanwezig'),
+                                    )
+                                  : OutlinedButton(
+                                      onPressed: isCancelled
+                                          ? null
+                                          : () => _setMyStatus(
+                                                match: ref,
+                                                status: _isTrainerOrCoachForTeamCode(ref.teamCode)
+                                                    ? 'coach'
+                                                    : 'playing',
+                                              ),
+                                      child: const Text('Aanwezig'),
+                                    ),
+                              isPresent
+                                  ? OutlinedButton(
+                                      onPressed: isCancelled
+                                          ? null
+                                          : () => _setMyStatus(match: ref, status: null),
+                                      child: const Text('Afwezig'),
+                                    )
+                                  : FilledButton.icon(
+                                      onPressed: isCancelled
+                                          ? null
+                                          : () => _setMyStatus(match: ref, status: null),
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: AppColors.textSecondary.withValues(alpha: 0.25),
+                                        foregroundColor: AppColors.onBackground,
+                                      ),
+                                      icon: const Icon(Icons.person_off, size: 18),
+                                      label: const Text('Afwezig'),
+                                    ),
                             ],
                           ),
                           if (hasCounts) ...[

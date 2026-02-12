@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart';
 import 'package:minerva_app/ui/notifications/notification_service.dart';
@@ -53,6 +54,10 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       _reload();
     });
     _reload();
+    // Voorkom eindeloze freeze: als een Supabase-call blijft hangen, na 15s toch UI tonen.
+    Future.delayed(const Duration(seconds: 15), () {
+      if (mounted && _loading) setState(() => _loading = false);
+    });
   }
 
   void _onOuderKindChanged() {
@@ -91,7 +96,6 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       });
       return;
     }
-
     // If the logged-in user changes, clear any "view as child" state immediately.
     final prevLoggedIn = _loggedInProfileId;
     _loggedInProfileId = user.id;
@@ -256,6 +260,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       displayName = "$displayName (ouder/verzorger '$suffix')";
     }
 
+    if (!mounted) return;
     setState(() {
       _isGlobalAdmin = isGlobalAdmin;
       _memberships = memberships;
@@ -265,15 +270,16 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     });
 
     // Best-effort OneSignal user sync (no-op if not supported / not initialized yet).
-    // We schedule it post-frame so it can run after OneSignal initialize in main().
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      NotificationService.syncUser(
-        profileId: _profileId,
-        email: _email,
-        isGlobalAdmin: _isGlobalAdmin,
-        memberships: _memberships,
-        committees: _committees,
-      );
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await NotificationService.syncUser(
+          profileId: _profileId,
+          email: _email,
+          isGlobalAdmin: _isGlobalAdmin,
+          memberships: _memberships,
+          committees: _committees,
+        );
+      } catch (_) {}
     });
   }
 
@@ -367,30 +373,28 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
 
   @override
   Widget build(BuildContext context) {
-    // Belangrijk:
-    // - We houden AppUserContext én de volledige Navigator (widget.child) altijd gemount.
-    // - Tijdens reload/auth events tonen we alleen een overlay bovenop de app.
-    //   Als je de Navigator vervangt (bijv. door een loading Scaffold), kan een open dialog
-    //   nog afhankelijk zijn van inherited widgets, wat kan leiden tot:
-    //   `Failed assertion: '_dependents.isEmpty'`.
-    final base = widget.child;
-
-    final child = Stack(
-      children: [
-        base,
-        if (_loading)
-          Positioned.fill(
-            child: IgnorePointer(
-              ignoring: false,
-              child: Container(
-                color: Colors.black.withValues(alpha: 0.25),
-                alignment: Alignment.center,
-                child: const CircularProgressIndicator(),
+    final hasSession = _client.auth.currentUser != null;
+    final showApp = !hasSession || !_loading;
+    final content = showApp
+        ? widget.child
+        : Scaffold(
+            backgroundColor: Colors.transparent,
+            body: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: AppColors.primary),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Laden…',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                  ),
+                ],
               ),
             ),
-          ),
-      ],
-    );
+          );
 
     return AppUserContext(
       profileId: _profileId,
@@ -405,7 +409,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       viewingAsDisplayName: _ouderKindNotifier.viewingAsDisplayName,
       linkedChildProfiles: _ouderKindNotifier.linkedChildren,
       ouderKindNotifier: _ouderKindNotifier,
-      child: child,
+      child: content,
     );
   }
 }

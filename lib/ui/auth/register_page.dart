@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:minerva_app/ui/branded_background.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/primary_button.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
@@ -136,8 +135,7 @@ class _RegisterPageState extends State<RegisterPage> {
       ),
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: BrandedBackground(
-          child: ListView(
+        body: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.fromLTRB(
               16,
@@ -241,7 +239,6 @@ class _RegisterPageState extends State<RegisterPage> {
             ],
           ),
         ),
-      ),
     );
   }
 }

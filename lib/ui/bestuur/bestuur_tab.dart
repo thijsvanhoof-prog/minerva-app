@@ -284,7 +284,7 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
         padding: const EdgeInsets.all(12),
         children: [
           GlassCard(
-            padding: const EdgeInsets.all(14),
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -295,12 +295,12 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
                     fontWeight: FontWeight.w900,
                   ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 const Text(
                   'Annuleer trainingen (vakantie/feestdagen) en filter op datum.',
                   style: TextStyle(color: AppColors.textSecondary),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(
@@ -328,7 +328,7 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
               ],
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           if (_loading)
             const Center(
               child: Padding(
@@ -361,7 +361,7 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
               final cancelled = s['is_cancelled'] == true;
 
               return GlassCard(
-                margin: const EdgeInsets.only(bottom: 10),
+                margin: const EdgeInsets.only(bottom: 8),
                 padding: const EdgeInsets.all(12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -968,35 +968,56 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
 
   Future<void> _loadAllProfilesForManagement() async {
     setState(() => _loadingProfiles = true);
-    List<Map<String, dynamic>> raw = const [];
-    for (final select in const [
-      'id, display_name, full_name, email',
-      'id, display_name, email',
-      'id, full_name, email',
-      'id, name, email',
-      'id, email',
-    ]) {
-      try {
-        final res = await _client.from('profiles').select(select);
-        raw = (res as List<dynamic>).cast<Map<String, dynamic>>();
-        break;
-      } catch (_) {}
+    List<_ProfileOption> list = [];
+    try {
+      // RPC bypasses profiles RLS (bestuur ziet anders alleen eigen profiel).
+      final res = await _client.rpc('list_profiles_for_committee_management');
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      for (final p in rows) {
+        final id = p['profile_id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final name = applyDisplayNameOverrides(
+          (p['display_name'] ?? '').toString().trim(),
+        );
+        final email = (p['email'] ?? '').toString().trim();
+        list.add(_ProfileOption(
+          profileId: id,
+          name: name.isNotEmpty ? name : (email.isNotEmpty ? email : _shortId(id)),
+          email: email.isNotEmpty ? email : null,
+        ));
+      }
+      list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    } catch (_) {
+      // Fallback: direct profiles select (werkt alleen als RLS het toelaat).
+      List<Map<String, dynamic>> raw = const [];
+      for (final select in const [
+        'id, display_name, full_name, email',
+        'id, display_name, email',
+        'id, full_name, email',
+        'id, name, email',
+        'id, email',
+      ]) {
+        try {
+          final res = await _client.from('profiles').select(select);
+          raw = (res as List<dynamic>).cast<Map<String, dynamic>>();
+          break;
+        } catch (_) {}
+      }
+      for (final p in raw) {
+        final id = p['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final name = applyDisplayNameOverrides(
+          (p['display_name'] ?? p['full_name'] ?? p['name'] ?? '').toString().trim(),
+        );
+        final email = (p['email'] ?? '').toString().trim();
+        list.add(_ProfileOption(
+          profileId: id,
+          name: name.isNotEmpty ? name : (email.isNotEmpty ? email : _shortId(id)),
+          email: email.isNotEmpty ? email : null,
+        ));
+      }
+      list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     }
-    final list = <_ProfileOption>[];
-    for (final p in raw) {
-      final id = p['id']?.toString() ?? '';
-      if (id.isEmpty) continue;
-      final name = applyDisplayNameOverrides(
-        (p['display_name'] ?? p['full_name'] ?? p['name'] ?? '').toString().trim(),
-      );
-      final email = (p['email'] ?? '').toString().trim();
-      list.add(_ProfileOption(
-        profileId: id,
-        name: name.isNotEmpty ? name : (email.isNotEmpty ? email : _shortId(id)),
-        email: email.isNotEmpty ? email : null,
-      ));
-    }
-    list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     if (!mounted) return;
     setState(() {
       _allProfiles = list;

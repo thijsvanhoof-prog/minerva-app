@@ -63,10 +63,12 @@ class _TrainingsTabState extends State<TrainingsTab> {
     try {
       await AppUserContext.of(context).reloadUserContext?.call();
     } catch (_) {}
+    if (!mounted) return;
     setState(() {
       _loadFuture = _loadData(teamIds: _allowedTeamIds);
     });
     await _loadFuture;
+    if (!mounted) return;
   }
 
   Future<void> refresh() async {
@@ -704,31 +706,78 @@ class _TrainingsTabState extends State<TrainingsTab> {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          ElevatedButton(
-                            onPressed: isCancelled
-                                ? null
-                                : () => _updateAttendance(
-                                      sessionId,
-                                      _isTrainerOrCoachForTeam(teamId)
-                                          ? AttendanceStatus.coach
-                                          : AttendanceStatus.playing,
-                                    ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: isPresent ? AppColors.primary : AppColors.card,
-                              foregroundColor: isPresent ? AppColors.background : AppColors.onBackground,
-                              side: isPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
-                            ),
-                            child: const Text('Aanwezig'),
-                          ),
-                          ElevatedButton(
-                            onPressed: isCancelled ? null : () => _updateAttendance(sessionId, null),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: !isPresent ? AppColors.primary : AppColors.card,
-                              foregroundColor: !isPresent ? AppColors.background : AppColors.onBackground,
-                              side: !isPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
-                            ),
-                            child: const Text('Afwezig'),
-                          ),
+                          isPresent
+                              ? FilledButton.icon(
+                                  onPressed: isCancelled
+                                      ? null
+                                      : () => _updateAttendance(
+                                            sessionId,
+                                            _isTrainerOrCoachForTeam(teamId)
+                                                ? AttendanceStatus.coach
+                                                : AttendanceStatus.playing,
+                                          ),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: AppColors.success,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  icon: const Icon(Icons.check_circle, size: 18),
+                                  label: const Text('Aanwezig'),
+                                )
+                              : OutlinedButton(
+                                  onPressed: isCancelled
+                                      ? null
+                                      : () => _updateAttendance(
+                                            sessionId,
+                                            _isTrainerOrCoachForTeam(teamId)
+                                                ? AttendanceStatus.coach
+                                                : AttendanceStatus.playing,
+                                          ),
+                                  child: const Text('Aanwezig'),
+                                ),
+                          isPresent
+                              ? OutlinedButton(
+                                  onPressed: isCancelled ? null : () async {
+                                    final confirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        title: const Text('Afmelden bevestigen'),
+                                        content: const Text(
+                                          'Weet je zeker dat je je wilt afmelden voor deze training?',
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.of(ctx).pop(false),
+                                            child: const Text('Annuleren'),
+                                          ),
+                                          ElevatedButton(
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: AppColors.primary,
+                                              foregroundColor:
+                                                  AppColors.background,
+                                            ),
+                                            onPressed: () =>
+                                                Navigator.of(ctx).pop(true),
+                                            child: const Text('Afmelden'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (confirm == true && mounted) {
+                                      _updateAttendance(sessionId, null);
+                                    }
+                                  },
+                                  child: const Text('Afwezig'),
+                                )
+                              : FilledButton.icon(
+                                  onPressed: isCancelled ? null : () => _updateAttendance(sessionId, null),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: AppColors.textSecondary.withValues(alpha: 0.25),
+                                    foregroundColor: AppColors.onBackground,
+                                  ),
+                                  icon: const Icon(Icons.person_off, size: 18),
+                                  label: const Text('Afwezig'),
+                                ),
                         ],
                       ),
                       if (hasCounts) ...[

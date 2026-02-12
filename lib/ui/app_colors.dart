@@ -7,13 +7,16 @@ class AppColors {
   /// App-achtergrond (wit)
   static const Color background = Color(0xFFFFFFFF);
   
-  /// Donkerblauw voor diagonale strepen
+  /// Donkerblauw voor widgets (#1A2B4A)
   static const Color darkBlue = Color(0xFF1A2B4A);
+
+  /// Nav bar – zelfde als darkBlue
+  static const Color navBarBlue = Color(0xFF1A2B4A);
 
   /// Kaarten / widgets (licht wit met subtiele donkerblauwe tint)
   static const Color card = Color(0xFFFFFFFF);
 
-  /// Primaire clubkleur (oranje)
+  /// Primaire clubkleur (oranje #FF8A00)
   static const Color primary = Color(0xFFFF8A00);
 
   /* ===================== TEKST ===================== */

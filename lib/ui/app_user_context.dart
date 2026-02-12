@@ -142,6 +142,11 @@ class AppUserContext extends InheritedWidget {
       hasFullAdminRights || isInCommunicatie;
   bool get canViewAgendaRsvps =>
       hasFullAdminRights || isInBestuur || isInCommunicatie;
+
+  /// Alleen bestuur en communicatie (en global admin) mogen aanmeldingen exporteren.
+  bool get canExportAgendaRsvps =>
+      hasFullAdminRights || isInBestuur || isInCommunicatie;
+
   bool get canManageNews =>
       hasFullAdminRights || isInCommunicatie;
   bool get canManageHighlights =>

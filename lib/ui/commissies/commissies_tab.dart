@@ -3,11 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/tab_page_header.dart';
+import 'package:minerva_app/ui/shell.dart';
 import 'package:minerva_app/profiel/admin_gebruikersnamen_page.dart';
 import 'package:minerva_app/ui/bestuur/bestuur_tab.dart';
 import 'package:minerva_app/ui/tc/tc_tab.dart';
 import 'package:minerva_app/ui/tasks/my_tasks_tab.dart';
-import 'package:minerva_app/ui/info/info_tab.dart';
 
 class CommissiesTab extends StatelessWidget {
   const CommissiesTab({super.key});
@@ -53,19 +54,19 @@ class CommissiesTab extends StatelessWidget {
     }
   }
 
-  /// Vaste volgorde: Bestuur, TC, CC, WZ, Admin.
+  /// Volgorde: Admin eerst (licht), dan Bestuur, TC, CC, WZ – voorkomt freeze bij opstarten.
   static int _committeeOrder(String key) {
     switch (key.trim().toLowerCase()) {
-      case 'bestuur':
+      case 'admin':
         return 0;
+      case 'bestuur':
+        return 1;
       case 'technische-commissie':
       case 'tc':
-        return 1;
-      case 'communicatie':
         return 2;
-      case 'wedstrijdzaken':
+      case 'communicatie':
         return 3;
-      case 'admin':
+      case 'wedstrijdzaken':
         return 4;
       default:
         return 5;
@@ -76,7 +77,7 @@ class CommissiesTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
     List<String> committees;
-    // Bestuur: alles kunnen zien, behalve Admin.
+    // Bestuur: alles kunnen zien (Admin-tab komt er alleen bij voor global admins).
     if (ctx.isInBestuur) {
       committees = [
         'bestuur',
@@ -85,12 +86,11 @@ class CommissiesTab extends StatelessWidget {
         'wedstrijdzaken',
       ];
     } else {
-      // TC, WZ, CC, Admin: alleen de eigen tab. Overige commissies (jeugd, etc.) behouden.
+      // TC, WZ, CC: alleen de eigen tab. Overige commissies (jeugd, etc.) behouden.
       committees = [];
       if (ctx.isInTechnischeCommissie) committees.add('technische-commissie');
       if (ctx.isInWedstrijdzaken) committees.add('wedstrijdzaken');
       if (ctx.isInCommunicatie) committees.add('communicatie');
-      if (ctx.hasFullAdminRights) committees.add('admin');
       for (final c in ctx.committees) {
         final k = c.trim().toLowerCase();
         if (k != 'bestuur' && k != 'technische-commissie' && k != 'tc' &&
@@ -100,6 +100,10 @@ class CommissiesTab extends StatelessWidget {
           }
         }
       }
+    }
+    // Admin-tab alleen voor global admins: gebruikersnamen wijzigen en accounts verwijderen.
+    if (ctx.hasFullAdminRights && !committees.any((c) => c.trim().toLowerCase() == 'admin')) {
+      committees.add('admin');
     }
     committees.sort((a, b) {
       final orderA = _committeeOrder(a);
@@ -112,9 +116,21 @@ class CommissiesTab extends StatelessWidget {
       return Scaffold(
         backgroundColor: Colors.transparent,
         body: SafeArea(
-          top: true,
+          top: false,
           bottom: false,
-          child: RefreshIndicator(
+          child: Column(
+            children: [
+              TabPageHeader(
+                child: Text(
+                  'Commissie',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+              ),
+              Expanded(
+                child: RefreshIndicator(
             color: AppColors.primary,
             onRefresh: () async {
               await ctx.reloadUserContext?.call();
@@ -122,7 +138,7 @@ class CommissiesTab extends StatelessWidget {
             child: ListView(
               padding: EdgeInsets.fromLTRB(
                 16,
-                16 + MediaQuery.paddingOf(context).top,
+                16,
                 16,
                 16 + MediaQuery.paddingOf(context).bottom,
               ),
@@ -156,54 +172,118 @@ class CommissiesTab extends StatelessWidget {
               ],
             ),
           ),
-        ),
-      );
-    }
-
-    return DefaultTabController(
-      length: committees.length,
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: SafeArea(
-          top: true,
-          bottom: false,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-                child: GlassCard(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  showBorder: false,
-                  showShadow: false,
-                  child: TabBar(
-                    isScrollable: committees.length > 2,
-                    tabAlignment: TabAlignment.center,
-                    dividerColor: Colors.transparent,
-                    indicator: BoxDecoration(
-                      color: AppColors.darkBlue,
-                      borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                    ),
-                    indicatorSize: TabBarIndicatorSize.tab,
-                    tabs: committees
-                        .map((c) => Tab(text: _formatTabLabel(c)))
-                        .toList(),
-                  ),
-                ),
-              ),
-              Expanded(
-                child: TabBarView(
-                  children: committees.map((committeeKey) {
-                    return _CommitteeContent(
-                      committeeKey: committeeKey,
-                      committeeName: _formatCommitteeName(committeeKey),
-                    );
-                  }).toList(),
-                ),
               ),
             ],
           ),
         ),
+      );
+    }
+
+    // Lazy: bouw alleen de geselecteerde tab (voorkomt freeze bij Shell-start)
+    return DefaultTabController(
+      length: committees.length,
+      initialIndex: 0,
+      child: _CommissiesTabBody(committees: committees),
+    );
+  }
+}
+
+class _CommissiesTabBody extends StatefulWidget {
+  final List<String> committees;
+
+  const _CommissiesTabBody({required this.committees});
+
+  @override
+  State<_CommissiesTabBody> createState() => _CommissiesTabBodyState();
+}
+
+class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
+  @override
+  Widget build(BuildContext context) {
+    final controller = DefaultTabController.of(context);
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: SafeArea(
+        top: false,
+        bottom: false,
+        child: Column(
+          children: [
+            TabPageHeader(
+              child: Text(
+                'Commissie',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              child: GlassCard(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                showBorder: false,
+                showShadow: false,
+                child: TabBar(
+                  controller: controller,
+                  isScrollable: widget.committees.length > 2,
+                  tabAlignment: TabAlignment.center,
+                  dividerColor: Colors.transparent,
+                  indicator: BoxDecoration(
+                    color: AppColors.darkBlue,
+                    borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                  ),
+                  indicatorSize: TabBarIndicatorSize.tab,
+                  tabs: widget.committees
+                      .map((c) => Tab(text: CommissiesTab._formatTabLabel(c)))
+                      .toList(),
+                ),
+              ),
+            ),
+            Expanded(
+              child: TabBarView(
+                controller: controller,
+                children: widget.committees.asMap().entries.map((e) {
+                  return _LazyCommitteeContent(
+                    committeeKey: e.value,
+                    committeeName: CommissiesTab._formatCommitteeName(e.value),
+                    tabIndex: e.key,
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+/// Bouwt alleen de inhoud wanneer dit tabblad geselecteerd is – voorkomt freeze bij opstarten.
+class _LazyCommitteeContent extends StatelessWidget {
+  final String committeeKey;
+  final String committeeName;
+  final int tabIndex;
+
+  const _LazyCommitteeContent({
+    required this.committeeKey,
+    required this.committeeName,
+    required this.tabIndex,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = DefaultTabController.of(context);
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        if (controller.index != tabIndex) {
+          return const SizedBox.expand(); // Placeholder, geen zware content
+        }
+        return _CommitteeContent(
+          committeeKey: committeeKey,
+          committeeName: committeeName,
+        );
+      },
     );
   }
 }
@@ -263,16 +343,16 @@ class _AdminCommitteeView extends StatelessWidget {
         children: [
           GlassCard(
             child: ListTile(
-              leading: const Icon(Icons.person_outline, color: AppColors.primary),
+              leading: const Icon(Icons.admin_panel_settings_outlined, color: AppColors.primary),
               title: const Text(
-                'Gebruikersnamen wijzigen',
+                'Gebruikersnamen en accounts',
                 style: TextStyle(
                   color: AppColors.onBackground,
                   fontWeight: FontWeight.w600,
                 ),
               ),
               subtitle: const Text(
-                'Wijzig gebruikersnamen van leden.',
+                'Wijzig gebruikersnamen van leden of verwijder accounts. Alleen zichtbaar voor admins.',
                 style: TextStyle(color: AppColors.textSecondary),
               ),
               trailing: const Icon(Icons.chevron_right),
@@ -336,13 +416,7 @@ class _GenericCommitteeView extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const InfoTab(),
-                      ),
-                    );
-                  },
+                  onPressed: ShellNavigatorScope.goToContactTab,
                   icon: const Icon(Icons.mail_outline, size: 18),
                   label: const Text('Contactpersonen bekijken'),
                 ),

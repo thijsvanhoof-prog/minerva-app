@@ -1,4 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -39,6 +43,10 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
   /// Per team: show all past results, or only last 3.
   final Map<String, bool> _showAllPastByTeam = {};
 
+  /// Favoriete team codes, in de volgorde van favoritiseren (eerste = bovenaan).
+  List<String> _favoriteTeamCodes = [];
+  static const _favoritesKey = 'nevobo_standen_favorites';
+
   String _displayTeamCode(String code) {
     final normalized = code.trim().toUpperCase();
     // In-app naming preference: MR (recreanten/mix) is shown as XR.
@@ -46,9 +54,53 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     return normalized;
   }
 
+  /// Team name for display: show "Minerva XR1" instead of "Minerva MR1".
+  String _displayStandingTeamName(String name) {
+    if (name.isEmpty) return name;
+    return name.replaceAllMapped(
+      RegExp(r'\bMR(\d+)\b', caseSensitive: false),
+      (m) => 'XR${m.group(1)}',
+    );
+  }
+
   bool _isMinervaTeamName(String name) {
     final s = name.trim().toLowerCase();
     return s.contains('minerva');
+  }
+
+  /// Whether this standing entry is the given Minerva team (e.g. Minerva DS2 for code DS2).
+  bool _standingMatchesTeam(NevoboStandingEntry entry, String teamCode) {
+    if (!_isMinervaTeamName(entry.teamName)) return false;
+    final extracted = NevoboApi.extractCodeFromTeamName(entry.teamName);
+    if (extracted == null || extracted.isEmpty) return false;
+    final a = extracted.trim().toUpperCase();
+    final b = teamCode.trim().toUpperCase();
+    // Display alias: app shows XR for MR (recreanten); API may return "Minerva MR1"
+    if (a.startsWith('XR') && b.startsWith('MR') && a.substring(2) == b.substring(2)) return true;
+    if (b.startsWith('XR') && a.startsWith('MR') && b.substring(2) == a.substring(2)) return true;
+    return a == b;
+  }
+
+  /// Position of this specific Minerva team in the standings (1-based), or null if unknown.
+  /// Match by name (Minerva + code) or by team path (ckm0v2o/dames/1).
+  int? _minervaPosition(List<NevoboStandingEntry>? standings, String teamCode) {
+    if (standings == null || standings.isEmpty) return null;
+    final normPath = NevoboApi.resolvedTeamPath(teamCode)?.trim().toLowerCase().replaceAll(r'\', '/');
+    for (final s in standings) {
+      if (_standingMatchesTeam(s, teamCode)) return s.position;
+      if (normPath != null &&
+          s.teamPath != null &&
+          s.teamPath!.trim().toLowerCase().replaceAll(r'\', '/') == normPath) {
+        return s.position;
+      }
+    }
+    return null;
+  }
+
+  /// Format position as "9e plek", "2e plek", etc.
+  String _positionLabel(int position) {
+    if (position <= 0) return '';
+    return '${position}e plek';
   }
 
   // Parse "Team A - Team B" and determine whether Minerva is home (left side).
@@ -175,19 +227,42 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(when, style: const TextStyle(color: AppColors.textSecondary)),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.schedule, size: 18, color: AppColors.textSecondary),
+                const SizedBox(width: 8),
+                Expanded(child: Text(when, style: const TextStyle(color: AppColors.textSecondary))),
+              ],
+            ),
             if (where.isNotEmpty) ...[
               const SizedBox(height: 8),
-              Text(where, style: const TextStyle(color: AppColors.textSecondary)),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.location_on, size: 18, color: AppColors.textSecondary),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(where, style: const TextStyle(color: AppColors.textSecondary))),
+                ],
+              ),
             ],
             if (uitslag.matchScore != null) ...[
               const SizedBox(height: 12),
-              Text(
-                'Uitslag: ${uitslag.matchScore}',
-                style: const TextStyle(
-                  color: AppColors.onBackground,
-                  fontWeight: FontWeight.w900,
-                ),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.emoji_events, size: 18, color: AppColors.primary),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Uitslag: ${uitslag.matchScore}',
+                      style: const TextStyle(
+                        color: AppColors.onBackground,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
             if (uitslag.setScores.isNotEmpty) ...[
@@ -209,17 +284,37 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
             ],
             if ((m.urlDwf ?? '').trim().isNotEmpty) ...[
               const SizedBox(height: 12),
-              const Text(
-                'DWF link',
-                style: TextStyle(
-                  color: AppColors.onBackground,
-                  fontWeight: FontWeight.w800,
+              InkWell(
+                onTap: () async {
+                  final uri = Uri.tryParse(m.urlDwf!);
+                  if (uri != null && await canLaunchUrl(uri)) {
+                    await launchUrl(uri, mode: LaunchMode.externalApplication);
+                  }
+                },
+                borderRadius: BorderRadius.circular(4),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.link, size: 18, color: AppColors.primary),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          m.urlDwf!,
+                          style: const TextStyle(
+                            color: AppColors.primary,
+                            decoration: TextDecoration.underline,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 3,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Icon(Icons.open_in_new, size: 16, color: AppColors.primary),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 6),
-              SelectableText(
-                m.urlDwf!,
-                style: const TextStyle(color: AppColors.textSecondary),
               ),
             ],
           ],
@@ -300,6 +395,52 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
       } else {
         _expandedTeamCodes.add(teamCode);
       }
+    });
+  }
+
+  /// Teams gesorteerd: favorieten bovenaan (in volgorde van favoritiseren), daarna de rest.
+  List<NevoboTeam> get _sortedTeams {
+    final teamByCode = {for (final t in _teams) t.code: t};
+    final favTeams = <NevoboTeam>[];
+    for (final code in _favoriteTeamCodes) {
+      final t = teamByCode[code];
+      if (t != null) favTeams.add(t);
+    }
+    final favSet = _favoriteTeamCodes.toSet();
+    final rest = _teams.where((t) => !favSet.contains(t.code)).toList()
+      ..sort((a, b) => NevoboApi.compareTeamCodes(a.code, b.code));
+    return [...favTeams, ...rest];
+  }
+
+  Future<void> _loadFavorites() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_favoritesKey);
+      if (raw == null || raw.isEmpty) return;
+      final list = jsonDecode(raw) as List<dynamic>?;
+      if (list == null) return;
+      if (!mounted) return;
+      setState(() {
+        _favoriteTeamCodes = list.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList();
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _saveFavorites() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_favoritesKey, jsonEncode(_favoriteTeamCodes));
+    } catch (_) {}
+  }
+
+  void _toggleFavorite(String teamCode) {
+    setState(() {
+      if (_favoriteTeamCodes.contains(teamCode)) {
+        _favoriteTeamCodes.remove(teamCode);
+      } else {
+        _favoriteTeamCodes.add(teamCode);
+      }
+      _saveFavorites();
     });
   }
 
@@ -537,6 +678,7 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
   void initState() {
     super.initState();
     _loadAll();
+    _loadFavorites();
   }
 
   Future<void> _loadAll() async {
@@ -550,6 +692,7 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     try {
       // Standen zijn altijd zichtbaar voor alle teams (onafhankelijk van koppeling).
       final teams = await NevoboApi.loadTeamsFromSupabase(client: _client);
+      if (!mounted) return;
       setState(() => _teams = teams);
 
       // Also try to surface non-Nevobo teams (e.g. Volleystars) so they don't "disappear".
@@ -580,6 +723,7 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
       if (!mounted) return;
       setState(() => _loading = false);
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = 'Kon standen niet laden.\n$e';
         _loading = false;
@@ -663,11 +807,11 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
       onRefresh: _loadAll,
       child: ListView.separated(
         padding: const EdgeInsets.all(12),
-        itemCount: _teams.length + _otherTeamNames.length,
+        itemCount: _sortedTeams.length + _otherTeamNames.length,
         separatorBuilder: (_, _) => const SizedBox(height: 10),
         itemBuilder: (context, index) {
-          if (index >= _teams.length) {
-            final name = _otherTeamNames[index - _teams.length];
+          if (index >= _sortedTeams.length) {
+            final name = _otherTeamNames[index - _sortedTeams.length];
             return GlassCard(
               padding: const EdgeInsets.all(14),
               child: Column(
@@ -697,7 +841,7 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
             );
           }
 
-          final team = _teams[index];
+          final team = _sortedTeams[index];
           final standings = _standingsByTeam[team.code];
           final error = _errorByTeam[team.code];
           final mode = _modeByTeamCode[team.code] ?? 0;
@@ -729,7 +873,43 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                                 ),
                           ),
                         ),
+                        if (standings != null && standings.isNotEmpty) ...[
+                          Builder(
+                            builder: (_) {
+                              final pos = _minervaPosition(standings, team.code);
+                              if (pos == null || pos <= 0) return const SizedBox.shrink();
+                              return Padding(
+                                padding: const EdgeInsets.only(left: 12),
+                                child: Text(
+                                  _positionLabel(pos),
+                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    color: AppColors.textSecondary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
                         const Spacer(),
+                        IconButton(
+                          icon: Icon(
+                            _favoriteTeamCodes.contains(team.code)
+                                ? Icons.star
+                                : Icons.star_border,
+                            color: _favoriteTeamCodes.contains(team.code)
+                                ? AppColors.primary
+                                : AppColors.iconMuted,
+                          ),
+                          tooltip: _favoriteTeamCodes.contains(team.code)
+                              ? 'Uit favorieten'
+                              : 'Toevoegen aan favorieten',
+                          onPressed: () => _toggleFavorite(team.code),
+                          style: IconButton.styleFrom(
+                            minimumSize: const Size(40, 40),
+                            padding: EdgeInsets.zero,
+                          ),
+                        ),
                         if (_loading && (standings == null && error == null) && expanded)
                           const SizedBox(
                             height: 16,
@@ -795,7 +975,22 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                       )
                     else
                       Column(
-                        children: standings.map((s) {
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: Row(
+                              children: [
+                                const SizedBox(width: 28, child: Text('', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600))),
+                                const Expanded(child: Text('Team', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600))),
+                                const SizedBox(width: 8),
+                                SizedBox(width: 36, child: Text('Wedstr.', style: const TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600), textAlign: TextAlign.right)),
+                                const SizedBox(width: 10),
+                                SizedBox(width: 36, child: Text('Punten', style: const TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600), textAlign: TextAlign.right)),
+                              ],
+                            ),
+                          ),
+                          ...standings.map((s) {
                           final isMinerva = _isMinervaTeamName(s.teamName);
                           return Padding(
                             padding: const EdgeInsets.symmetric(vertical: 6),
@@ -826,7 +1021,7 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                                   ),
                                   Expanded(
                                     child: Text(
-                                      s.teamName,
+                                      _displayStandingTeamName(s.teamName),
                                       style: TextStyle(
                                         color: AppColors.onBackground,
                                         fontWeight: isMinerva ? FontWeight.w900 : FontWeight.w700,
@@ -861,7 +1056,8 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                               ),
                             ),
                           );
-                        }).toList(),
+                        }),
+                        ],
                       ),
                   ] else if (mode == 1) ...[
                     _buildProgramma(team),
