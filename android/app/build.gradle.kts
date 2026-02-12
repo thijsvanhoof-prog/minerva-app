@@ -35,14 +35,19 @@ android {
         keystoreProperties.load(keystorePropertiesFile.inputStream())
     }
 
+    val keystoreFile = run {
+        if (!keystorePropertiesFile.exists()) null
+        else {
+            val path = keystoreProperties["storeFile"]?.toString()
+            if (path.isNullOrBlank()) null
+            else rootProject.file(path).takeIf { it.exists() }
+        }
+    }
+
     signingConfigs {
-        // Uses android/key.properties if present (recommended for Play Store uploads).
-        if (keystorePropertiesFile.exists()) {
+        if (keystoreFile != null) {
             create("release") {
-                val storeFilePath = keystoreProperties["storeFile"]?.toString()
-                if (!storeFilePath.isNullOrBlank()) {
-                    storeFile = file(storeFilePath)
-                }
+                storeFile = keystoreFile
                 storePassword = keystoreProperties["storePassword"]?.toString()
                 keyAlias = keystoreProperties["keyAlias"]?.toString()
                 keyPassword = keystoreProperties["keyPassword"]?.toString()
@@ -52,8 +57,8 @@ android {
 
     buildTypes {
         release {
-            // If android/key.properties exists we sign with release; otherwise fall back to debug.
-            signingConfig = if (keystorePropertiesFile.exists())
+            // Gebruik release signing alleen als key.properties én keystore bestaan; anders debug.
+            signingConfig = if (keystoreFile != null)
                 signingConfigs.getByName("release")
             else
                 signingConfigs.getByName("debug")

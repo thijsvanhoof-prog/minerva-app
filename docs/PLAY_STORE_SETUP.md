@@ -22,13 +22,13 @@ cp android/key.properties.example android/key.properties
 Bewerk `android/key.properties` en vul in:
 
 ```
-storeFile=../upload-keystore.jks
+storeFile=upload-keystore.jks
 storePassword=JOUW_WACHTWOORD
 keyAlias=upload
 keyPassword=JOUW_WACHTWOORD
 ```
 
-*(storeFile `../upload-keystore.jks` = keystore in de `android/` map)*
+*(storeFile `upload-keystore.jks` = keystore in de `android/` map)*
 
 **Belangrijk:** `key.properties` en `*.jks` staan in `.gitignore` – commit ze nooit.
 
