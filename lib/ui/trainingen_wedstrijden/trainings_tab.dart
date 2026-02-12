@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/primary_button.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
@@ -302,6 +303,18 @@ class _TrainingsTabState extends State<TrainingsTab> {
     return roles.any((r) => r == 'trainer' || r == 'coach');
   }
 
+  /// Binnenkomende trainingen (niet geannuleerd, start in de toekomst).
+  List<Map<String, dynamic>> get _upcomingTrainings {
+    final now = DateTime.now();
+    return _trainings.where((t) {
+      if (t['is_cancelled'] == true) return false;
+      final start = t['start_datetime'] ?? t['start_timestamp'];
+      if (start == null) return false;
+      final dt = start is DateTime ? start : DateTime.tryParse(start.toString());
+      return dt != null && dt.toLocal().isAfter(now);
+    }).toList();
+  }
+
   /// Bepaal of gebruiker als trainer/coach wordt aangemeld voor dit team (anders speler).
   bool _isTrainerOrCoachForTeam(int teamId) {
     try {
@@ -449,6 +462,75 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
   }
 
+  /// Aanwezig voor alle binnenkomende trainingen; per training coach of playing op basis van team.
+  Future<void> _setMyStatusForAllTrainingsAanwezig() async {
+    final user = _client.auth.currentUser;
+    if (user == null) return;
+    final upcoming = _upcomingTrainings;
+    if (upcoming.isEmpty) return;
+
+    final ctx = AppUserContext.of(context);
+    final targetProfileId = ctx.attendanceProfileId;
+
+    final prevStatus = Map<int, AttendanceStatus?>.from(_statusBySessionId);
+    final prevPlaying = <int, List<String>>{
+      for (final e in _playingBySessionId.entries) e.key: List<String>.from(e.value),
+    };
+    final prevCoaches = <int, List<String>>{
+      for (final e in _coachBySessionId.entries) e.key: List<String>.from(e.value),
+    };
+
+    for (final t in upcoming) {
+      final sid = (t['session_id'] as num?)?.toInt();
+      final teamId = (t['team_id'] as num?)?.toInt() ?? 0;
+      if (sid == null) continue;
+      final status = _isTrainerOrCoachForTeam(teamId)
+          ? AttendanceStatus.coach
+          : AttendanceStatus.playing;
+      _applyOptimisticAttendanceUpdate(sid, status);
+    }
+    if (!mounted) return;
+    setState(() {});
+
+    try {
+      for (final t in upcoming) {
+        final sid = (t['session_id'] as num?)?.toInt();
+        final teamId = (t['team_id'] as num?)?.toInt() ?? 0;
+        if (sid == null) continue;
+        final status = _isTrainerOrCoachForTeam(teamId)
+            ? AttendanceStatus.coach
+            : AttendanceStatus.playing;
+        await _client.from('attendance').upsert(
+          {
+            'session_id': sid,
+            'person_id': targetProfileId,
+            'status': status.name,
+          },
+          onConflict: 'session_id,person_id',
+        );
+      }
+      if (!mounted) return;
+      showTopMessage(
+        context,
+        'Aanwezig voor ${upcoming.length} training(en) opgeslagen.',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _statusBySessionId
+          ..clear()
+          ..addAll(prevStatus);
+        _playingBySessionId
+          ..clear()
+          ..addAll(prevPlaying);
+        _coachBySessionId
+          ..clear()
+          ..addAll(prevCoaches);
+      });
+      showTopMessage(context, 'Kon aanwezigheid niet opslaan: $e', isError: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
@@ -553,13 +635,87 @@ class _TrainingsTabState extends State<TrainingsTab> {
               );
             }
 
+            final upcoming = _upcomingTrainings;
+            final hasUpcomingCard = upcoming.isNotEmpty;
+            final hasHeader = _canCreateTrainings;
+
             return ListView.separated(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(12),
-              itemCount: _trainings.length + (_canCreateTrainings ? 1 : 0),
+              itemCount: (hasUpcomingCard ? 1 : 0) + (hasHeader ? 1 : 0) + _trainings.length,
               separatorBuilder: (_, _) => const SizedBox(height: 8),
               itemBuilder: (context, index) {
-                if (_canCreateTrainings && index == 0) {
+                if (hasUpcomingCard && index == 0) {
+                  final allPresent = upcoming.every((t) {
+                    final sid = (t['session_id'] as num?)?.toInt();
+                    return sid != null && _statusBySessionId[sid] != null;
+                  });
+                  return GlassCard(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.darkBlue,
+                            borderRadius:
+                                BorderRadius.circular(AppColors.cardRadius),
+                          ),
+                          child: Text(
+                            'Voor alle trainingen',
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(
+                                  color: AppColors.primary,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${upcoming.length} training(en)',
+                          style: const TextStyle(
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            allPresent
+                                ? FilledButton.icon(
+                                    onPressed:
+                                        _setMyStatusForAllTrainingsAanwezig,
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor: AppColors.success,
+                                      foregroundColor: Colors.white,
+                                    ),
+                                    icon: const Icon(
+                                      Icons.check_circle,
+                                      size: 18,
+                                    ),
+                                    label: const Text('Aanwezig'),
+                                  )
+                                : OutlinedButton(
+                                    onPressed:
+                                        _setMyStatusForAllTrainingsAanwezig,
+                                    child: const Text('Aanwezig'),
+                                  ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                if (hasHeader &&
+                    index == (hasUpcomingCard ? 1 : 0)) {
                   return GlassCard(
                     padding: const EdgeInsets.all(12),
                     child: Row(
@@ -598,7 +754,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
                   );
                 }
 
-                final session = _trainings[_canCreateTrainings ? index - 1 : index];
+                final trainingIndex =
+                    index - (hasUpcomingCard ? 1 : 0) - (hasHeader ? 1 : 0);
+                final session = _trainings[trainingIndex];
                 final sessionId = (session['session_id'] as num).toInt();
                 final teamId = (session['team_id'] as num?)?.toInt() ?? 0;
                 final isCancelled = (session['is_cancelled'] == true);

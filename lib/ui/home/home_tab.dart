@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:share_plus/share_plus.dart';
@@ -137,7 +138,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 
   void _initTabController() {
     final length = widget.showOnlyHighlightsAndNews ? 2 : 3;
-    _tabController = TabController(length: length, vsync: this, initialIndex: 0);
+    _tabController = TabController(
+      length: length,
+      vsync: this,
+      initialIndex: 0,
+    );
   }
 
   @override
@@ -152,7 +157,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   @override
   void didUpdateWidget(covariant HomeTab oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.showOnlyHighlightsAndNews != widget.showOnlyHighlightsAndNews) {
+    if (oldWidget.showOnlyHighlightsAndNews !=
+        widget.showOnlyHighlightsAndNews) {
       _tabController.dispose();
       _initTabController();
     }
@@ -190,16 +196,19 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 
       if (!mounted) return;
       final rows = res.cast<Map<String, dynamic>>();
-      final list = rows.map((r) {
-        final until = _parseVisibleUntil(r['visible_until']);
-        return _Highlight(
-          id: (r['highlight_id'] as num).toInt(),
-          title: (r['title'] as String?) ?? '',
-          subtitle: (r['subtitle'] as String?) ?? '',
-          iconText: (r['icon_name'] as String?) ?? '🏐',
-          visibleUntil: until,
-        );
-      }).where((h) => _isVisibleNow(h.visibleUntil)).toList();
+      final list = rows
+          .map((r) {
+            final until = _parseVisibleUntil(r['visible_until']);
+            return _Highlight(
+              id: (r['highlight_id'] as num).toInt(),
+              title: (r['title'] as String?) ?? '',
+              subtitle: (r['subtitle'] as String?) ?? '',
+              iconText: (r['icon_name'] as String?) ?? '🏐',
+              visibleUntil: until,
+            );
+          })
+          .where((h) => _isVisibleNow(h.visibleUntil))
+          .toList();
 
       if (!mounted) return;
       setState(() {
@@ -225,11 +234,26 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     try {
       List<Map<String, dynamic>> rows = [];
       for (final attempt in const [
-        ('agenda_id, title, description, start_datetime, end_datetime, location, can_rsvp, rsvp_label, rsvp_allowed_team_ids, rsvp_allowed_committee_keys', 'start_datetime'),
-        ('agenda_id, title, description, start_datetime, end_datetime, location, can_rsvp', 'start_datetime'),
-        ('agenda_id, title, description, start_datetime, location, can_rsvp', 'start_datetime'),
-        ('agenda_id, title, start_datetime, end_datetime, location, can_rsvp', 'start_datetime'),
-        ('agenda_id, title, start_datetime, location, can_rsvp', 'start_datetime'),
+        (
+          'agenda_id, title, description, start_datetime, end_datetime, location, can_rsvp, rsvp_label, rsvp_allowed_team_ids, rsvp_allowed_committee_keys',
+          'start_datetime',
+        ),
+        (
+          'agenda_id, title, description, start_datetime, end_datetime, location, can_rsvp',
+          'start_datetime',
+        ),
+        (
+          'agenda_id, title, description, start_datetime, location, can_rsvp',
+          'start_datetime',
+        ),
+        (
+          'agenda_id, title, start_datetime, end_datetime, location, can_rsvp',
+          'start_datetime',
+        ),
+        (
+          'agenda_id, title, start_datetime, location, can_rsvp',
+          'start_datetime',
+        ),
         ('agenda_id, title, starts_at, location, can_rsvp', 'starts_at'),
         ('agenda_id, title, start_at, location, can_rsvp', 'start_at'),
         ('agenda_id, title, when, where, can_rsvp', null),
@@ -241,12 +265,15 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           final select = attempt.$1;
           final orderColumn = attempt.$2;
           final res = orderColumn == null
-              ? await _client.from('home_agenda').select(select).timeout(_loadTimeout)
+              ? await _client
+                    .from('home_agenda')
+                    .select(select)
+                    .timeout(_loadTimeout)
               : await _client
-                  .from('home_agenda')
-                  .select(select)
-                  .order(orderColumn, ascending: true)
-                  .timeout(_loadTimeout);
+                    .from('home_agenda')
+                    .select(select)
+                    .order(orderColumn, ascending: true)
+                    .timeout(_loadTimeout);
           rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
           break;
         } catch (_) {}
@@ -295,10 +322,12 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           }
         } catch (_) {}
         final location =
-            (row['location'] ?? row['where'] ?? row['locatie'])?.toString() ?? '';
+            (row['location'] ?? row['where'] ?? row['locatie'])?.toString() ??
+            '';
 
         DateTime? start;
-        final rawStart = row['start_datetime'] ?? row['starts_at'] ?? row['start_at'];
+        final rawStart =
+            row['start_datetime'] ?? row['starts_at'] ?? row['start_at'];
         if (rawStart is DateTime) {
           start = rawStart;
         } else if (rawStart != null) {
@@ -325,7 +354,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           _AgendaItem(
             id: id,
             title: title,
-            description: description != null && description.isNotEmpty ? description : null,
+            description: description != null && description.isNotEmpty
+                ? description
+                : null,
             when: whenLabel,
             where: location,
             canRsvp: canRsvp,
@@ -343,8 +374,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       }
 
       final user = _client.auth.currentUser;
-      final agendaIdsWithRsvp =
-          items.where((a) => a.canRsvp).map((a) => a.id!).toList();
+      final agendaIdsWithRsvp = items
+          .where((a) => a.canRsvp)
+          .map((a) => a.id!)
+          .toList();
       Set<int> myRsvps = {};
       if (user != null && agendaIdsWithRsvp.isNotEmpty) {
         try {
@@ -396,14 +429,18 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     return '${value.substring(0, 4)}…${value.substring(value.length - 4)}';
   }
 
-  Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
+  Future<Map<String, String>> _loadProfileDisplayNames(
+    Set<String> profileIds,
+  ) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
 
     // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
     try {
-      final res =
-          await _client.rpc('get_profile_display_names', params: {'profile_ids': ids});
+      final res = await _client.rpc(
+        'get_profile_display_names',
+        params: {'profile_ids': ids},
+      );
       final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
       final map = <String, String>{};
       for (final r in rows) {
@@ -427,7 +464,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       'id, email',
     ]) {
       try {
-        final res = await _client.from('profiles').select(select).inFilter('id', ids);
+        final res = await _client
+            .from('profiles')
+            .select(select)
+            .inFilter('id', ids);
         rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
         break;
       } catch (_) {}
@@ -437,9 +477,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     for (final r in rows) {
       final id = r['id']?.toString() ?? '';
       if (id.isEmpty) continue;
-      final n = (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
-          .toString()
-          .trim();
+      final n =
+          (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
+              .toString()
+              .trim();
       final name = applyDisplayNameOverrides(n);
       map[id] = name.isNotEmpty ? name : _shortId(id);
     }
@@ -491,7 +532,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final ctx = AppUserContext.of(context);
     if (!ctx.canViewAgendaRsvps) return;
 
-    final agendaIds = _agendaItems.where((a) => a.canRsvp).map((a) => a.id).whereType<int>().toList();
+    final agendaIds = _agendaItems
+        .where((a) => a.canRsvp)
+        .map((a) => a.id)
+        .whereType<int>()
+        .toList();
     if (agendaIds.isEmpty) {
       if (mounted) {
         setState(() {
@@ -568,14 +613,18 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         }
       }
 
-      final teamNamesById = await _loadTeamNames(teamIds: teamIds.toList()..sort());
+      final teamNamesById = await _loadTeamNames(
+        teamIds: teamIds.toList()..sort(),
+      );
 
       List<String> teamLabelsFor(String profileId) {
         final ids = teamIdsByProfile[profileId]?.toList() ?? const [];
         final out = <String>[];
         for (final tid in ids) {
           final raw = (teamNamesById[tid] ?? '').trim();
-          final code = raw.isNotEmpty ? (NevoboApi.extractCodeFromTeamName(raw) ?? raw) : '';
+          final code = raw.isNotEmpty
+              ? (NevoboApi.extractCodeFromTeamName(raw) ?? raw)
+              : '';
           out.add(code.isNotEmpty ? code : 'Team $tid');
         }
         out.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
@@ -592,8 +641,12 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         final createdAtValue = r['created_at'];
         final createdAt = createdAtValue is DateTime
             ? createdAtValue
-            : (createdAtValue != null ? DateTime.tryParse(createdAtValue.toString()) : null);
-        byAgenda.putIfAbsent(aid, () => []).add(
+            : (createdAtValue != null
+                  ? DateTime.tryParse(createdAtValue.toString())
+                  : null);
+        byAgenda
+            .putIfAbsent(aid, () => [])
+            .add(
               _AgendaSignup(
                 agendaId: aid,
                 profileId: pid,
@@ -604,7 +657,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             );
       }
       for (final e in byAgenda.entries) {
-        e.value.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        e.value.sort(
+          (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+        );
       }
 
       if (!mounted) return;
@@ -641,35 +696,37 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final csv = buffer.toString();
     if (!context.mounted) return;
 
-    final isMobile = !kIsWeb &&
+    final isMobile =
+        !kIsWeb &&
         (defaultTargetPlatform == TargetPlatform.iOS ||
             defaultTargetPlatform == TargetPlatform.android);
 
     if (isMobile) {
       // Share als tekst opent het deelmenu (Mail, Opslaan, Kopiëren, etc.); werkt betrouwbaar op iOS/Android.
       try {
-        await Share.share(
-          csv,
-          subject: 'Aanmeldingen: $activityTitle',
-        );
+        await Share.share(csv, subject: 'Aanmeldingen: $activityTitle');
       } catch (_) {
         await Clipboard.setData(ClipboardData(text: csv));
         if (context.mounted) {
-          showTopMessage(context, 'CSV gekopieerd. Plak in Excel of Google Sheets.');
+          showTopMessage(
+            context,
+            'CSV gekopieerd. Plak in Excel of Google Sheets.',
+          );
         }
       }
     } else {
       await Clipboard.setData(ClipboardData(text: csv));
       if (context.mounted) {
-        showTopMessage(context, 'CSV gekopieerd. Plak in Excel of Google Sheets.');
+        showTopMessage(
+          context,
+          'CSV gekopieerd. Plak in Excel of Google Sheets.',
+        );
       }
     }
   }
 
   Widget _buildAgendaListView({required bool canManageAgenda}) {
-    final hasRsvp = _agendaItems.any((a) => a.canRsvp);
-    final showRsvpInfo = hasRsvp && _agendaItems.isNotEmpty;
-    final extraRows = showRsvpInfo ? 1 : 0;
+    final extraRows = 0;
     return RefreshIndicator(
       color: AppColors.primary,
       onRefresh: _refreshHome,
@@ -681,7 +738,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           16,
           24 + MediaQuery.paddingOf(context).bottom,
         ),
-        itemCount: 1 + (_agendaItems.isEmpty ? 1 : _agendaItems.length + extraRows),
+        itemCount:
+            1 + (_agendaItems.isEmpty ? 1 : _agendaItems.length + extraRows),
         separatorBuilder: (_, _) => const SizedBox(height: 12),
         itemBuilder: (context, i) {
           if (i == 0) {
@@ -695,15 +753,15 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                       onPressed: () => _openAddAgendaDialog(),
                     )
                   : (_loadingAgenda
-                      ? const SizedBox(
-                          height: 18,
-                          width: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: AppColors.primary,
-                          ),
-                        )
-                      : null),
+                        ? const SizedBox(
+                            height: 18,
+                            width: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppColors.primary,
+                            ),
+                          )
+                        : null),
             );
           }
 
@@ -722,20 +780,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             );
           }
 
-          if (showRsvpInfo && i == 1) {
-            return Text(
-              'Bij aanmelden slaan we je naam en (spelers)team op. '
-              'Dit is zichtbaar voor Bestuur/Communicatie. Je kunt altijd weer afmelden.',
-              style: TextStyle(
-                color: AppColors.textSecondary.withValues(alpha: 0.9),
-                fontSize: 12.5,
-              ),
-            );
-          }
-
-          final itemIndex = showRsvpInfo ? (i - 2) : (i - 1);
+          final itemIndex = i - 1;
           final item = _agendaItems[itemIndex];
-          final signedUp = item.id != null && _myRsvpAgendaIds.contains(item.id);
+          final signedUp =
+              item.id != null && _myRsvpAgendaIds.contains(item.id);
           final canSignUp = item.canUserSignUp(AppUserContext.of(context));
           final enabled = item.canRsvp && item.id != null && canSignUp;
           return _AgendaCard(
@@ -796,10 +844,13 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               ..._agendaItems.where((a) => a.canRsvp).map((a) {
                 final id = a.id ?? -1;
                 final signups = _rsvpsByAgendaId[id] ?? const [];
-                final secondaryStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: AppColors.textSecondary,
-                    );
-                final whenWhere = [a.when, a.where].where((s) => s.trim().isNotEmpty).join(' • ');
+                final secondaryStyle = Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: AppColors.textSecondary);
+                final whenWhere = [
+                  a.when,
+                  a.where,
+                ].where((s) => s.trim().isNotEmpty).join(' • ');
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 12),
                   child: _CardBox(
@@ -815,7 +866,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                 children: [
                                   Text(
                                     a.title,
-                                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium
+                                        ?.copyWith(
                                           color: AppColors.onBackground,
                                           fontWeight: FontWeight.w700,
                                         ),
@@ -824,10 +878,17 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                     const SizedBox(height: 6),
                                     Row(
                                       children: [
-                                        Icon(Icons.calendar_today, size: 14, color: AppColors.textSecondary),
+                                        Icon(
+                                          Icons.calendar_today,
+                                          size: 14,
+                                          color: AppColors.textSecondary,
+                                        ),
                                         const SizedBox(width: 6),
                                         Expanded(
-                                          child: Text(whenWhere, style: secondaryStyle),
+                                          child: Text(
+                                            whenWhere,
+                                            style: secondaryStyle,
+                                          ),
                                         ),
                                       ],
                                     ),
@@ -847,9 +908,13 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                   style: FilledButton.styleFrom(
                                     backgroundColor: AppColors.primary,
                                     foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
                                     minimumSize: Size.zero,
-                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    tapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap,
                                   ),
                                   icon: const Icon(Icons.download, size: 18),
                                   label: const Text('Export'),
@@ -859,27 +924,36 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         ),
                         const SizedBox(height: 12),
                         if (signups.isEmpty)
-                          Text(
-                            'Nog geen aanmeldingen.',
-                            style: secondaryStyle,
-                          )
+                          Text('Nog geen aanmeldingen.', style: secondaryStyle)
                         else
                           ...signups.map((s) {
-                            final teams = s.teamLabels.isEmpty ? '—' : s.teamLabels.join(', ');
+                            final teams = s.teamLabels.isEmpty
+                                ? '—'
+                                : s.teamLabels.join(', ');
                             return Padding(
                               padding: const EdgeInsets.symmetric(vertical: 6),
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Icon(Icons.person_outline, size: 18, color: AppColors.primary.withValues(alpha: 0.8)),
+                                  Icon(
+                                    Icons.person_outline,
+                                    size: 18,
+                                    color: AppColors.primary.withValues(
+                                      alpha: 0.8,
+                                    ),
+                                  ),
                                   const SizedBox(width: 10),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Text(
                                           s.name,
-                                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium
+                                              ?.copyWith(
                                                 color: AppColors.onBackground,
                                                 fontWeight: FontWeight.w600,
                                               ),
@@ -887,7 +961,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                         const SizedBox(height: 2),
                                         Text(
                                           'Team: $teams',
-                                          style: TextStyle(color: AppColors.textSecondary, fontSize: 12.5),
+                                          style: TextStyle(
+                                            color: AppColors.textSecondary,
+                                            fontSize: 12.5,
+                                          ),
                                         ),
                                       ],
                                     ),
@@ -919,18 +996,36 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       String idField = 'news_id';
       for (final attempt in const [
         // Preferred: supports optional `visible_until`.
-        ('news_id, title, description, created_at, author, category, source, visible_until', 'news_id'),
-        ('id, title, description, created_at, author, category, source, visible_until', 'id'),
-        ('news_id, title, body, created_at, author, category, source, visible_until', 'news_id'),
-        ('id, title, body, created_at, author, category, source, visible_until', 'id'),
+        (
+          'news_id, title, description, created_at, author, category, source, visible_until',
+          'news_id',
+        ),
+        (
+          'id, title, description, created_at, author, category, source, visible_until',
+          'id',
+        ),
+        (
+          'news_id, title, body, created_at, author, category, source, visible_until',
+          'news_id',
+        ),
+        (
+          'id, title, body, created_at, author, category, source, visible_until',
+          'id',
+        ),
         ('news_id, title, description, created_at, visible_until', 'news_id'),
         ('id, title, description, created_at, visible_until', 'id'),
         ('news_id, title, body, created_at, visible_until', 'news_id'),
         ('id, title, body, created_at, visible_until', 'id'),
-        ('news_id, title, description, created_at, author, category, source', 'news_id'),
+        (
+          'news_id, title, description, created_at, author, category, source',
+          'news_id',
+        ),
         ('id, title, description, created_at, author, category, source', 'id'),
         // Older schemas may use "body" instead of "description"
-        ('news_id, title, body, created_at, author, category, source', 'news_id'),
+        (
+          'news_id, title, body, created_at, author, category, source',
+          'news_id',
+        ),
         ('id, title, body, created_at, author, category, source', 'id'),
         // Minimal schema
         ('news_id, title, description, created_at', 'news_id'),
@@ -975,15 +1070,17 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         final category = _categoryFromDb(r['category']);
         final visibleUntil = _parseVisibleUntil(r['visible_until']);
         if (!_isVisibleNow(visibleUntil)) continue;
-        list.add(NewsItem(
-          id: idStr,
-          title: title,
-          body: body,
-          date: date,
-          author: author.isNotEmpty ? author : 'Bestuur',
-          category: category,
-          visibleUntil: visibleUntil,
-        ));
+        list.add(
+          NewsItem(
+            id: idStr,
+            title: title,
+            body: body,
+            date: date,
+            author: author.isNotEmpty ? author : 'Bestuur',
+            category: category,
+            visibleUntil: visibleUntil,
+          ),
+        );
       }
 
       if (!mounted) return;
@@ -1064,7 +1161,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   }
 
   void _showAgendaDetail(_AgendaItem item) {
-    final hasAny = item.description != null ||
+    final hasAny =
+        item.description != null ||
         item.dateLabel != null ||
         item.endDateLabel != null ||
         item.timeLabel != null ||
@@ -1082,17 +1180,25 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               if (item.description != null && item.description!.isNotEmpty) ...[
                 Text(
                   item.description!,
-                  style: const TextStyle(color: AppColors.onBackground, height: 1.4),
+                  style: const TextStyle(
+                    color: AppColors.onBackground,
+                    height: 1.4,
+                  ),
                 ),
                 const SizedBox(height: 16),
               ],
               if (item.dateLabel != null) ...[
                 Row(
                   children: [
-                    Icon(Icons.calendar_today, size: 18, color: AppColors.textSecondary),
+                    Icon(
+                      Icons.calendar_today,
+                      size: 18,
+                      color: AppColors.textSecondary,
+                    ),
                     const SizedBox(width: 8),
                     Text(
-                      item.endDateLabel != null && item.endDateLabel != item.dateLabel
+                      item.endDateLabel != null &&
+                              item.endDateLabel != item.dateLabel
                           ? '${item.dateLabel!} t/m ${item.endDateLabel!}'
                           : item.dateLabel!,
                       style: const TextStyle(color: AppColors.textSecondary),
@@ -1104,10 +1210,15 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               if (item.timeLabel != null) ...[
                 Row(
                   children: [
-                    Icon(Icons.schedule, size: 18, color: AppColors.textSecondary),
+                    Icon(
+                      Icons.schedule,
+                      size: 18,
+                      color: AppColors.textSecondary,
+                    ),
                     const SizedBox(width: 8),
                     Text(
-                      item.endTimeLabel != null && item.endTimeLabel != item.timeLabel
+                      item.endTimeLabel != null &&
+                              item.endTimeLabel != item.timeLabel
                           ? '${item.timeLabel!} – ${item.endTimeLabel!}'
                           : item.timeLabel!,
                       style: const TextStyle(color: AppColors.textSecondary),
@@ -1131,7 +1242,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   ],
                 ),
               if (!hasAny)
-                const Text('Geen extra informatie.', style: TextStyle(color: AppColors.textSecondary)),
+                const Text(
+                  'Geen extra informatie.',
+                  style: TextStyle(color: AppColors.textSecondary),
+                ),
             ],
           ),
         ),
@@ -1178,7 +1292,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             children: [
               Text(
                 item.subtitle,
-                style: const TextStyle(color: AppColors.onBackground, height: 1.4),
+                style: const TextStyle(
+                  color: AppColors.onBackground,
+                  height: 1.4,
+                ),
               ),
               if (item.visibleUntil != null) ...[
                 const SizedBox(height: 12),
@@ -1257,7 +1374,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                       setLocalState(() => visibleUntil = next);
                     },
                     child: Text(
-                      visibleUntil == null ? 'Geen' : _formatDate(visibleUntil!),
+                      visibleUntil == null
+                          ? 'Geen'
+                          : _formatDate(visibleUntil!),
                     ),
                   ),
                   if (visibleUntil != null)
@@ -1315,7 +1434,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             (e.message.contains("Could not find the '") &&
                 e.message.contains("column"))) {
           try {
-            final retry = {...payload, 'source': 'app'}..remove('visible_until');
+            final retry = {...payload, 'source': 'app'}
+              ..remove('visible_until');
             await _client.from('home_news').insert(retry);
           } on PostgrestException catch (e2) {
             if (e2.code == 'PGRST204' ||
@@ -1402,7 +1522,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                       setLocalState(() => visibleUntil = next);
                     },
                     child: Text(
-                      visibleUntil == null ? 'Geen' : _formatDate(visibleUntil!),
+                      visibleUntil == null
+                          ? 'Geen'
+                          : _formatDate(visibleUntil!),
                     ),
                   ),
                   if (visibleUntil != null)
@@ -1463,16 +1585,23 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             (e.message.contains("Could not find the '") &&
                 e.message.contains("column"))) {
           try {
-            final retry = {...payload, 'source': 'app'}..remove('visible_until');
-            await _client.from('home_news').update(retry).eq(_newsIdField, idValue);
+            final retry = {...payload, 'source': 'app'}
+              ..remove('visible_until');
+            await _client
+                .from('home_news')
+                .update(retry)
+                .eq(_newsIdField, idValue);
           } on PostgrestException catch (e2) {
             if (e2.code == 'PGRST204' ||
                 (e2.message.contains("Could not find the '") &&
                     e2.message.contains("column"))) {
-              await _client.from('home_news').update({
-                'title': title,
-                'description': descriptionController.text.trim(),
-              }).eq(_newsIdField, idValue);
+              await _client
+                  .from('home_news')
+                  .update({
+                    'title': title,
+                    'description': descriptionController.text.trim(),
+                  })
+                  .eq(_newsIdField, idValue);
             } else {
               rethrow;
             }
@@ -1498,9 +1627,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Nieuwsbericht verwijderen'),
-        content: Text(
-          'Weet je zeker dat je "${item.title}" wilt verwijderen?',
-        ),
+        content: Text('Weet je zeker dat je "${item.title}" wilt verwijderen?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -1583,9 +1710,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Begindatum', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Begindatum',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(dateStr(pickedDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              dateStr(pickedDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1602,8 +1740,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           if (d == null) return;
                           setState(() {
                             pickedDateTime = DateTime(
-                              d.year, d.month, d.day,
-                              pickedDateTime?.hour ?? 0, pickedDateTime?.minute ?? 0,
+                              d.year,
+                              d.month,
+                              d.day,
+                              pickedDateTime?.hour ?? 0,
+                              pickedDateTime?.minute ?? 0,
                             );
                           });
                         },
@@ -1618,9 +1759,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Begintijd', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Begintijd',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(timeStr(pickedDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              timeStr(pickedDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1629,7 +1781,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final t = await showTimePicker(
                             context: context,
                             initialTime: pickedDateTime != null
-                                ? TimeOfDay(hour: pickedDateTime!.hour, minute: pickedDateTime!.minute)
+                                ? TimeOfDay(
+                                    hour: pickedDateTime!.hour,
+                                    minute: pickedDateTime!.minute,
+                                  )
                                 : const TimeOfDay(hour: 20, minute: 0),
                           );
                           if (t == null) return;
@@ -1638,7 +1793,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               pickedDateTime?.year ?? DateTime.now().year,
                               pickedDateTime?.month ?? DateTime.now().month,
                               pickedDateTime?.day ?? DateTime.now().day,
-                              t.hour, t.minute,
+                              t.hour,
+                              t.minute,
                             );
                           });
                         },
@@ -1653,9 +1809,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Einddatum', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Einddatum',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(dateStr(pickedEndDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              dateStr(pickedEndDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1666,15 +1833,19 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final d = await showDatePicker(
                             context: context,
                             locale: const Locale('nl', 'NL'),
-                            initialDate: pickedEndDateTime ?? pickedDateTime ?? now,
+                            initialDate:
+                                pickedEndDateTime ?? pickedDateTime ?? now,
                             firstDate: startOrNow,
                             lastDate: now.add(const Duration(days: 365 * 2)),
                           );
                           if (d == null) return;
                           setState(() {
                             pickedEndDateTime = DateTime(
-                              d.year, d.month, d.day,
-                              pickedEndDateTime?.hour ?? 23, pickedEndDateTime?.minute ?? 59,
+                              d.year,
+                              d.month,
+                              d.day,
+                              pickedEndDateTime?.hour ?? 23,
+                              pickedEndDateTime?.minute ?? 59,
                             );
                           });
                         },
@@ -1689,9 +1860,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Eindtijd', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Eindtijd',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(timeStr(pickedEndDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              timeStr(pickedEndDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1700,7 +1882,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final t = await showTimePicker(
                             context: context,
                             initialTime: pickedEndDateTime != null
-                                ? TimeOfDay(hour: pickedEndDateTime!.hour, minute: pickedEndDateTime!.minute)
+                                ? TimeOfDay(
+                                    hour: pickedEndDateTime!.hour,
+                                    minute: pickedEndDateTime!.minute,
+                                  )
                                 : const TimeOfDay(hour: 22, minute: 0),
                           );
                           if (t == null) return;
@@ -1709,7 +1894,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               pickedEndDateTime?.year ?? DateTime.now().year,
                               pickedEndDateTime?.month ?? DateTime.now().month,
                               pickedEndDateTime?.day ?? DateTime.now().day,
-                              t.hour, t.minute,
+                              t.hour,
+                              t.minute,
                             );
                           });
                         },
@@ -1762,18 +1948,27 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                             if (v) {
                               rsvpCommittees = [...rsvpCommittees, 'bestuur'];
                             } else {
-                              rsvpCommittees = rsvpCommittees.where((c) => c != 'bestuur').toList();
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'bestuur')
+                                  .toList();
                             }
                           }),
                         ),
                         FilterChip(
                           label: const Text('TC'),
-                          selected: rsvpCommittees.contains('technische-commissie'),
+                          selected: rsvpCommittees.contains(
+                            'technische-commissie',
+                          ),
                           onSelected: (v) => setState(() {
                             if (v) {
-                              rsvpCommittees = [...rsvpCommittees, 'technische-commissie'];
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'technische-commissie',
+                              ];
                             } else {
-                              rsvpCommittees = rsvpCommittees.where((c) => c != 'technische-commissie').toList();
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'technische-commissie')
+                                  .toList();
                             }
                           }),
                         ),
@@ -1782,9 +1977,14 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           selected: rsvpCommittees.contains('communicatie'),
                           onSelected: (v) => setState(() {
                             if (v) {
-                              rsvpCommittees = [...rsvpCommittees, 'communicatie'];
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'communicatie',
+                              ];
                             } else {
-                              rsvpCommittees = rsvpCommittees.where((c) => c != 'communicatie').toList();
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'communicatie')
+                                  .toList();
                             }
                           }),
                         ),
@@ -1793,9 +1993,14 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           selected: rsvpCommittees.contains('wedstrijdzaken'),
                           onSelected: (v) => setState(() {
                             if (v) {
-                              rsvpCommittees = [...rsvpCommittees, 'wedstrijdzaken'];
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'wedstrijdzaken',
+                              ];
                             } else {
-                              rsvpCommittees = rsvpCommittees.where((c) => c != 'wedstrijdzaken').toList();
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'wedstrijdzaken')
+                                  .toList();
                             }
                           }),
                         ),
@@ -1860,15 +2065,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     try {
       final payload = <String, dynamic>{
         'title': title,
-        'description': descriptionController.text.trim().isEmpty ? null : descriptionController.text.trim(),
-        'location': locationController.text.trim().isEmpty ? null : locationController.text.trim(),
+        'description': descriptionController.text.trim().isEmpty
+            ? null
+            : descriptionController.text.trim(),
+        'location': locationController.text.trim().isEmpty
+            ? null
+            : locationController.text.trim(),
         'can_rsvp': canRsvp,
       };
       if (canRsvp) {
         payload['rsvp_label'] = rsvpLabelVal.isEmpty ? null : rsvpLabelVal;
         payload['rsvp_allowed_team_ids'] = teamIdsVal;
-        payload['rsvp_allowed_committee_keys'] =
-            rsvpCommittees.isEmpty ? null : rsvpCommittees;
+        payload['rsvp_allowed_committee_keys'] = rsvpCommittees.isEmpty
+            ? null
+            : rsvpCommittees;
       } else {
         payload['rsvp_label'] = null;
         payload['rsvp_allowed_team_ids'] = null;
@@ -1894,16 +2104,22 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (existing.id == null) return;
 
     final titleController = TextEditingController(text: existing.title);
-    final descriptionController = TextEditingController(text: existing.description ?? '');
+    final descriptionController = TextEditingController(
+      text: existing.description ?? '',
+    );
     final locationController = TextEditingController(text: existing.where);
-    final rsvpLabelController = TextEditingController(text: existing.rsvpLabel ?? '');
+    final rsvpLabelController = TextEditingController(
+      text: existing.rsvpLabel ?? '',
+    );
     final rsvpTeamIdsController = TextEditingController(
       text: existing.allowedTeamIds?.join(', ') ?? '',
     );
     DateTime? pickedDateTime = existing.startDatetime?.toLocal();
     DateTime? pickedEndDateTime = existing.endDatetime?.toLocal();
     bool canRsvp = existing.canRsvp;
-    List<String> rsvpCommittees = List.from(existing.allowedCommitteeKeys ?? []);
+    List<String> rsvpCommittees = List.from(
+      existing.allowedCommitteeKeys ?? [],
+    );
 
     final ok = await showDialog<bool>(
       context: context,
@@ -1949,9 +2165,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Begindatum', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Begindatum',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(dateStr(pickedDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              dateStr(pickedDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1968,8 +2195,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           if (d == null) return;
                           setState(() {
                             pickedDateTime = DateTime(
-                              d.year, d.month, d.day,
-                              pickedDateTime?.hour ?? 0, pickedDateTime?.minute ?? 0,
+                              d.year,
+                              d.month,
+                              d.day,
+                              pickedDateTime?.hour ?? 0,
+                              pickedDateTime?.minute ?? 0,
                             );
                           });
                         },
@@ -1984,9 +2214,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Begintijd', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Begintijd',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(timeStr(pickedDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              timeStr(pickedDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1995,7 +2236,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final t = await showTimePicker(
                             context: context,
                             initialTime: pickedDateTime != null
-                                ? TimeOfDay(hour: pickedDateTime!.hour, minute: pickedDateTime!.minute)
+                                ? TimeOfDay(
+                                    hour: pickedDateTime!.hour,
+                                    minute: pickedDateTime!.minute,
+                                  )
                                 : const TimeOfDay(hour: 20, minute: 0),
                           );
                           if (t == null) return;
@@ -2004,7 +2248,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               pickedDateTime?.year ?? DateTime.now().year,
                               pickedDateTime?.month ?? DateTime.now().month,
                               pickedDateTime?.day ?? DateTime.now().day,
-                              t.hour, t.minute,
+                              t.hour,
+                              t.minute,
                             );
                           });
                         },
@@ -2019,9 +2264,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Einddatum', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Einddatum',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(dateStr(pickedEndDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              dateStr(pickedEndDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -2031,15 +2287,19 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final d = await showDatePicker(
                             context: context,
                             locale: const Locale('nl', 'NL'),
-                            initialDate: pickedEndDateTime ?? pickedDateTime ?? now,
+                            initialDate:
+                                pickedEndDateTime ?? pickedDateTime ?? now,
                             firstDate: now.subtract(const Duration(days: 365)),
                             lastDate: now.add(const Duration(days: 365 * 2)),
                           );
                           if (d == null) return;
                           setState(() {
                             pickedEndDateTime = DateTime(
-                              d.year, d.month, d.day,
-                              pickedEndDateTime?.hour ?? 23, pickedEndDateTime?.minute ?? 59,
+                              d.year,
+                              d.month,
+                              d.day,
+                              pickedEndDateTime?.hour ?? 23,
+                              pickedEndDateTime?.minute ?? 59,
                             );
                           });
                         },
@@ -2054,9 +2314,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Eindtijd', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Eindtijd',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(timeStr(pickedEndDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              timeStr(pickedEndDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -2065,7 +2336,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final t = await showTimePicker(
                             context: context,
                             initialTime: pickedEndDateTime != null
-                                ? TimeOfDay(hour: pickedEndDateTime!.hour, minute: pickedEndDateTime!.minute)
+                                ? TimeOfDay(
+                                    hour: pickedEndDateTime!.hour,
+                                    minute: pickedEndDateTime!.minute,
+                                  )
                                 : const TimeOfDay(hour: 22, minute: 0),
                           );
                           if (t == null) return;
@@ -2074,7 +2348,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               pickedEndDateTime?.year ?? DateTime.now().year,
                               pickedEndDateTime?.month ?? DateTime.now().month,
                               pickedEndDateTime?.day ?? DateTime.now().day,
-                              t.hour, t.minute,
+                              t.hour,
+                              t.minute,
                             );
                           });
                         },
@@ -2127,18 +2402,27 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                             if (v) {
                               rsvpCommittees = [...rsvpCommittees, 'bestuur'];
                             } else {
-                              rsvpCommittees = rsvpCommittees.where((c) => c != 'bestuur').toList();
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'bestuur')
+                                  .toList();
                             }
                           }),
                         ),
                         FilterChip(
                           label: const Text('TC'),
-                          selected: rsvpCommittees.contains('technische-commissie'),
+                          selected: rsvpCommittees.contains(
+                            'technische-commissie',
+                          ),
                           onSelected: (v) => setState(() {
                             if (v) {
-                              rsvpCommittees = [...rsvpCommittees, 'technische-commissie'];
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'technische-commissie',
+                              ];
                             } else {
-                              rsvpCommittees = rsvpCommittees.where((c) => c != 'technische-commissie').toList();
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'technische-commissie')
+                                  .toList();
                             }
                           }),
                         ),
@@ -2147,9 +2431,14 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           selected: rsvpCommittees.contains('communicatie'),
                           onSelected: (v) => setState(() {
                             if (v) {
-                              rsvpCommittees = [...rsvpCommittees, 'communicatie'];
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'communicatie',
+                              ];
                             } else {
-                              rsvpCommittees = rsvpCommittees.where((c) => c != 'communicatie').toList();
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'communicatie')
+                                  .toList();
                             }
                           }),
                         ),
@@ -2158,9 +2447,14 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           selected: rsvpCommittees.contains('wedstrijdzaken'),
                           onSelected: (v) => setState(() {
                             if (v) {
-                              rsvpCommittees = [...rsvpCommittees, 'wedstrijdzaken'];
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'wedstrijdzaken',
+                              ];
                             } else {
-                              rsvpCommittees = rsvpCommittees.where((c) => c != 'wedstrijdzaken').toList();
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'wedstrijdzaken')
+                                  .toList();
                             }
                           }),
                         ),
@@ -2225,15 +2519,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     try {
       final payload = <String, dynamic>{
         'title': title,
-        'description': descriptionController.text.trim().isEmpty ? null : descriptionController.text.trim(),
-        'location': locationController.text.trim().isEmpty ? null : locationController.text.trim(),
+        'description': descriptionController.text.trim().isEmpty
+            ? null
+            : descriptionController.text.trim(),
+        'location': locationController.text.trim().isEmpty
+            ? null
+            : locationController.text.trim(),
         'can_rsvp': canRsvp,
       };
       if (canRsvp) {
         payload['rsvp_label'] = rsvpLabelVal.isEmpty ? null : rsvpLabelVal;
         payload['rsvp_allowed_team_ids'] = teamIdsVal;
-        payload['rsvp_allowed_committee_keys'] =
-            rsvpCommittees.isEmpty ? null : rsvpCommittees;
+        payload['rsvp_allowed_committee_keys'] = rsvpCommittees.isEmpty
+            ? null
+            : rsvpCommittees;
       } else {
         payload['rsvp_label'] = null;
         payload['rsvp_allowed_team_ids'] = null;
@@ -2247,7 +2546,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       } else {
         payload['end_datetime'] = null;
       }
-      await _client.from('home_agenda').update(payload).eq('agenda_id', existing.id!);
+      await _client
+          .from('home_agenda')
+          .update(payload)
+          .eq('agenda_id', existing.id!);
       await _loadAgenda();
       if (!mounted) return;
       showTopMessage(context, 'Activiteit aangepast.');
@@ -2264,9 +2566,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Activiteit verwijderen'),
-        content: Text(
-          'Weet je zeker dat je "${item.title}" wilt verwijderen?',
-        ),
+        content: Text('Weet je zeker dat je "${item.title}" wilt verwijderen?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -2389,8 +2689,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (!canManage) return;
 
     final titleController = TextEditingController(text: existing?.title ?? '');
-    final subtitleController =
-        TextEditingController(text: existing?.subtitle ?? '');
+    final subtitleController = TextEditingController(
+      text: existing?.subtitle ?? '',
+    );
     DateTime? visibleUntil = existing?.visibleUntil;
 
     final result = await showDialog<_HighlightEditResult>(
@@ -2439,13 +2740,16 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         setLocalState(() => visibleUntil = next);
                       },
                       child: Text(
-                        visibleUntil == null ? 'Geen' : _formatDate(visibleUntil!),
+                        visibleUntil == null
+                            ? 'Geen'
+                            : _formatDate(visibleUntil!),
                       ),
                     ),
                     if (visibleUntil != null)
                       IconButton(
                         tooltip: 'Wissen',
-                        onPressed: () => setLocalState(() => visibleUntil = null),
+                        onPressed: () =>
+                            setLocalState(() => visibleUntil = null),
                         icon: const Icon(Icons.close, size: 18),
                         color: AppColors.textSecondary,
                       ),
@@ -2492,8 +2796,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           id: existing?.id,
           title: title,
           subtitle: result.subtitle ?? '',
-          iconText:
-              (result.iconText?.isNotEmpty == true) ? result.iconText! : '🏐',
+          iconText: (result.iconText?.isNotEmpty == true)
+              ? result.iconText!
+              : '🏐',
           visibleUntil: result.visibleUntil,
         );
       }
@@ -2526,9 +2831,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   Text(
                     'Welkom bij VV Minerva',
                     style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                          color: AppColors.primary,
-                          fontWeight: FontWeight.w800,
-                        ),
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -2545,7 +2850,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
               child: GlassCard(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 showBorder: false,
                 showShadow: false,
                 child: TabBar(
@@ -2557,10 +2865,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   ),
                   indicatorSize: TabBarIndicatorSize.tab,
                   tabs: widget.showOnlyHighlightsAndNews
-                      ? const [
-                          Tab(text: 'Uitgelicht'),
-                          Tab(text: 'Nieuws'),
-                        ]
+                      ? const [Tab(text: 'Uitgelicht'), Tab(text: 'Nieuws')]
                       : const [
                           Tab(text: 'Uitgelicht'),
                           Tab(text: 'Agenda'),
@@ -2599,15 +2904,15 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                   ),
                                 )
                               : (_loadingHighlights
-                                  ? const SizedBox(
-                                      height: 18,
-                                      width: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: AppColors.primary,
-                                      ),
-                                    )
-                                  : null),
+                                    ? const SizedBox(
+                                        height: 18,
+                                        width: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: AppColors.primary,
+                                        ),
+                                      )
+                                    : null),
                         ),
                         const SizedBox(height: 12),
                         if (_highlightsError != null && canManageHighlights)
@@ -2617,14 +2922,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               'Let op: highlights tabel niet beschikbaar.\n'
                               'Voer supabase/home_highlights_minimal.sql uit in Supabase → SQL Editor.\n'
                               'Details: $_highlightsError',
-                              style: const TextStyle(color: AppColors.textSecondary),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
                             ),
                           ),
-                        const Text(
-                          'Korte, belangrijke mededelingen en acties.',
-                          style: TextStyle(color: AppColors.textSecondary),
-                        ),
-                        const SizedBox(height: 12),
                         if (_highlights.isEmpty)
                           const Text(
                             'Geen uitgelichte items.',
@@ -2660,11 +2962,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           Padding(
                             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                             child: GlassCard(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
                               child: SegmentedButton<int>(
                                 segments: const [
-                                  ButtonSegment(value: 0, label: Text('Agenda')),
-                                  ButtonSegment(value: 1, label: Text('Aanmeldingen')),
+                                  ButtonSegment(
+                                    value: 0,
+                                    label: Text('Agenda'),
+                                  ),
+                                  ButtonSegment(
+                                    value: 1,
+                                    label: Text('Aanmeldingen'),
+                                  ),
                                 ],
                                 selected: {_agendaMode},
                                 onSelectionChanged: (set) {
@@ -2680,8 +2991,13 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           ),
                         Expanded(
                           child: _agendaMode == 1 && canViewAgendaRsvps
-                              ? _buildAgendaRsvpsView(canExportRsvps: userContext.canExportAgendaRsvps)
-                              : _buildAgendaListView(canManageAgenda: canManageAgenda),
+                              ? _buildAgendaRsvpsView(
+                                  canExportRsvps:
+                                      userContext.canExportAgendaRsvps,
+                                )
+                              : _buildAgendaListView(
+                                  canManageAgenda: canManageAgenda,
+                                ),
                         ),
                       ],
                     ),
@@ -2698,7 +3014,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         16,
                         24 + MediaQuery.paddingOf(context).bottom,
                       ),
-                      itemCount: 1 + (_newsItems.isEmpty ? 1 : _newsItems.length),
+                      itemCount:
+                          1 + (_newsItems.isEmpty ? 1 : _newsItems.length),
                       separatorBuilder: (_, _) => const SizedBox(height: 12),
                       itemBuilder: (context, i) {
                         if (i == 0) {
@@ -2710,27 +3027,24 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                 trailing: canManageNews
                                     ? IconButton(
                                         tooltip: 'Nieuwsbericht toevoegen',
-                                        icon: const Icon(Icons.add_circle_outline),
+                                        icon: const Icon(
+                                          Icons.add_circle_outline,
+                                        ),
                                         color: AppColors.primary,
                                         onPressed: () => _openAddNewsDialog(),
                                       )
                                     : (_loadingNews
-                                        ? const SizedBox(
-                                            height: 18,
-                                            width: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: AppColors.primary,
-                                            ),
-                                          )
-                                        : null),
+                                          ? const SizedBox(
+                                              height: 18,
+                                              width: 18,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: AppColors.primary,
+                                              ),
+                                            )
+                                          : null),
                               ),
                               const SizedBox(height: 12),
-                              const Text(
-                                'Berichten met wat meer context. '
-                                'Tip: stel optioneel “Tonen tot” in zodat een bericht automatisch verdwijnt.',
-                                style: TextStyle(color: AppColors.textSecondary),
-                              ),
                             ],
                           );
                         }
@@ -2741,7 +3055,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               'Let op: nieuwstabel niet beschikbaar. '
                               'Voer supabase/home_news_minimal.sql uit in Supabase → SQL Editor.\n'
                               'Details: $_newsError',
-                              style: const TextStyle(color: AppColors.textSecondary),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
                             );
                           }
                           return const Text(
@@ -2755,8 +3071,12 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           item: n,
                           canManage: canManageNews,
                           onReadMore: () => _showNewsDetail(n),
-                          onEdit: _newsFromSupabase ? () => _openEditNewsDialog(n) : null,
-                          onDelete: _newsFromSupabase ? () => _deleteNewsItem(n) : null,
+                          onEdit: _newsFromSupabase
+                              ? () => _openEditNewsDialog(n)
+                              : null,
+                          onDelete: _newsFromSupabase
+                              ? () => _deleteNewsItem(n)
+                              : null,
                         );
                       },
                     ),
@@ -2792,9 +3112,9 @@ class _HomeTabHeader extends StatelessWidget {
           Text(
             title,
             style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: AppColors.primary,
-                  fontWeight: FontWeight.w900,
-                ),
+              color: AppColors.primary,
+              fontWeight: FontWeight.w900,
+            ),
           ),
           const Spacer(),
           if (trailing != null) trailing!,
@@ -2811,11 +3131,7 @@ class _CardBox extends StatelessWidget {
   final EdgeInsetsGeometry? padding;
   final EdgeInsetsGeometry? margin;
 
-  const _CardBox({
-    required this.child,
-    this.padding,
-    this.margin,
-  });
+  const _CardBox({required this.child, this.padding, this.margin});
 
   @override
   Widget build(BuildContext context) {
@@ -2883,9 +3199,9 @@ class _HighlightCard extends StatelessWidget {
                 Text(
                   item.title,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: AppColors.onBackground,
-                        fontWeight: FontWeight.w800,
-                      ),
+                    color: AppColors.onBackground,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 Text(
@@ -2940,7 +3256,11 @@ class _HighlightCard extends StatelessWidget {
                     value: 'edit',
                     child: Row(
                       children: [
-                        Icon(Icons.edit, size: 20, color: AppColors.textSecondary),
+                        Icon(
+                          Icons.edit,
+                          size: 20,
+                          color: AppColors.textSecondary,
+                        ),
                         SizedBox(width: 8),
                         Text('Bewerken'),
                       ],
@@ -2951,9 +3271,16 @@ class _HighlightCard extends StatelessWidget {
                     value: 'delete',
                     child: Row(
                       children: [
-                        Icon(Icons.delete_outline, size: 20, color: AppColors.error),
+                        Icon(
+                          Icons.delete_outline,
+                          size: 20,
+                          color: AppColors.error,
+                        ),
                         SizedBox(width: 8),
-                        Text('Verwijderen', style: TextStyle(color: AppColors.error)),
+                        Text(
+                          'Verwijderen',
+                          style: TextStyle(color: AppColors.error),
+                        ),
                       ],
                     ),
                   ),
@@ -2986,37 +3313,37 @@ class _HighlightEditResult {
     String iconText,
     DateTime? visibleUntil,
   ) : this._(
-          isSave: true,
-          title: title,
-          subtitle: subtitle,
-          iconText: iconText,
-          visibleUntil: visibleUntil,
-        );
+        isSave: true,
+        title: title,
+        subtitle: subtitle,
+        iconText: iconText,
+        visibleUntil: visibleUntil,
+      );
 }
 
 List<_Highlight> _mockHighlights() => const [
-      _Highlight(
-        id: null,
-        iconText: '📌',
-        title: 'Seizoensstart',
-        subtitle: 'Belangrijke clubafspraken en planning',
-        visibleUntil: null,
-      ),
-      _Highlight(
-        id: null,
-        iconText: '🏆',
-        title: 'Toernooi',
-        subtitle: 'Inschrijving geopend (jeugd & senioren)',
-        visibleUntil: null,
-      ),
-      _Highlight(
-        id: null,
-        iconText: '🤝',
-        title: 'Vrijwilligers gezocht',
-        subtitle: 'Tafelaars en scheidsrechters nodig',
-        visibleUntil: null,
-      ),
-    ];
+  _Highlight(
+    id: null,
+    iconText: '📌',
+    title: 'Seizoensstart',
+    subtitle: 'Belangrijke clubafspraken en planning',
+    visibleUntil: null,
+  ),
+  _Highlight(
+    id: null,
+    iconText: '🏆',
+    title: 'Toernooi',
+    subtitle: 'Inschrijving geopend (jeugd & senioren)',
+    visibleUntil: null,
+  ),
+  _Highlight(
+    id: null,
+    iconText: '🤝',
+    title: 'Vrijwilligers gezocht',
+    subtitle: 'Tafelaars en scheidsrechters nodig',
+    visibleUntil: null,
+  ),
+];
 
 /* ----------------------- AGENDA ----------------------- */
 
@@ -3058,7 +3385,8 @@ class _AgendaItem {
   /// Gebruiker mag aanmelden als: geen restricties, of in toegestaan team/commissie.
   bool canUserSignUp(AppUserContext ctx) {
     if (!canRsvp) return false;
-    final hasTeamRestrict = allowedTeamIds != null && allowedTeamIds!.isNotEmpty;
+    final hasTeamRestrict =
+        allowedTeamIds != null && allowedTeamIds!.isNotEmpty;
     final hasCommitteeRestrict =
         allowedCommitteeKeys != null && allowedCommitteeKeys!.isNotEmpty;
     if (!hasTeamRestrict && !hasCommitteeRestrict) return true;
@@ -3067,12 +3395,17 @@ class _AgendaItem {
       return true;
     }
     if (hasCommitteeRestrict) {
-      final keys = allowedCommitteeKeys!.map((k) => k.trim().toLowerCase()).toSet();
-      final userCommittees =
-          ctx.committees.map((c) => c.trim().toLowerCase()).toSet();
-      if (userCommittees.any((uc) =>
-          keys.contains(uc) ||
-          keys.any((k) => uc == k || uc.contains(k) || k.contains(uc)))) {
+      final keys = allowedCommitteeKeys!
+          .map((k) => k.trim().toLowerCase())
+          .toSet();
+      final userCommittees = ctx.committees
+          .map((c) => c.trim().toLowerCase())
+          .toSet();
+      if (userCommittees.any(
+        (uc) =>
+            keys.contains(uc) ||
+            keys.any((k) => uc == k || uc.contains(k) || k.contains(uc)),
+      )) {
         return true;
       }
       if (ctx.hasFullAdminRights && keys.contains('admin')) return true;
@@ -3080,9 +3413,8 @@ class _AgendaItem {
     return false;
   }
 
-  String get signupButtonLabel => (rsvpLabel?.trim().isNotEmpty == true)
-      ? rsvpLabel!
-      : 'Aanmelden';
+  String get signupButtonLabel =>
+      (rsvpLabel?.trim().isNotEmpty == true) ? rsvpLabel! : 'Aanmelden';
 }
 
 class _AgendaSignup {
@@ -3130,21 +3462,21 @@ class _AgendaCard extends StatelessWidget {
     // Geen einddatum → niet weergeven;zelfde dag → alleen begindatum, geen "t/m".
     final dateLine = item.dateLabel != null
         ? (item.endDateLabel != null && item.endDateLabel != item.dateLabel
-            ? '${item.dateLabel!} t/m ${item.endDateLabel!}'
-            : item.dateLabel!)
+              ? '${item.dateLabel!} t/m ${item.endDateLabel!}'
+              : item.dateLabel!)
         : null;
     final timeRange = item.timeLabel != null
         ? (item.endTimeLabel != null && item.endTimeLabel != item.timeLabel
-            ? '${item.timeLabel!} – ${item.endTimeLabel!}'
-            : item.timeLabel!)
+              ? '${item.timeLabel!} – ${item.endTimeLabel!}'
+              : item.timeLabel!)
         : null;
     final timeLocation = timeRange != null
         ? [timeRange, item.where].where((s) => s.isNotEmpty).join(' • ')
         : [item.when, item.where].where((s) => s.isNotEmpty).join(' • ');
     final showMenu = canManage && (onEdit != null || onDelete != null);
-    final secondaryStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
-          color: AppColors.textSecondary,
-        );
+    final secondaryStyle = Theme.of(
+      context,
+    ).textTheme.bodySmall?.copyWith(color: AppColors.textSecondary);
 
     return _CardBox(
       child: Column(
@@ -3160,15 +3492,19 @@ class _AgendaCard extends StatelessWidget {
                     Text(
                       item.title,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: AppColors.onBackground,
-                            fontWeight: FontWeight.w700,
-                          ),
+                        color: AppColors.onBackground,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     if (dateLine != null) ...[
                       const SizedBox(height: 6),
                       Row(
                         children: [
-                          Icon(Icons.calendar_today, size: 14, color: AppColors.textSecondary),
+                          Icon(
+                            Icons.calendar_today,
+                            size: 14,
+                            color: AppColors.textSecondary,
+                          ),
                           const SizedBox(width: 6),
                           Text(dateLine, style: secondaryStyle),
                         ],
@@ -3178,7 +3514,11 @@ class _AgendaCard extends StatelessWidget {
                       const SizedBox(height: 4),
                       Row(
                         children: [
-                          Icon(Icons.schedule, size: 14, color: AppColors.textSecondary),
+                          Icon(
+                            Icons.schedule,
+                            size: 14,
+                            color: AppColors.textSecondary,
+                          ),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(timeLocation, style: secondaryStyle),
@@ -3191,7 +3531,10 @@ class _AgendaCard extends StatelessWidget {
               ),
               if (showMenu)
                 PopupMenuButton<String>(
-                  icon: const Icon(Icons.more_vert, color: AppColors.textSecondary),
+                  icon: const Icon(
+                    Icons.more_vert,
+                    color: AppColors.textSecondary,
+                  ),
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 1),
                   tooltip: 'Meer opties',
@@ -3205,7 +3548,11 @@ class _AgendaCard extends StatelessWidget {
                         value: 'edit',
                         child: Row(
                           children: [
-                            Icon(Icons.edit, size: 20, color: AppColors.textSecondary),
+                            Icon(
+                              Icons.edit,
+                              size: 20,
+                              color: AppColors.textSecondary,
+                            ),
                             SizedBox(width: 8),
                             Text('Bewerken'),
                           ],
@@ -3216,9 +3563,16 @@ class _AgendaCard extends StatelessWidget {
                         value: 'delete',
                         child: Row(
                           children: [
-                            Icon(Icons.delete_outline, size: 20, color: AppColors.error),
+                            Icon(
+                              Icons.delete_outline,
+                              size: 20,
+                              color: AppColors.error,
+                            ),
                             SizedBox(width: 8),
-                            Text('Verwijderen', style: TextStyle(color: AppColors.error)),
+                            Text(
+                              'Verwijderen',
+                              style: TextStyle(color: AppColors.error),
+                            ),
                           ],
                         ),
                       ),
@@ -3240,7 +3594,9 @@ class _AgendaCard extends StatelessWidget {
                             style: FilledButton.styleFrom(
                               backgroundColor: AppColors.success,
                               foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
                               minimumSize: Size.zero,
                               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             ),
@@ -3279,35 +3635,35 @@ class _AgendaCard extends StatelessWidget {
 }
 
 List<_AgendaItem> _mockAgenda() => const [
-      _AgendaItem(
-        id: null,
-        title: 'Algemene ledenvergadering',
-        description: 'Jaarlijkse ALV met stemming over het jaarverslag.',
-        when: 'Ma 15 jan • 20:00',
-        where: 'Kantine',
-        canRsvp: false,
-        startDatetime: null,
-        endDatetime: null,
-        dateLabel: '15-01-2025',
-        timeLabel: '20:00',
-        endDateLabel: null,
-        endTimeLabel: null,
-      ),
-      _AgendaItem(
-        id: null,
-        title: 'Clubdag',
-        description: 'Sportieve dag voor jeugd en senioren.',
-        when: 'Za 10 feb • 10:00',
-        where: 'Sporthal',
-        canRsvp: true,
-        startDatetime: null,
-        endDatetime: null,
-        dateLabel: '10-02-2025',
-        timeLabel: '10:00',
-        endDateLabel: null,
-        endTimeLabel: null,
-      ),
-    ];
+  _AgendaItem(
+    id: null,
+    title: 'Algemene ledenvergadering',
+    description: 'Jaarlijkse ALV met stemming over het jaarverslag.',
+    when: 'Ma 15 jan • 20:00',
+    where: 'Kantine',
+    canRsvp: false,
+    startDatetime: null,
+    endDatetime: null,
+    dateLabel: '15-01-2025',
+    timeLabel: '20:00',
+    endDateLabel: null,
+    endTimeLabel: null,
+  ),
+  _AgendaItem(
+    id: null,
+    title: 'Clubdag',
+    description: 'Sportieve dag voor jeugd en senioren.',
+    when: 'Za 10 feb • 10:00',
+    where: 'Sporthal',
+    canRsvp: true,
+    startDatetime: null,
+    endDatetime: null,
+    dateLabel: '10-02-2025',
+    timeLabel: '10:00',
+    endDateLabel: null,
+    endTimeLabel: null,
+  ),
+];
 
 /* ----------------------- NIEUWS ----------------------- */
 
@@ -3378,14 +3734,17 @@ class _NewsCard extends StatelessWidget {
                 child: Text(
                   item.title,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: AppColors.onBackground,
-                        fontWeight: FontWeight.w800,
-                      ),
+                    color: AppColors.onBackground,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
               if (showMenu)
                 PopupMenuButton<String>(
-                  icon: const Icon(Icons.more_vert, color: AppColors.textSecondary),
+                  icon: const Icon(
+                    Icons.more_vert,
+                    color: AppColors.textSecondary,
+                  ),
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 1),
                   tooltip: 'Meer opties',
@@ -3399,7 +3758,15 @@ class _NewsCard extends StatelessWidget {
                       enabled: canEdit,
                       child: Row(
                         children: [
-                          Icon(Icons.edit, size: 20, color: canEdit ? AppColors.textSecondary : AppColors.textSecondary.withValues(alpha: 0.5)),
+                          Icon(
+                            Icons.edit,
+                            size: 20,
+                            color: canEdit
+                                ? AppColors.textSecondary
+                                : AppColors.textSecondary.withValues(
+                                    alpha: 0.5,
+                                  ),
+                          ),
                           const SizedBox(width: 8),
                           Text('Bewerken'),
                         ],
@@ -3410,9 +3777,22 @@ class _NewsCard extends StatelessWidget {
                       enabled: canDelete,
                       child: Row(
                         children: [
-                          Icon(Icons.delete_outline, size: 20, color: canDelete ? AppColors.error : AppColors.error.withValues(alpha: 0.5)),
+                          Icon(
+                            Icons.delete_outline,
+                            size: 20,
+                            color: canDelete
+                                ? AppColors.error
+                                : AppColors.error.withValues(alpha: 0.5),
+                          ),
                           const SizedBox(width: 8),
-                          Text('Verwijderen', style: TextStyle(color: canDelete ? AppColors.error : AppColors.error.withValues(alpha: 0.5))),
+                          Text(
+                            'Verwijderen',
+                            style: TextStyle(
+                              color: canDelete
+                                  ? AppColors.error
+                                  : AppColors.error.withValues(alpha: 0.5),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -3469,9 +3849,9 @@ class _Pill extends StatelessWidget {
       child: Text(
         text,
         style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: AppColors.onBackground,
-              fontWeight: FontWeight.w700,
-            ),
+          color: AppColors.onBackground,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }

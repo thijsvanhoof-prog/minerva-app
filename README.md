@@ -37,6 +37,7 @@ Pas in `pubspec.yaml` `version` aan, bijv. `1.0.1+2` (semver + buildnummer).
 2. Kies een fysiek device of “Any iOS Device” (niet simulator).
 3. **Product → Archive.**
 4. Na het archiven: **Distribute App** → App Store Connect / Ad Hoc / Enterprise, volg de wizard.
+5. **Push notifications:** `Runner.entitlements` staat op `production` voor App Store distributie. Voor development builds met push: tijdelijk op `development` zetten.
 
 ### Web (optioneel)
 ```bash
