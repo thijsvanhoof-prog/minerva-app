@@ -7,6 +7,8 @@ import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart'
+    show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 class NevoboStandenTab extends StatefulWidget {
@@ -34,6 +36,8 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
   final Map<String, List<NevoboMatch>> _matchesByTeam = {};
   final Map<String, bool> _matchesLoadingByTeam = {};
   final Map<String, String> _matchesErrorByTeam = {};
+  final Map<String, List<String>> _refereeNamesByMatchKey = {};
+  final Map<String, List<String>> _tellerNamesByMatchKey = {};
 
   /// Accordion state: only one expanded at a time.
   final Set<String> _expandedTeamCodes = {};
@@ -225,6 +229,149 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     final d = dt.toLocal();
     String two(int v) => v.toString().padLeft(2, '0');
     return '${two(d.day)}-${two(d.month)}-${d.year} ${two(d.hour)}:${two(d.minute)}';
+  }
+
+  String _matchKey({required String teamCode, required DateTime start}) {
+    return 'nevobo_match:${teamCode.trim().toUpperCase()}:${start.toUtc().toIso8601String()}';
+  }
+
+  String _formatRoleNames(List<String> names) {
+    if (names.isEmpty) return 'Nog niet ingedeeld';
+    if (names.length <= 2) return names.join(', ');
+    return '${names.take(2).join(', ')} +${names.length - 2}';
+  }
+
+  Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
+    if (profileIds.isEmpty) return {};
+    final ids = profileIds.toList();
+
+    try {
+      final res = await _client.rpc(
+        'get_profile_display_names',
+        params: {'profile_ids': ids},
+      );
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final map = <String, String>{};
+      for (final r in rows) {
+        final id = r['profile_id']?.toString() ?? r['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final raw = (r['display_name'] ?? '').toString().trim();
+        final name = applyDisplayNameOverrides(raw);
+        map[id] = name.isNotEmpty ? name : unknownUserName;
+      }
+      if (map.isNotEmpty) return map;
+    } catch (_) {
+      // fall back to direct profiles select
+    }
+
+    List<Map<String, dynamic>> rows = const [];
+    for (final select in const [
+      'id, display_name, full_name, email',
+      'id, display_name, email',
+      'id, full_name, email',
+      'id, name, email',
+      'id, email',
+    ]) {
+      try {
+        final res = await _client.from('profiles').select(select).inFilter('id', ids);
+        rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        break;
+      } catch (_) {}
+    }
+
+    final map = <String, String>{};
+    for (final r in rows) {
+      final id = r['id']?.toString() ?? '';
+      if (id.isEmpty) continue;
+      final name =
+          (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
+              .toString()
+              .trim();
+      final overridden = applyDisplayNameOverrides(name);
+      map[id] = overridden.isNotEmpty ? overridden : unknownUserName;
+    }
+    return map;
+  }
+
+  Future<void> _loadRefereesForMatchKeys(List<String> keys) async {
+    if (keys.isEmpty) return;
+    try {
+      final linksRes = await _client
+          .from('nevobo_home_matches')
+          .select('match_key, fluiten_task_id, tellen_task_id')
+          .inFilter('match_key', keys);
+      final linkRows = (linksRes as List<dynamic>).cast<Map<String, dynamic>>();
+
+      final refereeTaskIdByKey = <String, int>{};
+      final tellerTaskIdByKey = <String, int>{};
+      final taskIds = <int>{};
+      for (final row in linkRows) {
+        final key = (row['match_key'] ?? '').toString();
+        if (key.isEmpty) continue;
+        final fluitenTaskId = (row['fluiten_task_id'] as num?)?.toInt();
+        final tellenTaskId = (row['tellen_task_id'] as num?)?.toInt();
+        if (fluitenTaskId != null) {
+          refereeTaskIdByKey[key] = fluitenTaskId;
+          taskIds.add(fluitenTaskId);
+        }
+        if (tellenTaskId != null) {
+          tellerTaskIdByKey[key] = tellenTaskId;
+          taskIds.add(tellenTaskId);
+        }
+      }
+
+      if (taskIds.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          for (final key in keys) {
+            _refereeNamesByMatchKey[key] = const [];
+            _tellerNamesByMatchKey[key] = const [];
+          }
+        });
+        return;
+      }
+
+      final signupRes = await _client
+          .from('club_task_signups')
+          .select('task_id, profile_id')
+          .inFilter('task_id', taskIds.toList());
+      final signupRows = (signupRes as List<dynamic>).cast<Map<String, dynamic>>();
+
+      final profileIds = <String>{};
+      for (final row in signupRows) {
+        final pid = row['profile_id']?.toString() ?? '';
+        if (pid.isNotEmpty) profileIds.add(pid);
+      }
+      final namesByProfile = await _loadProfileDisplayNames(profileIds);
+
+      final namesByTaskId = <int, List<String>>{};
+      for (final row in signupRows) {
+        final taskId = (row['task_id'] as num?)?.toInt();
+        final pid = row['profile_id']?.toString() ?? '';
+        if (taskId == null || pid.isEmpty) continue;
+        final name = (namesByProfile[pid] ?? unknownUserName).trim();
+        namesByTaskId.putIfAbsent(taskId, () => []).add(name);
+      }
+      for (final e in namesByTaskId.entries) {
+        e.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      }
+
+      if (!mounted) return;
+      setState(() {
+        for (final key in keys) {
+          final refereeTaskId = refereeTaskIdByKey[key];
+          final tellerTaskId = tellerTaskIdByKey[key];
+          _refereeNamesByMatchKey[key] = refereeTaskId == null
+              ? const []
+              : (namesByTaskId[refereeTaskId] ?? const []);
+          _tellerNamesByMatchKey[key] = tellerTaskId == null
+              ? const []
+              : (namesByTaskId[tellerTaskId] ?? const []);
+        }
+      });
+    } catch (_) {
+      // best effort
+    }
   }
 
   /// Compact mode chip that stays on one line (no wrapping like SegmentedButton).
@@ -423,11 +570,21 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     try {
       // Use the competition API here so uitslagen are reliable.
       final matches = await NevoboApi.fetchMatchesForTeamViaCompetitionApi(team: team);
+      final now = DateTime.now();
+      final upcomingKeys = matches
+          .where((m) {
+            final start = m.start;
+            if (start == null) return false;
+            return start.isAfter(now.subtract(const Duration(hours: 2)));
+          })
+          .map((m) => _matchKey(teamCode: code, start: m.start!))
+          .toList();
       if (!mounted) return;
       setState(() {
         _matchesByTeam[code] = matches;
         _matchesLoadingByTeam[code] = false;
       });
+      await _loadRefereesForMatchKeys(upcomingKeys);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -541,6 +698,9 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
       children: [
         ...visibleUpcoming.map((m) {
         final when = m.start == null ? 'Onbekende datum' : _formatDateTime(m.start!);
+        final key = m.start == null ? null : _matchKey(teamCode: code, start: m.start!);
+        final referees = key == null ? const <String>[] : (_refereeNamesByMatchKey[key] ?? const <String>[]);
+        final tellers = key == null ? const <String>[] : (_tellerNamesByMatchKey[key] ?? const <String>[]);
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: () => _showMatchDetail(m, teamCode: code),
@@ -560,6 +720,16 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                 ),
                 const SizedBox(height: 4),
                 Text(when, style: const TextStyle(color: AppColors.textSecondary)),
+                const SizedBox(height: 4),
+                Text(
+                  'Scheidsrechter: ${_formatRoleNames(referees)}',
+                  style: const TextStyle(color: AppColors.textSecondary),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Teller: ${_formatRoleNames(tellers)}',
+                  style: const TextStyle(color: AppColors.textSecondary),
+                ),
               ],
             ),
           ),

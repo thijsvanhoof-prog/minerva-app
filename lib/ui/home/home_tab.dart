@@ -476,6 +476,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         parsed.add(
           _HomeUpcomingMatch(
             matchKey: key,
+            teamCode: (row['team_code'] ?? '').toString(),
             startsAt: startsAt,
             summary: (row['summary'] ?? '').toString(),
             location: (row['location'] ?? '').toString(),
@@ -525,11 +526,29 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           )
           .toList();
 
+      // Bij Minerva vs Minerva alleen het item van het thuisteam tonen.
+      final filteredInternal = <_HomeUpcomingMatch>[];
+      for (final m in withNames) {
+        if (!_isInternalMinervaMatch(m.summary)) {
+          filteredInternal.add(m);
+          continue;
+        }
+        final parts = m.summary.split('-');
+        final homeCode = parts.isNotEmpty
+            ? _extractCodeFromSummarySide(parts.first)
+            : null;
+        final rowCode = _normalizeTeamCode(m.teamCode);
+        if (homeCode != null && rowCode.isNotEmpty && rowCode != homeCode) {
+          continue;
+        }
+        filteredInternal.add(m);
+      }
+
       // Toon alleen wedstrijden in de aankomende 2 weken.
       final nowLocal = DateTime.now();
       final endInclusive = nowLocal.add(const Duration(days: 14));
       final limited = <_HomeUpcomingMatch>[];
-      for (final m in withNames) {
+      for (final m in filteredInternal) {
         final d = m.startsAt.toLocal();
         if (d.isAfter(endInclusive)) break;
         limited.add(m);
@@ -1305,6 +1324,40 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (names.isEmpty) return 'Nog niet ingedeeld';
     if (names.length <= 2) return names.join(', ');
     return '${names.take(2).join(', ')} +${names.length - 2}';
+  }
+
+  String _normalizeTeamCode(String raw) {
+    final normalized = raw.trim().toUpperCase().replaceAll(' ', '');
+    if (normalized.startsWith('XR')) return 'MR${normalized.substring(2)}';
+    return normalized;
+  }
+
+  String? _extractCodeFromSummarySide(String side) {
+    final m = RegExp(
+      r'\b(HS|DS|JA|JB|JC|JD|MA|MB|MC|MD|MR|XR)\s*(\d+)\b',
+      caseSensitive: false,
+    ).firstMatch(side);
+    if (m == null) return null;
+    final prefix = (m.group(1) ?? '').toUpperCase();
+    final number = m.group(2) ?? '';
+    if (prefix.isEmpty || number.isEmpty) return null;
+    return _normalizeTeamCode('$prefix$number');
+  }
+
+  bool _isInternalMinervaMatch(String summary) {
+    final parts = summary.split('-');
+    if (parts.length < 2) return false;
+    final left = parts.first.toLowerCase();
+    final right = parts.sublist(1).join('-').toLowerCase();
+    return left.contains('minerva') && right.contains('minerva');
+  }
+
+  String _matchTitle(_HomeUpcomingMatch m) {
+    final summary = m.summary.trim();
+    if (summary.isNotEmpty) return NevoboApi.displayTeamName(summary);
+    final code = m.teamCode.trim();
+    if (code.isNotEmpty) return NevoboApi.displayTeamCode(code);
+    return 'Wedstrijd';
   }
 
   Future<void> _toggleAgendaRsvp(_AgendaItem item) async {
@@ -3761,13 +3814,16 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               : null,
                         ),
                         const SizedBox(height: 12),
+                        const Text(
+                          'Overzicht van de komende 14 dagen.',
+                          style: TextStyle(color: AppColors.textSecondary),
+                        ),
+                        const SizedBox(height: 10),
                         if (_upcomingMatchesError != null)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 12),
                             child: Text(
-                              'Kon aankomende wedstrijden niet laden.\n'
-                              'Controleer of `nevobo_home_matches` en `club_task_signups` beschikbaar zijn.\n'
-                              'Details: $_upcomingMatchesError',
+                              'Kon aankomende wedstrijden nu niet laden. Probeer straks opnieuw.',
                               style: const TextStyle(
                                 color: AppColors.textSecondary,
                               ),
@@ -3775,59 +3831,81 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           ),
                         if (_upcomingMatches.isEmpty)
                           const Text(
-                            'Geen aankomende wedstrijden gevonden.',
+                            'Geen aankomende wedstrijden in de komende 14 dagen.',
                             style: TextStyle(color: AppColors.textSecondary),
                           )
                         else
-                          ..._upcomingMatches.map((m) {
-                            final dt = m.startsAt.toLocal();
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 12),
-                              child: _CardBox(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
+                          ...(() {
+                            String? currentDayKey;
+                            final out = <Widget>[];
+                            for (final m in _upcomingMatches) {
+                              final dt = m.startsAt.toLocal();
+                              final dayKey = '${dt.year}-${dt.month}-${dt.day}';
+                              if (currentDayKey != dayKey) {
+                                currentDayKey = dayKey;
+                                out.add(
+                                  Padding(
+                                    padding: const EdgeInsets.only(
+                                      top: 4,
+                                      bottom: 8,
+                                    ),
+                                    child: Text(
                                       _formatMatchdayLabel(m.startsAt),
                                       style: const TextStyle(
                                         color: AppColors.textSecondary,
                                         fontWeight: FontWeight.w700,
                                       ),
                                     ),
-                                    const SizedBox(height: 6),
-                                    Text(
-                                      NevoboApi.displayTeamName(m.summary),
-                                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  ),
+                                );
+                              }
+                              out.add(
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: _CardBox(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          _matchTitle(m),
+                                          style: Theme.of(
+                                            context,
+                                          ).textTheme.titleMedium?.copyWith(
                                             color: AppColors.onBackground,
                                             fontWeight: FontWeight.w800,
                                           ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          '${_formatTime(dt)} • ${m.location.trim().isEmpty ? 'Locatie onbekend' : m.location.trim()}',
+                                          style: const TextStyle(
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 10),
+                                        Text(
+                                          'Scheidsrechter: ${_formatNamesCompact(m.fluitenNames)}',
+                                          style: const TextStyle(
+                                            color: AppColors.onBackground,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          'Teller: ${_formatNamesCompact(m.tellenNames)}',
+                                          style: const TextStyle(
+                                            color: AppColors.onBackground,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      '${_formatTime(dt)} • ${m.location.trim().isEmpty ? 'Locatie onbekend' : m.location.trim()}',
-                                      style: const TextStyle(color: AppColors.textSecondary),
-                                    ),
-                                    const SizedBox(height: 10),
-                                    Text(
-                                      'Scheidsrechter: ${_formatNamesCompact(m.fluitenNames)}',
-                                      style: const TextStyle(
-                                        color: AppColors.onBackground,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      'Teller: ${_formatNamesCompact(m.tellenNames)}',
-                                      style: const TextStyle(
-                                        color: AppColors.onBackground,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
+                                  ),
                                 ),
-                              ),
-                            );
-                          }),
+                              );
+                            }
+                            return out;
+                          })(),
                       ],
                     ),
                   ),
@@ -4203,6 +4281,7 @@ class _HighlightEditResult {
 
 class _HomeUpcomingMatch {
   final String matchKey;
+  final String teamCode;
   final DateTime startsAt;
   final String summary;
   final String location;
@@ -4213,6 +4292,7 @@ class _HomeUpcomingMatch {
 
   const _HomeUpcomingMatch({
     required this.matchKey,
+    required this.teamCode,
     required this.startsAt,
     required this.summary,
     required this.location,
@@ -4228,6 +4308,7 @@ class _HomeUpcomingMatch {
   }) {
     return _HomeUpcomingMatch(
       matchKey: matchKey,
+      teamCode: teamCode,
       startsAt: startsAt,
       summary: summary,
       location: location,

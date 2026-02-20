@@ -34,6 +34,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   final Map<String, String> _myStatusByMatchKey = {}; // match_key -> playing | coach (null = afwezig)
   final Map<String, List<String>> _playingNamesByMatchKey = {};
   final Map<String, List<String>> _coachNamesByMatchKey = {};
+  final Map<String, List<String>> _refereeNamesByMatchKey = {};
+  final Map<String, List<String>> _tellerNamesByMatchKey = {};
   final Map<String, bool> _cancelledByMatchKey = {}; // match_key -> true if cancelled
   final Map<String, String?> _cancelReasonByMatchKey = {};
   final Set<String> _expandedMatchKeys = {};
@@ -281,6 +283,101 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         ..clear()
         ..addAll(coachByKey);
     });
+  }
+
+  Future<void> _loadRefereesForMatches(List<_MatchRef> matches) async {
+    if (matches.isEmpty) return;
+    final keys = matches.map((m) => m.matchKey).toSet().toList();
+    if (keys.isEmpty) return;
+
+    try {
+      final linksRes = await _client
+          .from('nevobo_home_matches')
+          .select('match_key, fluiten_task_id, tellen_task_id')
+          .inFilter('match_key', keys);
+      final linkRows = (linksRes as List<dynamic>).cast<Map<String, dynamic>>();
+
+      final refereeTaskIdByKey = <String, int>{};
+      final tellerTaskIdByKey = <String, int>{};
+      final taskIds = <int>{};
+      for (final row in linkRows) {
+        final key = (row['match_key'] ?? '').toString();
+        if (key.isEmpty) continue;
+        final fluitenTaskId = (row['fluiten_task_id'] as num?)?.toInt();
+        final tellenTaskId = (row['tellen_task_id'] as num?)?.toInt();
+        if (fluitenTaskId != null) {
+          refereeTaskIdByKey[key] = fluitenTaskId;
+          taskIds.add(fluitenTaskId);
+        }
+        if (tellenTaskId != null) {
+          tellerTaskIdByKey[key] = tellenTaskId;
+          taskIds.add(tellenTaskId);
+        }
+      }
+
+      if (taskIds.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _refereeNamesByMatchKey
+            ..clear()
+            ..addEntries(keys.map((k) => MapEntry(k, const <String>[])));
+          _tellerNamesByMatchKey
+            ..clear()
+            ..addEntries(keys.map((k) => MapEntry(k, const <String>[])));
+        });
+        return;
+      }
+
+      final signupRes = await _client
+          .from('club_task_signups')
+          .select('task_id, profile_id')
+          .inFilter('task_id', taskIds.toList());
+      final signupRows = (signupRes as List<dynamic>).cast<Map<String, dynamic>>();
+
+      final profileIds = <String>{};
+      for (final row in signupRows) {
+        final pid = row['profile_id']?.toString() ?? '';
+        if (pid.isNotEmpty) profileIds.add(pid);
+      }
+      final namesByProfile = await _loadProfileDisplayNames(profileIds);
+
+      final namesByTaskId = <int, List<String>>{};
+      for (final row in signupRows) {
+        final taskId = (row['task_id'] as num?)?.toInt();
+        final pid = row['profile_id']?.toString() ?? '';
+        if (taskId == null || pid.isEmpty) continue;
+        final name = (namesByProfile[pid] ?? unknownUserName).trim();
+        namesByTaskId.putIfAbsent(taskId, () => []).add(name);
+      }
+      for (final e in namesByTaskId.entries) {
+        e.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      }
+
+      final byMatch = <String, List<String>>{};
+      final tellerByMatch = <String, List<String>>{};
+      for (final key in keys) {
+        final refereeTaskId = refereeTaskIdByKey[key];
+        final tellerTaskId = tellerTaskIdByKey[key];
+        byMatch[key] = refereeTaskId == null
+            ? const []
+            : (namesByTaskId[refereeTaskId] ?? const []);
+        tellerByMatch[key] = tellerTaskId == null
+            ? const []
+            : (namesByTaskId[tellerTaskId] ?? const []);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _refereeNamesByMatchKey
+          ..clear()
+          ..addAll(byMatch);
+        _tellerNamesByMatchKey
+          ..clear()
+          ..addAll(tellerByMatch);
+      });
+    } catch (_) {
+      // best effort: keep UI working without referee data
+    }
   }
 
   Future<void> _loadCancellationsForMatches(List<_MatchRef> matches) async {
@@ -657,6 +754,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       if (mounted) setState(() => _upcomingMatchRefs = matchRefs);
       await _loadCancellationsForMatches(matchRefs);
       await _loadAvailabilityForMatches(matchRefs);
+      await _loadRefereesForMatches(matchRefs);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -674,6 +772,12 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final d = dt.toLocal();
     String two(int v) => v.toString().padLeft(2, '0');
     return '${two(d.day)}-${two(d.month)}-${d.year} ${two(d.hour)}:${two(d.minute)}';
+  }
+
+  String _formatRoleNames(List<String> names) {
+    if (names.isEmpty) return 'Nog niet ingedeeld';
+    if (names.length <= 2) return names.join(', ');
+    return '${names.take(2).join(', ')} +${names.length - 2}';
   }
 
   Widget _buildVoorAlleWedstrijdenBar() {
@@ -1087,6 +1191,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                     final isPresent = myStatus == 'playing' || myStatus == 'coach';
                     final playing = _playingNamesByMatchKey[key] ?? const [];
                     final coaches = _coachNamesByMatchKey[key] ?? const [];
+                    final referees = _refereeNamesByMatchKey[key] ?? const [];
+                    final tellers = _tellerNamesByMatchKey[key] ?? const [];
                     final hasCounts = playing.isNotEmpty || coaches.isNotEmpty;
                     final expanded = _expandedMatchKeys.contains(key);
                     final summary = _matchAttendanceSummary(playing, coaches);
@@ -1154,6 +1260,22 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                               style: const TextStyle(color: AppColors.textSecondary),
                             ),
                           ],
+                          const SizedBox(height: 4),
+                          Text(
+                            'Scheidsrechter: ${_formatRoleNames(referees)}',
+                            style: const TextStyle(
+                              color: AppColors.textSecondary,
+                              fontSize: 13,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Teller: ${_formatRoleNames(tellers)}',
+                            style: const TextStyle(
+                              color: AppColors.textSecondary,
+                              fontSize: 13,
+                            ),
+                          ),
                           if (isCancelled && cancelReason != null && cancelReason.trim().isNotEmpty) ...[
                             const SizedBox(height: 6),
                             Text(
