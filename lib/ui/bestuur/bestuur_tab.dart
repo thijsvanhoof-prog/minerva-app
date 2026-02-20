@@ -1215,11 +1215,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
           isError: true,
         );
       } else {
-        showTopMessage(
-          context,
-          'Geen extra accounts beschikbaar voor deze commissie (geladen: ${_allProfiles.length}, al in commissie: ${alreadyIn.length}).',
-          isError: true,
-        );
+        showTopMessage(context, 'Iedereen zit al in deze commissie.', isError: true);
       }
       return;
     }
@@ -1238,54 +1234,64 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
                   .toList();
           return AlertDialog(
             title: Text('Lid toevoegen aan ${_committeeLabel(committeeKey)}'),
-            content: SizedBox(
-              width: double.maxFinite,
-              height: 320,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      prefixIcon: Icon(Icons.search),
-                      labelText: 'Zoek op naam of e-mail',
+            content: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+                border: Border.all(
+                  color: AppColors.primary.withValues(alpha: 0.22),
+                  width: 1.1,
+                ),
+              ),
+              padding: const EdgeInsets.all(10),
+              child: SizedBox(
+                width: double.maxFinite,
+                height: 320,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        labelText: 'Zoek op naam of e-mail',
+                      ),
+                      onChanged: (v) => setDialogState(() => search = v),
                     ),
-                    onChanged: (v) => setDialogState(() => search = v),
-                  ),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: list.isEmpty
-                        ? const Center(
-                            child: Text(
-                              'Geen leden gevonden.',
-                              style: TextStyle(color: AppColors.textSecondary),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: list.isEmpty
+                          ? const Center(
+                              child: Text(
+                                'Geen leden gevonden.',
+                                style: TextStyle(color: AppColors.textSecondary),
+                              ),
+                            )
+                          : ListView.builder(
+                              itemCount: list.length,
+                              itemBuilder: (context, i) {
+                                final p = list[i];
+                                return ListTile(
+                                  dense: true,
+                                  title: Text(
+                                    p.name,
+                                    style: const TextStyle(fontWeight: FontWeight.w600),
+                                  ),
+                                  subtitle: p.email != null
+                                      ? Text(
+                                          p.email!,
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        )
+                                      : null,
+                                  onTap: () => Navigator.of(context).pop(p),
+                                );
+                              },
                             ),
-                          )
-                        : ListView.builder(
-                            itemCount: list.length,
-                            itemBuilder: (context, i) {
-                              final p = list[i];
-                              return ListTile(
-                                dense: true,
-                                title: Text(
-                                  p.name,
-                                  style: const TextStyle(fontWeight: FontWeight.w600),
-                                ),
-                                subtitle: p.email != null
-                                    ? Text(
-                                        p.email!,
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          color: AppColors.textSecondary,
-                                        ),
-                                      )
-                                    : null,
-                                onTap: () => Navigator.of(context).pop(p),
-                              );
-                            },
-                          ),
-                  ),
-                ],
+                    ),
+                  ],
+                ),
               ),
             ),
             actions: [

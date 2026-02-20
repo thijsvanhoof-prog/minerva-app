@@ -34,7 +34,7 @@ class GlassCard extends StatelessWidget {
         color: AppColors.card,
         border: showBorder
             ? Border.all(
-                color: AppColors.darkBlue.withValues(alpha: 0.15),
+                color: AppColors.primary.withValues(alpha: 0.55),
                 width: AppColors.cardBorderWidth,
               )
             : null,
@@ -51,6 +51,15 @@ class GlassCard extends StatelessWidget {
       child: ClipRRect(
         borderRadius: r,
         child: Container(
+          decoration: showBorder
+              ? BoxDecoration(
+                  borderRadius: r,
+                  border: Border.all(
+                    color: AppColors.primary.withValues(alpha: 0.22),
+                    width: 1,
+                  ),
+                )
+              : null,
           padding: padding,
           child: child,
         ),

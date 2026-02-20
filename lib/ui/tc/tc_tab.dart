@@ -23,7 +23,6 @@ class _TcTabState extends State<TcTab> {
   String? _error;
 
   List<_TeamOption> _teams = const [];
-  List<_Member> _unassignedMembers = const [];
   /// Leden zonder team én zonder commissie (voor aparte lijst)
   List<_Member> _unassignedNoCommittee = const [];
   /// Alle profielen (voor "lid toevoegen aan team")
@@ -178,7 +177,6 @@ class _TcTabState extends State<TcTab> {
         if (mounted) {
           setState(() {
             _teams = const [];
-            _unassignedMembers = const [];
             _unassignedNoCommittee = const [];
             _allMembers = const [];
             _teamAssignments = const {};
@@ -329,7 +327,6 @@ class _TcTabState extends State<TcTab> {
       if (mounted) {
         setState(() {
           _teams = teams;
-          _unassignedMembers = unassigned;
           _unassignedNoCommittee = unassignedNoCommittee;
           _allMembers = allMembers;
           _teamAssignments = teamAssignments;
@@ -517,10 +514,6 @@ class _TcTabState extends State<TcTab> {
       });
 
       if (!mounted) return;
-      setState(() {
-        _unassignedMembers =
-            _unassignedMembers.where((m) => m.profileId != member.profileId).toList();
-      });
       showTopMessage(context, 'Lid gekoppeld aan team.');
       await _load(); // ensure in-app refresh reflects the change immediately
       // If the current user just got linked (or role changed), refresh user context

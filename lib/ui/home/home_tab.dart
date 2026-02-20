@@ -46,6 +46,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   bool _loadingHighlights = true;
   String? _highlightsError;
   List<_Highlight> _highlights = const [];
+  bool _loadingUpcomingMatches = true;
+  String? _upcomingMatchesError;
+  List<_HomeUpcomingMatch> _upcomingMatches = const [];
 
   bool _loadingAgenda = true;
   String? _agendaError;
@@ -136,7 +139,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   }
 
   Future<void> _refreshHome() async {
-    await _loadHighlights();
+    await _loadUpcomingMatches();
     await _loadAgenda();
     await _loadNews();
   }
@@ -154,7 +157,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   void initState() {
     super.initState();
     _initTabController();
-    _loadHighlights();
+    _loadUpcomingMatches();
     _loadAgenda();
     _loadNews();
   }
@@ -433,6 +436,116 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         _myRsvpAgendaIds = const {};
         _agendaError = e.toString();
         _loadingAgenda = false;
+      });
+    }
+  }
+
+  Future<void> _loadUpcomingMatches() async {
+    if (mounted) {
+      setState(() {
+        _loadingUpcomingMatches = true;
+        _upcomingMatchesError = null;
+      });
+    }
+
+    try {
+      final nowUtc = DateTime.now().toUtc();
+      final res = await _client
+          .from('nevobo_home_matches')
+          .select(
+            'match_key, team_code, starts_at, summary, location, fluiten_task_id, tellen_task_id',
+          )
+          .gte(
+            'starts_at',
+            nowUtc.subtract(const Duration(hours: 2)).toIso8601String(),
+          )
+          .order('starts_at', ascending: true)
+          .limit(120);
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+
+      final parsed = <_HomeUpcomingMatch>[];
+      final taskIds = <int>{};
+      for (final row in rows) {
+        final key = (row['match_key'] ?? '').toString();
+        final startsAt = DateTime.tryParse((row['starts_at'] ?? '').toString());
+        if (key.isEmpty || startsAt == null) continue;
+        final fluitenId = (row['fluiten_task_id'] as num?)?.toInt();
+        final tellenId = (row['tellen_task_id'] as num?)?.toInt();
+        if (fluitenId != null) taskIds.add(fluitenId);
+        if (tellenId != null) taskIds.add(tellenId);
+        parsed.add(
+          _HomeUpcomingMatch(
+            matchKey: key,
+            startsAt: startsAt,
+            summary: (row['summary'] ?? '').toString(),
+            location: (row['location'] ?? '').toString(),
+            fluitenTaskId: fluitenId,
+            tellenTaskId: tellenId,
+            fluitenNames: const [],
+            tellenNames: const [],
+          ),
+        );
+      }
+
+      final namesByTaskId = <int, List<String>>{};
+      if (taskIds.isNotEmpty) {
+        final sRes = await _client
+            .from('club_task_signups')
+            .select('task_id, profile_id')
+            .inFilter('task_id', taskIds.toList());
+        final sRows = (sRes as List<dynamic>).cast<Map<String, dynamic>>();
+        final profileIds = <String>{};
+        for (final row in sRows) {
+          final pid = row['profile_id']?.toString() ?? '';
+          if (pid.isNotEmpty) profileIds.add(pid);
+        }
+        final namesByProfileId = await _loadProfileDisplayNames(profileIds);
+        for (final row in sRows) {
+          final taskId = (row['task_id'] as num?)?.toInt();
+          final pid = row['profile_id']?.toString() ?? '';
+          if (taskId == null || pid.isEmpty) continue;
+          final name = (namesByProfileId[pid] ?? unknownUserName).trim();
+          namesByTaskId.putIfAbsent(taskId, () => []).add(name);
+        }
+        for (final e in namesByTaskId.entries) {
+          e.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+        }
+      }
+
+      final withNames = parsed
+          .map(
+            (m) => m.copyWith(
+              fluitenNames: m.fluitenTaskId == null
+                  ? const []
+                  : (namesByTaskId[m.fluitenTaskId!] ?? const []),
+              tellenNames: m.tellenTaskId == null
+                  ? const []
+                  : (namesByTaskId[m.tellenTaskId!] ?? const []),
+            ),
+          )
+          .toList();
+
+      // Toon alleen wedstrijden in de aankomende 2 weken.
+      final nowLocal = DateTime.now();
+      final endInclusive = nowLocal.add(const Duration(days: 14));
+      final limited = <_HomeUpcomingMatch>[];
+      for (final m in withNames) {
+        final d = m.startsAt.toLocal();
+        if (d.isAfter(endInclusive)) break;
+        limited.add(m);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _upcomingMatches = limited;
+        _loadingUpcomingMatches = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _upcomingMatches = const [];
+        _upcomingMatchesError = e.toString();
+        _loadingUpcomingMatches = false;
       });
     }
   }
@@ -1170,6 +1283,28 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final d = dt.toLocal();
     String two(int v) => v.toString().padLeft(2, '0');
     return '${two(d.hour)}:${two(d.minute)}';
+  }
+
+  String _formatMatchdayLabel(DateTime dt) {
+    final d = dt.toLocal();
+    const weekdays = [
+      'Maandag',
+      'Dinsdag',
+      'Woensdag',
+      'Donderdag',
+      'Vrijdag',
+      'Zaterdag',
+      'Zondag',
+    ];
+    final dayName = weekdays[d.weekday - 1];
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '$dayName ${two(d.day)}-${two(d.month)}-${d.year}';
+  }
+
+  String _formatNamesCompact(List<String> names) {
+    if (names.isEmpty) return 'Nog niet ingedeeld';
+    if (names.length <= 2) return names.join(', ');
+    return '${names.take(2).join(', ')} +${names.length - 2}';
   }
 
   Future<void> _toggleAgendaRsvp(_AgendaItem item) async {
@@ -3515,10 +3650,28 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     final userContext = AppUserContext.of(context);
-    final canManageHighlights = userContext.canManageHighlights;
     final canManageAgenda = userContext.canManageAgenda;
     final canManageNews = userContext.canManageNews;
     final canViewAgendaRsvps = userContext.canViewAgendaRsvps;
+
+    // Keep legacy highlight symbols referenced while Home now focuses on wedstrijden/agenda/nieuws.
+    assert(() {
+      final keepFields = (_loadingHighlights, _highlightsError, _highlights);
+      final keepMethods = (
+        _showHighlightDetail,
+        _confirmDeleteHighlight,
+        _openEditHighlightDialog,
+      );
+      final keepWidget = _HighlightCard(
+        item: _mockHighlights().first,
+        canManage: false,
+        onMore: () {},
+        onEdit: () {},
+        onDelete: () {},
+      );
+      return keepFields.hashCode ^ keepMethods.hashCode ^ keepWidget.hashCode !=
+          -1;
+    }());
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -3541,8 +3694,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   const SizedBox(height: 4),
                   Text(
                     widget.showOnlyHighlightsAndNews
-                        ? 'Updates en nieuws vanuit de vereniging.'
-                        : 'Updates, agenda en nieuws vanuit de vereniging.',
+                        ? 'Aankomende wedstrijden en nieuws vanuit de vereniging.'
+                        : 'Wedstrijden, agenda en nieuws vanuit de vereniging.',
                     style: TextStyle(
                       color: AppColors.primary.withValues(alpha: 0.9),
                     ),
@@ -3568,9 +3721,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   ),
                   indicatorSize: TabBarIndicatorSize.tab,
                   tabs: widget.showOnlyHighlightsAndNews
-                      ? const [Tab(text: 'Uitgelicht'), Tab(text: 'Nieuws')]
+                      ? const [Tab(text: 'Wedstrijden'), Tab(text: 'Nieuws')]
                       : const [
-                          Tab(text: 'Uitgelicht'),
+                          Tab(text: 'Wedstrijden'),
                           Tab(text: 'Agenda'),
                           Tab(text: 'Nieuws'),
                         ],
@@ -3581,7 +3734,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               child: TabBarView(
                 controller: _tabController,
                 children: [
-                  // Uitgelicht
+                  // Aankomende wedstrijden
                   RefreshIndicator(
                     color: AppColors.primary,
                     onRefresh: _refreshHome,
@@ -3595,61 +3748,83 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                       ),
                       children: [
                         _HomeTabHeader(
-                          title: 'Uitgelicht',
-                          trailing: canManageHighlights
-                              ? IconButton(
-                                  tooltip: 'Punt toevoegen',
-                                  icon: const Icon(Icons.add_circle_outline),
-                                  color: AppColors.primary,
-                                  onPressed: () => _openEditHighlightDialog(
-                                    canManage: true,
-                                    existing: null,
+                          title: 'Aankomende wedstrijden',
+                          trailing: _loadingUpcomingMatches
+                              ? const SizedBox(
+                                  height: 18,
+                                  width: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppColors.primary,
                                   ),
                                 )
-                              : (_loadingHighlights
-                                    ? const SizedBox(
-                                        height: 18,
-                                        width: 18,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          color: AppColors.primary,
-                                        ),
-                                      )
-                                    : null),
+                              : null,
                         ),
                         const SizedBox(height: 12),
-                        if (_highlightsError != null && canManageHighlights)
+                        if (_upcomingMatchesError != null)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 12),
                             child: Text(
-                              'Let op: highlights tabel niet beschikbaar.\n'
-                              'Voer supabase/home_highlights_minimal.sql uit in Supabase → SQL Editor.\n'
-                              'Details: $_highlightsError',
+                              'Kon aankomende wedstrijden niet laden.\n'
+                              'Controleer of `nevobo_home_matches` en `club_task_signups` beschikbaar zijn.\n'
+                              'Details: $_upcomingMatchesError',
                               style: const TextStyle(
                                 color: AppColors.textSecondary,
                               ),
                             ),
                           ),
-                        if (_highlights.isEmpty)
+                        if (_upcomingMatches.isEmpty)
                           const Text(
-                            'Geen uitgelichte items.',
+                            'Geen aankomende wedstrijden gevonden.',
                             style: TextStyle(color: AppColors.textSecondary),
                           )
                         else
-                          ..._highlights.map((h) {
+                          ..._upcomingMatches.map((m) {
+                            final dt = m.startsAt.toLocal();
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 12),
-                              child: _HighlightCard(
-                                item: h,
-                                canManage: canManageHighlights,
-                                onMore: () => _showHighlightDetail(h),
-                                onEdit: () => _openEditHighlightDialog(
-                                  canManage: canManageHighlights,
-                                  existing: h,
+                              child: _CardBox(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _formatMatchdayLabel(m.startsAt),
+                                      style: const TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      NevoboApi.displayTeamName(m.summary),
+                                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                            color: AppColors.onBackground,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '${_formatTime(dt)} • ${m.location.trim().isEmpty ? 'Locatie onbekend' : m.location.trim()}',
+                                      style: const TextStyle(color: AppColors.textSecondary),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Text(
+                                      'Scheidsrechter: ${_formatNamesCompact(m.fluitenNames)}',
+                                      style: const TextStyle(
+                                        color: AppColors.onBackground,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Teller: ${_formatNamesCompact(m.tellenNames)}',
+                                      style: const TextStyle(
+                                        color: AppColors.onBackground,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                onDelete: h.id != null
-                                    ? () => _confirmDeleteHighlight(h)
-                                    : null,
                               ),
                             );
                           }),
@@ -4024,6 +4199,44 @@ class _HighlightEditResult {
         iconText: iconText,
         visibleUntil: visibleUntil,
       );
+}
+
+class _HomeUpcomingMatch {
+  final String matchKey;
+  final DateTime startsAt;
+  final String summary;
+  final String location;
+  final int? fluitenTaskId;
+  final int? tellenTaskId;
+  final List<String> fluitenNames;
+  final List<String> tellenNames;
+
+  const _HomeUpcomingMatch({
+    required this.matchKey,
+    required this.startsAt,
+    required this.summary,
+    required this.location,
+    required this.fluitenTaskId,
+    required this.tellenTaskId,
+    required this.fluitenNames,
+    required this.tellenNames,
+  });
+
+  _HomeUpcomingMatch copyWith({
+    List<String>? fluitenNames,
+    List<String>? tellenNames,
+  }) {
+    return _HomeUpcomingMatch(
+      matchKey: matchKey,
+      startsAt: startsAt,
+      summary: summary,
+      location: location,
+      fluitenTaskId: fluitenTaskId,
+      tellenTaskId: tellenTaskId,
+      fluitenNames: fluitenNames ?? this.fluitenNames,
+      tellenNames: tellenNames ?? this.tellenNames,
+    );
+  }
 }
 
 List<_Highlight> _mockHighlights() => const [
