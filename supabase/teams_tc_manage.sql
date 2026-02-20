@@ -4,6 +4,7 @@
 -- Vereist: committee_members tabel met technische-commissie leden.
 
 drop policy if exists "teams_manage_admins" on public.teams;
+drop policy if exists "teams_manage_tc" on public.teams;
 
 -- Global admins kunnen alles.
 create policy "teams_manage_admins"

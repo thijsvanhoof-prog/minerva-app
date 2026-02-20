@@ -3,10 +3,12 @@ import 'dart:ui';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_ui.dart';
 import 'package:minerva_app/ui/auth/auth_gate.dart';
 import 'package:minerva_app/ui/notifications/notification_service.dart';
@@ -16,6 +18,14 @@ import 'package:minerva_app/ui/user_app_bootstrap.dart';
 Future<void> main() async {
   return runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
+
+    // Statusbalk: donkerblauwe achtergrond + witte iconen (tijd, batterij, wifi).
+    // Op iOS wordt statusBarColor genegeerd; Info.plist UIStatusBarStyleLightContent + donkerblauwe strook in shell doen de rest.
+    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+      statusBarColor: AppColors.darkBlue,
+      statusBarIconBrightness: Brightness.light,
+      statusBarBrightness: Brightness.dark,
+    ));
 
     FlutterError.onError = (details) {
       FlutterError.presentError(details);

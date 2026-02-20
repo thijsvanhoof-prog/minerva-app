@@ -58,7 +58,7 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: SafeArea(
-        top: true,
+        top: false,
         bottom: false,
         child: Column(
           children: [
@@ -962,6 +962,10 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     'technische-commissie',
     'communicatie',
     'wedstrijdzaken',
+    'evenementen',
+    'jeugdcommissie',
+    'scheidsrechters-tellers',
+    'vrijwilligers',
   ];
 
   @override
@@ -978,6 +982,12 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     if (c == 'tc' || c.contains('technische')) return 'technische-commissie';
     if (c.contains('communicatie')) return 'communicatie';
     if (c.contains('wedstrijd')) return 'wedstrijdzaken';
+    if (c.contains('evenement')) return 'evenementen';
+    if (c == 'jeugd' || c.contains('jeugdcommissie')) return 'jeugdcommissie';
+    if ((c.contains('scheidsrechter') && c.contains('teller')) || c.contains('scheidsrechters-tellers')) {
+      return 'scheidsrechters-tellers';
+    }
+    if (c.contains('vrijwilliger')) return 'vrijwilligers';
     return c;
   }
 
@@ -991,6 +1001,14 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
         return 'Communicatie commissie';
       case 'wedstrijdzaken':
         return 'Wedstrijdzaken';
+      case 'evenementen':
+        return 'Evenementen commissie';
+      case 'jeugdcommissie':
+        return 'Jeugdcommissie';
+      case 'scheidsrechters-tellers':
+        return 'Scheidsrechters/Tellers';
+      case 'vrijwilligers':
+        return 'Vrijwilligers';
       default:
         return value;
     }
@@ -1116,7 +1134,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
         return;
       }
 
-      final committeeKeys = <String>{};
+      final committeeKeys = <String>{..._manageableCommittees};
       final profileIds = <String>{};
       for (final row in rows) {
         final key = _normalizeCommittee(row['committee_name']?.toString() ?? '');

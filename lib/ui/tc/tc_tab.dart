@@ -18,6 +18,8 @@ class TcTab extends StatefulWidget {
 
 class _TcTabState extends State<TcTab> {
   final SupabaseClient _client = Supabase.instance.client;
+  static const int _virtualVolleystarsTeamId = -100001;
+  static const int _virtualRecreantenNietCompTeamId = -100002;
 
   bool _loading = true;
   String? _error;
@@ -34,6 +36,22 @@ class _TcTabState extends State<TcTab> {
   String _teamQuery = '';
   String? _lastProfileId;
   int? _expandedTeamId;
+
+  String _normalizeAccountRole(dynamic value) {
+    final raw = (value ?? '').toString().trim().toLowerCase();
+    if (raw.isEmpty) return '';
+    if (raw == 'ouder' || raw == 'parent') return 'ouder';
+    if (raw == 'supporter') return 'supporter';
+    if (raw == 'member' || raw == 'lid') return 'member';
+    return raw;
+  }
+
+  bool _isVisibleInTcUnassigned(Map<String, dynamic>? profile) {
+    final role = _normalizeAccountRole(
+      profile?['account_role'] ?? profile?['profile_role'] ?? profile?['role_type'],
+    );
+    return role != 'ouder' && role != 'supporter';
+  }
 
   @override
   void initState() {
@@ -109,6 +127,7 @@ class _TcTabState extends State<TcTab> {
           'full_name': display,
           'name': display,
           'email': email,
+          'account_role': (r['account_role'] ?? r['profile_role'] ?? r['role_type']),
         };
       }).where((r) => (r['id']?.toString().isNotEmpty ?? false)).toList();
     }
@@ -134,6 +153,10 @@ class _TcTabState extends State<TcTab> {
 
     // 3) Last fallback: direct select (can be limited by RLS)
     for (final select in const [
+      'id, display_name, full_name, email, account_role',
+      'id, display_name, email, account_role',
+      'id, full_name, email, account_role',
+      'id, name, email, account_role',
       'id, display_name, full_name, email',
       'id, display_name, email',
       'id, full_name, email',
@@ -154,6 +177,7 @@ class _TcTabState extends State<TcTab> {
             'full_name': display,
             'name': display,
             'email': email,
+            'account_role': p['account_role'],
           };
         }).where((r) => (r['id']?.toString().isNotEmpty ?? false)).toList();
         if (list.isNotEmpty) return list;
@@ -192,6 +216,10 @@ class _TcTabState extends State<TcTab> {
       List<Map<String, dynamic>> profiles = await _loadProfilesForTc();
       if (profiles.isEmpty) {
         for (final select in const [
+          'id, display_name, full_name, email, account_role',
+          'id, display_name, email, account_role',
+          'id, full_name, email, account_role',
+          'id, name, email, account_role',
           'id, display_name, full_name, email',
           'id, display_name, email',
           'id, full_name, email',
@@ -245,7 +273,9 @@ class _TcTabState extends State<TcTab> {
             ? 'trainer'
             : (role == 'trainer'
                 ? 'trainer'
-                : (role == 'trainingslid' ? 'trainingslid' : 'player'));
+                : (role == 'trainingslid'
+                    ? 'trainingslid'
+                    : (role == 'supporter' ? 'supporter' : 'player')));
         teamAssignments.putIfAbsent(tid, () => []).add(
           _AssignedMember(
             profileId: pid,
@@ -264,6 +294,7 @@ class _TcTabState extends State<TcTab> {
         final id = p['id']?.toString() ?? '';
         if (id.isEmpty) continue;
         if (assigned.contains(id)) continue;
+        if (!_isVisibleInTcUnassigned(p)) continue;
 
         final name =
             (p['display_name'] ?? p['full_name'] ?? p['name'] ?? '').toString().trim();
@@ -288,6 +319,7 @@ class _TcTabState extends State<TcTab> {
           .toSet();
       final idsNoTeamNoCommittee = allProfileIds
           .where((id) => !assigned.contains(id) && !profileIdsInCommittee.contains(id))
+          .where((id) => _isVisibleInTcUnassigned(profileById[id]))
           .toSet();
       final namesNoTeamNoCommittee = await _loadDisplayNamesForProfileIds(idsNoTeamNoCommittee);
       final unassignedNoCommittee = idsNoTeamNoCommittee.map((id) {
@@ -357,15 +389,12 @@ class _TcTabState extends State<TcTab> {
         final list = all
             .map((t) {
               final raw = t.name.trim();
-              final lower = raw.toLowerCase();
-              final label = lower == 'recreanten trainingsgroep'
-                  ? 'Recreanten (niet competitie)'
-                  : raw;
+              final label = _normalizeTeamLabel(raw);
               return _TeamOption(t.teamId, label);
             })
             .toList()
           ..sort((a, b) => NevoboApi.compareTeamNames(a.label, b.label, volleystarsLast: true));
-        return list;
+        return _ensureSpecialTrainingGroupsVisible(list);
       }
     } catch (_) {}
 
@@ -390,18 +419,94 @@ class _TcTabState extends State<TcTab> {
             final name = (row[nameField] as String?) ?? '';
             final nevoboCode = (row['nevobo_code'] as String?)?.trim();
             final label = name.trim().isNotEmpty
-                ? name.trim()
+                ? _normalizeTeamLabel(name.trim())
                 : (nevoboCode?.isNotEmpty == true ? nevoboCode! : '(naam ontbreekt)');
             list.add(_TeamOption(id, label));
           }
           if (list.isNotEmpty) {
             list.sort((a, b) => NevoboApi.compareTeamNames(a.label, b.label, volleystarsLast: true));
-            return list;
+            return _ensureSpecialTrainingGroupsVisible(list);
           }
         } catch (_) {}
       }
     }
     return const [];
+  }
+
+  String _normalizeTeamLabel(String raw) {
+    final lower = raw.trim().toLowerCase();
+    if (lower == 'recreanten trainingsgroep') return 'Recreanten (niet competitie)';
+    return raw.trim();
+  }
+
+  Future<List<_TeamOption>> _ensureSpecialTrainingGroupsVisible(List<_TeamOption> base) async {
+    final byId = <int, _TeamOption>{for (final t in base) t.teamId: t};
+    bool hasVolleystars = base.any((t) => t.label.trim().toLowerCase() == 'volleystars');
+    bool hasRecreantenNietComp = base.any(
+      (t) => t.label.trim().toLowerCase() == 'recreanten (niet competitie)',
+    );
+    if (hasVolleystars && hasRecreantenNietComp) return base;
+
+    const idFields = ['team_id', 'id'];
+    const nameFields = ['team_name', 'name', 'short_name', 'code', 'team_code', 'abbreviation'];
+    for (final idField in idFields) {
+      for (final nameField in nameFields) {
+        try {
+          final res = await _client.from('teams').select('$idField, $nameField');
+          final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+          for (final row in rows) {
+            final id = (row[idField] as num?)?.toInt();
+            if (id == null) continue;
+            final raw = (row[nameField] ?? '').toString().trim();
+            if (raw.isEmpty) continue;
+            final normalized = _normalizeTeamLabel(raw);
+            final lower = normalized.toLowerCase();
+            final isWanted = lower == 'volleystars' || lower == 'recreanten (niet competitie)';
+            if (!isWanted) continue;
+            byId[id] = _TeamOption(id, normalized);
+            if (lower == 'volleystars') hasVolleystars = true;
+            if (lower == 'recreanten (niet competitie)') hasRecreantenNietComp = true;
+          }
+          if (hasVolleystars && hasRecreantenNietComp) break;
+        } catch (_) {
+          // try next candidate
+        }
+      }
+      if (hasVolleystars && hasRecreantenNietComp) break;
+    }
+
+    // Als aanmaken/lezen door policies niet lukt, toon ze alsnog virtueel in TC.
+    if (!hasVolleystars) {
+      byId[_virtualVolleystarsTeamId] = const _TeamOption(_virtualVolleystarsTeamId, 'Volleystars');
+    }
+    if (!hasRecreantenNietComp) {
+      byId[_virtualRecreantenNietCompTeamId] =
+          const _TeamOption(_virtualRecreantenNietCompTeamId, 'Recreanten (niet competitie)');
+    }
+
+    final out = byId.values.toList()
+      ..sort((a, b) => NevoboApi.compareTeamNames(a.label, b.label, volleystarsLast: true));
+    return out;
+  }
+
+  Future<int?> _resolveTeamIdForWrite(int teamId, String teamLabel) async {
+    if (teamId > 0) return teamId;
+
+    // Bij virtuele teams eerst proberen ze echt aan te maken en opnieuw op te halen.
+    await _ensureTcTrainingGroups();
+    final teams = await _fetchTeams();
+    if (mounted) {
+      setState(() {
+        _teams = teams;
+      });
+    }
+
+    final normalized = _normalizeTeamLabel(teamLabel).toLowerCase();
+    for (final t in teams) {
+      if (t.teamId <= 0) continue;
+      if (_normalizeTeamLabel(t.label).toLowerCase() == normalized) return t.teamId;
+    }
+    return null;
   }
 
   Future<void> _ensureTcTrainingGroups() async {
@@ -445,79 +550,140 @@ class _TcTabState extends State<TcTab> {
 
     var selectedTeamId = _teams.first.teamId;
     var selectedRole = 'player';
+    var onlySupporter = false;
 
     final result = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Koppelen aan team'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              member.name,
-              style: const TextStyle(fontWeight: FontWeight.w800),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text('Koppelen aan team'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    member.name,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  if (member.email != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      member.email!,
+                      style: const TextStyle(color: AppColors.textSecondary),
+                    ),
+                  ],
+                  const SizedBox(height: 14),
+                  if (!onlySupporter) ...[
+                    DropdownButtonFormField<int>(
+                      value: selectedTeamId,
+                      isExpanded: true,
+                      items: _teams
+                          .map(
+                            (t) => DropdownMenuItem<int>(
+                              value: t.teamId,
+                              child: Text(
+                                NevoboApi.displayTeamName(t.label),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          )
+                          .toList(),
+                      selectedItemBuilder: (context) => _teams
+                          .map(
+                            (t) => Text(
+                              NevoboApi.displayTeamName(t.label),
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (v) => setDialogState(() => selectedTeamId = v ?? selectedTeamId),
+                      decoration: const InputDecoration(labelText: 'Team'),
+                    ),
+                    const SizedBox(height: 10),
+                    DropdownButtonFormField<String>(
+                      value: selectedRole,
+                      isExpanded: true,
+                      items: const [
+                        DropdownMenuItem(value: 'player', child: Text('Speler')),
+                        DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
+                        DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
+                        DropdownMenuItem(value: 'supporter', child: Text('Supporter')),
+                      ],
+                      onChanged: (v) => setDialogState(() => selectedRole = v ?? selectedRole),
+                      decoration: const InputDecoration(labelText: 'Rol'),
+                    ),
+                  ] else
+                    Text(
+                      'Alleen als supporter (niet aan een team gekoppeld).',
+                      style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
+                    ),
+                  const SizedBox(height: 16),
+                  CheckboxListTile(
+                    value: onlySupporter,
+                    onChanged: (v) => setDialogState(() {
+                      onlySupporter = v ?? false;
+                    }),
+                    title: const Text('Supporter (geen team)'),
+                    controlAffinity: ListTileControlAffinity.leading,
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                  ),
+                ],
+              ),
             ),
-            if (member.email != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                member.email!,
-                style: const TextStyle(color: AppColors.textSecondary),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Annuleren'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Koppelen'),
               ),
             ],
-            const SizedBox(height: 14),
-            DropdownButtonFormField<int>(
-              initialValue: selectedTeamId,
-              items: _teams
-                  .map(
-                    (t) => DropdownMenuItem<int>(
-                      value: t.teamId,
-                      child: Text(NevoboApi.displayTeamName(t.label)),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (v) => selectedTeamId = v ?? selectedTeamId,
-              decoration: const InputDecoration(labelText: 'Team'),
-            ),
-            const SizedBox(height: 10),
-            DropdownButtonFormField<String>(
-              initialValue: selectedRole,
-              items: const [
-                DropdownMenuItem(value: 'player', child: Text('Speler')),
-                DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
-                DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
-              ],
-              onChanged: (v) => selectedRole = v ?? selectedRole,
-              decoration: const InputDecoration(labelText: 'Rol'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Annuleren'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Koppelen'),
-          ),
-        ],
+          );
+        },
       ),
     );
 
     if (result != true) return;
 
     try {
-      await _client.from('team_members').insert({
-        'team_id': selectedTeamId,
-        'profile_id': member.profileId,
-        'role': selectedRole,
-      });
-
-      if (!mounted) return;
-      showTopMessage(context, 'Lid gekoppeld aan team.');
-      await _load(); // ensure in-app refresh reflects the change immediately
-      // If the current user just got linked (or role changed), refresh user context
-      // so Trainingen/Wedstrijden updates without requiring app restart.
+      if (onlySupporter) {
+        await _client.from('team_members').delete().eq('profile_id', member.profileId);
+        await _client.rpc('set_profile_account_role_supporter', params: {'p_profile_id': member.profileId});
+        if (!mounted) return;
+        showTopMessage(context, 'Rol op Supporter gezet (geen team).');
+      } else {
+        final selectedTeam = _teams.firstWhere(
+          (t) => t.teamId == selectedTeamId,
+          orElse: () => _TeamOption(selectedTeamId, ''),
+        );
+        final resolvedTeamId = await _resolveTeamIdForWrite(
+          selectedTeamId,
+          selectedTeam.label,
+        );
+        if (resolvedTeamId == null) {
+          if (!mounted) return;
+          showTopMessage(
+            context,
+            'Kon team nog niet aanmaken/terugvinden. Run SQL: ensure_training_groups_for_tc + teams_tc_manage.',
+            isError: true,
+          );
+          return;
+        }
+        await _client.from('team_members').insert({
+          'team_id': resolvedTeamId,
+          'profile_id': member.profileId,
+          'role': selectedRole,
+        });
+        if (!mounted) return;
+        showTopMessage(context, 'Lid gekoppeld aan team.');
+      }
+      await _load();
       try {
         if (!mounted) return;
         await AppUserContext.of(context).reloadUserContext?.call();
@@ -544,6 +710,8 @@ class _TcTabState extends State<TcTab> {
         return 'Trainer/coach';
       case 'trainingslid':
         return 'Trainingslid';
+      case 'supporter':
+        return 'Supporter';
       default:
         return 'Speler';
     }
@@ -659,10 +827,12 @@ class _TcTabState extends State<TcTab> {
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
                   initialValue: selectedRole,
+                  isExpanded: true,
                   items: const [
                     DropdownMenuItem(value: 'player', child: Text('Speler')),
                     DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
                     DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
+                    DropdownMenuItem(value: 'supporter', child: Text('Supporter')),
                   ],
                   onChanged: (v) => setDialogState(() => selectedRole = v ?? selectedRole),
                   decoration: const InputDecoration(labelText: 'Rol'),
@@ -685,8 +855,18 @@ class _TcTabState extends State<TcTab> {
     );
     if (save != true) return;
     try {
+      final resolvedTeamId = await _resolveTeamIdForWrite(teamId, teamLabel);
+      if (resolvedTeamId == null) {
+        if (!mounted) return;
+        showTopMessage(
+          context,
+          'Kon team nog niet aanmaken/terugvinden. Run SQL: ensure_training_groups_for_tc + teams_tc_manage.',
+          isError: true,
+        );
+        return;
+      }
       await _client.from('team_members').insert({
-        'team_id': teamId,
+        'team_id': resolvedTeamId,
         'profile_id': chosen.profileId,
         'role': selectedRole,
       });
@@ -735,10 +915,12 @@ class _TcTabState extends State<TcTab> {
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
                   initialValue: chosenRole,
+                  isExpanded: true,
                   items: const [
                     DropdownMenuItem(value: 'player', child: Text('Speler')),
                     DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
                     DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
+                    DropdownMenuItem(value: 'supporter', child: Text('Supporter')),
                   ],
                   onChanged: (v) => setDialogState(() => chosenRole = v ?? chosenRole),
                   decoration: const InputDecoration(labelText: 'Rol'),
@@ -809,57 +991,124 @@ class _TcTabState extends State<TcTab> {
       return;
     }
 
-    try {
-      final payload = <String, dynamic>{
+    final currentSeason = NevoboApi.currentSeason();
+    final extraSeason = await _loadAnyExistingSeason();
+    final seasonCandidates = <String>{
+      currentSeason,
+      if (extraSeason != null && extraSeason.trim().isNotEmpty) extraSeason.trim(),
+    }.toList();
+
+    final exists = await _teamExistsInSupabase(teamName, seasonCandidates: seasonCandidates);
+    if (exists) {
+      if (!mounted) return;
+      showTopMessage(context, 'Dit team bestaat al in Supabase (dit seizoen).', isError: true);
+      return;
+    }
+
+    Object? lastError;
+    final payloads = <Map<String, dynamic>>[];
+    for (final season in seasonCandidates) {
+      payloads.add({
         'team_name': teamName,
-        'season': NevoboApi.currentSeason(),
-      };
-      if (trainingOnly) {
-        payload['training_only'] = true;
-      }
-      await _client.from('teams').insert(payload);
-      if (!mounted) return;
-      showTopMessage(context, 'Team "$teamName" toegevoegd.');
-      await _load();
-    } on PostgrestException catch (e) {
-      if (!mounted) return;
-      final msg = e.message.toLowerCase();
-      if (e.code == '23505' || msg.contains('duplicate key')) {
-        showTopMessage(
-          context,
-          'Dit team bestaat al voor dit seizoen.',
-          isError: true,
-        );
+        'season': season,
+        if (trainingOnly) 'training_only': true,
+      });
+      payloads.add({
+        'name': teamName,
+        'season': season,
+        if (trainingOnly) 'training_only': true,
+      });
+    }
+    payloads.add({'team_name': teamName, if (trainingOnly) 'training_only': true});
+    payloads.add({'name': teamName, if (trainingOnly) 'training_only': true});
+    payloads.add({'team_name': teamName});
+    payloads.add({'name': teamName});
+
+    for (final payload in payloads) {
+      try {
+        await _client.from('teams').insert(payload);
+        if (!mounted) return;
+        showTopMessage(context, 'Team "$teamName" toegevoegd aan Supabase.');
+        await _load();
         return;
-      }
-      if (e.code == 'PGRST204' || msg.contains('team_name')) {
-        try {
-          final retry = <String, dynamic>{'name': teamName, 'season': NevoboApi.currentSeason()};
-          if (trainingOnly) retry['training_only'] = true;
-          await _client.from('teams').insert(retry);
+      } catch (e) {
+        lastError = e;
+        final lower = e.toString().toLowerCase();
+        if (lower.contains('duplicate key') || lower.contains('already exists')) {
           if (!mounted) return;
-          showTopMessage(context, 'Team "$teamName" toegevoegd.');
-          await _load();
-        } catch (e2) {
-          if (!mounted) return;
-          if (e2 is PostgrestException &&
-              ((e2.code == '23505') || e2.message.toLowerCase().contains('duplicate key'))) {
-            showTopMessage(context, 'Dit team bestaat al voor dit seizoen.', isError: true);
-          } else {
-            showTopMessage(context, 'Toevoegen mislukt: $e2', isError: true);
-          }
+          showTopMessage(
+            context,
+            'Dit team bestaat al in Supabase (mogelijk in een ander seizoen).',
+            isError: true,
+          );
+          return;
         }
-      } else {
-        showTopMessage(context, 'Toevoegen mislukt: $e', isError: true);
-      }
-    } catch (e) {
-      if (!mounted) return;
-      if (e.toString().toLowerCase().contains('duplicate key')) {
-        showTopMessage(context, 'Dit team bestaat al voor dit seizoen.', isError: true);
-      } else {
-        showTopMessage(context, 'Toevoegen mislukt: $e', isError: true);
       }
     }
+
+    if (!mounted) return;
+    showTopMessage(
+      context,
+      'Toevoegen mislukt. Check teams RLS + verplichte kolommen. Fout: $lastError',
+      isError: true,
+    );
+  }
+
+  Future<String?> _loadAnyExistingSeason() async {
+    for (final nameField in const ['team_name', 'name']) {
+      try {
+        final res = await _client
+            .from('teams')
+            .select('$nameField, season')
+            .not('season', 'is', null)
+            .limit(1);
+        final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        if (rows.isNotEmpty) {
+          final season = rows.first['season']?.toString().trim();
+          if (season != null && season.isNotEmpty) return season;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  Future<bool> _teamExistsInSupabase(
+    String teamName, {
+    required List<String> seasonCandidates,
+  }) async {
+    final normalized = teamName.trim().toLowerCase();
+    if (normalized.isEmpty) return false;
+    var seasonFilterSupported = false;
+
+    for (final nameField in const ['team_name', 'name']) {
+      for (final season in seasonCandidates) {
+        try {
+          seasonFilterSupported = true;
+          final res = await _client
+              .from('teams')
+              .select('$nameField, season')
+              .eq(nameField, teamName)
+              .eq('season', season)
+              .limit(1);
+          final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+          if (rows.isNotEmpty) return true;
+        } catch (_) {}
+      }
+    }
+
+    // Als seizoenfilter werkt, dan is "niet gevonden in deze seizoenen" voldoende.
+    if (seasonFilterSupported) return false;
+
+    // Oud schema zonder season-kolom: fallback op teamnaam zonder seizoenfilter.
+    for (final nameField in const ['team_name', 'name']) {
+      try {
+        final res = await _client.from('teams').select(nameField).eq(nameField, teamName).limit(1);
+        final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        if (rows.isNotEmpty) return true;
+      } catch (_) {}
+    }
+
+    return false;
   }
 
   @override

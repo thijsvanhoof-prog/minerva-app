@@ -128,9 +128,26 @@ class AppUserContext extends InheritedWidget {
 
   bool get hasFullAdminRights => isGlobalAdmin;
 
+  String _normalizeCommitteeKey(String value) {
+    final c = value.trim().toLowerCase();
+    if (c.isEmpty) return '';
+    if (c == 'bestuur') return 'bestuur';
+    if (c == 'tc' || c.contains('technische')) return 'technische-commissie';
+    if (c == 'cc' || c.contains('communicatie')) return 'communicatie';
+    if (c == 'wz' || c.contains('wedstrijd')) return 'wedstrijdzaken';
+    if (c.contains('evenement')) return 'evenementen';
+    if (c == 'jeugd' || c.contains('jeugdcommissie')) return 'jeugdcommissie';
+    if ((c.contains('scheidsrechter') && c.contains('teller')) ||
+        c.contains('scheidsrechters-tellers')) {
+      return 'scheidsrechters-tellers';
+    }
+    if (c.contains('vrijwilliger')) return 'vrijwilligers';
+    return c;
+  }
+
   bool isInCommittee(String name) {
-    final needle = name.trim().toLowerCase();
-    return committees.any((c) => c.trim().toLowerCase() == needle);
+    final needle = _normalizeCommitteeKey(name);
+    return committees.any((c) => _normalizeCommitteeKey(c) == needle);
   }
 
   bool get isInBestuur => isInCommittee('bestuur');
@@ -138,13 +155,21 @@ class AppUserContext extends InheritedWidget {
       isInCommittee('technische-commissie') || isInCommittee('tc');
   bool get isInCommunicatie => isInCommittee('communicatie');
   bool get isInWedstrijdzaken => isInCommittee('wedstrijdzaken');
+  bool get isInEvenementen => isInCommittee('evenementen');
+  bool get isInJeugdcommissie => isInCommittee('jeugdcommissie');
+  bool get isInScheidsrechtersTellers => isInCommittee('scheidsrechters-tellers');
+  bool get isInVrijwilligers => isInCommittee('vrijwilligers');
 
   /// Central place for feature permissions (can be reused across the app).
   /// Bestuur: alles inzien (view), alleen admins mogen aanpassen (manage).
   bool get canManageAgenda =>
       hasFullAdminRights || isInCommunicatie;
   bool get canViewAgendaRsvps =>
-      hasFullAdminRights || isInBestuur || isInCommunicatie;
+      hasFullAdminRights ||
+      isInBestuur ||
+      isInCommunicatie ||
+      isInJeugdcommissie ||
+      isInEvenementen;
 
   /// Alleen bestuur en communicatie (en global admin) mogen aanmeldingen exporteren.
   bool get canExportAgendaRsvps =>

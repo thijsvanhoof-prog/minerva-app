@@ -1,4 +1,6 @@
 // lib/ui/shell.dart
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -82,6 +84,7 @@ class _ShellState extends State<Shell> {
       manageableTeams: manageableTeams,
       hasCommittees: hasCommittees,
       hasTeam: hasTeam,
+      userContext: userContext,
     );
     int contactTabIndex = -1;
     for (var i = 0; i < navItems.length; i++) {
@@ -114,7 +117,10 @@ class _ShellState extends State<Shell> {
     required List<TeamMembership> manageableTeams,
     required bool hasCommittees,
     required bool hasTeam,
+    required AppUserContext userContext,
   }) {
+    final _ = userContext;
+
     final hasFullAccess = hasTeam || hasCommittees;
     // Toeschouwer: geen rol → alleen Uitgelicht, Agenda, Nieuws, Standen, Contact, Profiel
     if (!hasFullAccess) {
@@ -225,6 +231,7 @@ class _ShellState extends State<Shell> {
       manageableTeams: manageableTeams,
       hasCommittees: hasCommittees,
       hasTeam: hasTeam,
+      userContext: userContext,
     );
 
     final selectedIndex = _index.clamp(0, navItems.length - 1);
@@ -247,9 +254,32 @@ class _ShellState extends State<Shell> {
         body: SafeArea(
           top: false,
           bottom: false,
-          child: IndexedStack(
-            index: selectedIndex,
-            children: pages,
+          child: Builder(
+            builder: (context) {
+              // Donkerblauwe strook bovenin (statusbalk): overlay zodat tab-inhoud niet verschuift; min. 44 als fallback.
+              final topInset = MediaQuery.paddingOf(context).top;
+              final statusBarHeight = topInset > 0 ? topInset : 44.0;
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  IndexedStack(
+                    index: selectedIndex,
+                    children: pages,
+                  ),
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: ColoredBox(
+                        color: AppColors.darkBlue,
+                        child: SizedBox(height: statusBarHeight),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         ),
         bottomNavigationBar: Theme(

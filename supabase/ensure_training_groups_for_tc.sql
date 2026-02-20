@@ -8,6 +8,9 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  v_has_training_only boolean;
+  v_has_season boolean;
 begin
   if auth.uid() is null then
     raise exception 'Not authenticated';
@@ -29,12 +32,79 @@ begin
     raise exception 'Geen toegang';
   end if;
 
-  -- Insert Volleystars en Recreanten (niet competitie) als ze nog niet bestaan
-  insert into public.teams (team_name, training_only)
-  values
-    ('Volleystars', true),
-    ('Recreanten (niet competitie)', true)
-  on conflict (team_name) do update set training_only = true;
+  select exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'teams'
+      and column_name = 'training_only'
+  ) into v_has_training_only;
+
+  select exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'teams'
+      and column_name = 'season'
+  ) into v_has_season;
+
+  -- Sommige schema's hebben season NOT NULL. Neem dan een bestaande season over.
+  if v_has_season and not exists (select 1 from public.teams where season is not null) then
+    raise exception 'Kolom season is verplicht, maar er is geen bestaande season-waarde in teams.';
+  end if;
+
+  if v_has_season and v_has_training_only then
+    insert into public.teams (team_name, training_only, season)
+    select 'Volleystars', true, s.season
+    from (select season from public.teams where season is not null limit 1) s
+    where not exists (select 1 from public.teams where lower(team_name) = 'volleystars');
+
+    insert into public.teams (team_name, training_only, season)
+    select 'Recreanten (niet competitie)', true, s.season
+    from (select season from public.teams where season is not null limit 1) s
+    where not exists (
+      select 1 from public.teams where lower(team_name) = 'recreanten (niet competitie)'
+    );
+  elsif v_has_season then
+    insert into public.teams (team_name, season)
+    select 'Volleystars', s.season
+    from (select season from public.teams where season is not null limit 1) s
+    where not exists (select 1 from public.teams where lower(team_name) = 'volleystars');
+
+    insert into public.teams (team_name, season)
+    select 'Recreanten (niet competitie)', s.season
+    from (select season from public.teams where season is not null limit 1) s
+    where not exists (
+      select 1 from public.teams where lower(team_name) = 'recreanten (niet competitie)'
+    );
+  elsif v_has_training_only then
+    insert into public.teams (team_name, training_only)
+    select 'Volleystars', true
+    where not exists (select 1 from public.teams where lower(team_name) = 'volleystars');
+
+    insert into public.teams (team_name, training_only)
+    select 'Recreanten (niet competitie)', true
+    where not exists (
+      select 1 from public.teams where lower(team_name) = 'recreanten (niet competitie)'
+    );
+  else
+    insert into public.teams (team_name)
+    select 'Volleystars'
+    where not exists (select 1 from public.teams where lower(team_name) = 'volleystars');
+
+    insert into public.teams (team_name)
+    select 'Recreanten (niet competitie)'
+    where not exists (
+      select 1 from public.teams where lower(team_name) = 'recreanten (niet competitie)'
+    );
+  end if;
+
+  -- Als training_only bestaat, zorg dat beide groepen op true staan.
+  if v_has_training_only then
+    update public.teams
+    set training_only = true
+    where lower(team_name) in ('volleystars', 'recreanten (niet competitie)', 'recreanten trainingsgroep');
+  end if;
 
   -- Legacy naam harmoniseren als de nieuwe naam nog niet bestaat.
   if exists (select 1 from public.teams where lower(team_name) = 'recreanten trainingsgroep')
@@ -43,12 +113,6 @@ begin
     set team_name = 'Recreanten (niet competitie)'
     where lower(team_name) = 'recreanten trainingsgroep';
   end if;
-exception
-  when undefined_column then
-    -- Kolom training_only bestaat niet (oud schema): alleen team_name
-    insert into public.teams (team_name)
-    values ('Volleystars'), ('Recreanten (niet competitie)')
-    on conflict (team_name) do nothing;
 end;
 $$;
 

@@ -5,12 +5,17 @@
 --
 -- Vereisten: committee_members tabel met bestuur-leden.
 -- Voer uit in Supabase SQL Editor.
+-- Bij wijziging return type: eerst droppen (PostgreSQL staat geen ander return type toe bij CREATE OR REPLACE).
+
+drop function if exists public.list_profiles_for_committee_management();
+drop function if exists public._list_all_profiles();
 
 create or replace function public.list_profiles_for_committee_management()
 returns table (
   profile_id uuid,
   display_name text,
-  email text
+  email text,
+  account_role text
 )
 language plpgsql
 stable
@@ -45,11 +50,13 @@ begin
 end;
 $$;
 
+-- _list_all_profiles was hierboven al gedropt
 create or replace function public._list_all_profiles()
 returns table (
   profile_id uuid,
   display_name text,
-  email text
+  email text,
+  account_role text
 )
 language sql
 stable
@@ -66,7 +73,8 @@ as $$
       nullif(trim(au.email), ''),
       (left(au.id::text, 4) || '…' || right(au.id::text, 4))
     )::text as display_name,
-    coalesce(au.email, '')::text as email
+    coalesce(au.email, '')::text as email,
+    coalesce(trim(p.account_role), '')::text as account_role
   from auth.users au
   left join public.profiles p on p.id = au.id
   order by lower(

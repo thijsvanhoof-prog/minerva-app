@@ -963,7 +963,7 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
           ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
         if (mounted) setState(() => _otherTeamNames = other);
       } catch (_) {
-        // fallback: alleen Volleystars etc.
+        // fallback: overige teams uit directe query
         try {
           final other = await _loadOtherTeamsFromSupabase();
           if (mounted) setState(() => _otherTeamNames = other);
@@ -1017,7 +1017,7 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
   }
 
   Future<List<String>> _loadOtherTeamsFromSupabase() async {
-    // Best-effort: find Volleystars (and any other non-code teams) in the teams table.
+    // Best-effort: find non-competition teams in the teams table.
     const candidates = <String>[
       'team_name',
       'name',
@@ -1036,8 +1036,11 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
           if (raw.isEmpty) continue;
           final lower = raw.toLowerCase();
           final code = NevoboApi.extractCodeFromTeamName(raw);
-          // Anything without a Nevobo code but explicitly Volleystars: show it.
-          if (code == null && lower.contains('volleystars')) {
+          // Anything without a Nevobo code and explicitly non-competition: show it.
+          final isNonCompetitionLabel = lower.contains('volleystars') ||
+              lower.contains('recreanten (niet competitie)') ||
+              lower == 'recreanten trainingsgroep';
+          if (code == null && isNonCompetitionLabel) {
             names.add(raw);
           }
         }

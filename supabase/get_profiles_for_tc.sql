@@ -2,12 +2,16 @@
 -- Zonder deze RPC ziet TC alleen het eigen profiel door RLS op profiles.
 -- Toegang: technische commissie, bestuur of global admin.
 -- Voer uit in Supabase SQL Editor. Vereist: committee_list_profiles_rpc.sql (voor _list_all_profiles).
+-- Bij wijziging return type: eerst droppen (PostgreSQL staat geen ander return type toe bij CREATE OR REPLACE).
+
+drop function if exists public.get_profiles_for_tc();
 
 create or replace function public.get_profiles_for_tc()
 returns table (
   profile_id uuid,
   display_name text,
-  email text
+  email text,
+  account_role text
 )
 language plpgsql
 stable

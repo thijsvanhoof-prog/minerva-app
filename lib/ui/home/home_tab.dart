@@ -152,6 +152,28 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       vsync: this,
       initialIndex: 0,
     );
+    _tabController.addListener(() {
+      if (!mounted) return;
+      setState(() {});
+    });
+  }
+
+  int _contentIndexForSelectedTab(int selectedIndex) {
+    if (widget.showOnlyHighlightsAndNews) {
+      // Tabvolgorde: Nieuws, Wedstrijden
+      // Contentvolgorde hieronder: Wedstrijden, Nieuws
+      return selectedIndex == 0 ? 1 : 0;
+    }
+    // Tabvolgorde: Nieuws, Agenda, Wedstrijden
+    // Contentvolgorde hieronder: Wedstrijden, Agenda, Nieuws
+    switch (selectedIndex) {
+      case 0:
+        return 2;
+      case 1:
+        return 1;
+      default:
+        return 0;
+    }
   }
 
   @override
@@ -3904,8 +3926,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   const SizedBox(height: 4),
                   Text(
                     widget.showOnlyHighlightsAndNews
-                        ? 'Aankomende wedstrijden en nieuws vanuit de vereniging.'
-                        : 'Wedstrijden, agenda en nieuws vanuit de vereniging.',
+                        ? 'Nieuws en aankomende wedstrijden vanuit de vereniging.'
+                        : 'Nieuws, agenda en wedstrijden vanuit de vereniging.',
                     style: TextStyle(
                       color: AppColors.primary.withValues(alpha: 0.9),
                     ),
@@ -3931,18 +3953,18 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   ),
                   indicatorSize: TabBarIndicatorSize.tab,
                   tabs: widget.showOnlyHighlightsAndNews
-                      ? const [Tab(text: 'Wedstrijden'), Tab(text: 'Nieuws')]
+                      ? const [Tab(text: 'Nieuws'), Tab(text: 'Wedstrijden')]
                       : const [
-                          Tab(text: 'Wedstrijden'),
-                          Tab(text: 'Agenda'),
                           Tab(text: 'Nieuws'),
+                          Tab(text: 'Agenda'),
+                          Tab(text: 'Wedstrijden'),
                         ],
                 ),
               ),
             ),
             Expanded(
-              child: TabBarView(
-                controller: _tabController,
+              child: IndexedStack(
+                index: _contentIndexForSelectedTab(_tabController.index),
                 children: [
                   // Aankomende wedstrijden
                   RefreshIndicator(
