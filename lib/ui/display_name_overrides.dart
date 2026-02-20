@@ -1,6 +1,10 @@
 /// Central display-name overrides for the app UI.
 ///
 /// Use this when rendering user display names coming from Supabase.
+
+/// Fallback wanneer geen gebruikersnaam of e-mail bekend is (nooit ID tonen in UI).
+const String unknownUserName = 'Onbekend';
+
 String applyDisplayNameOverrides(String name) {
   final trimmed = name.trim();
   if (trimmed.isEmpty) return trimmed;

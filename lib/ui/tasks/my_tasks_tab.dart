@@ -4,7 +4,7 @@ import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
-import 'package:minerva_app/ui/display_name_overrides.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -46,29 +46,9 @@ class MyTasksTab extends StatelessWidget {
       );
     }
 
-    // Bij forceFullView (Commissies > WZ): alleen wedstrijdenlijst met koppel-optie.
+    // Bij forceFullView (Commissies > WZ): alleen inhoud, geen extra "Taken"-banner (staat al onder Commissie).
     if (forceFullView) {
-      return Scaffold(
-        backgroundColor: Colors.transparent,
-        body: SafeArea(
-          top: false,
-          bottom: false,
-          child: Column(
-            children: [
-              TabPageHeader(
-                child: Text(
-                  'Taken',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.w800,
-                      ),
-                ),
-              ),
-              const Expanded(child: _OverviewHomeMatchesView(allowManage: true)),
-            ],
-          ),
-        ),
-      );
+      return const _OverviewHomeMatchesView(allowManage: true);
     }
 
     // Overzicht-tab in Taken: alleen weergave, geen verdelen/koppelen.
@@ -91,7 +71,7 @@ class MyTasksTab extends StatelessWidget {
                 ),
               ),
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                padding: AppColors.tabContentPadding,
                 child: GlassCard(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   showBorder: false,
@@ -135,6 +115,21 @@ class _TeamTasksView extends StatefulWidget {
 
 class _TeamTasksViewState extends State<_TeamTasksView> {
   final SupabaseClient _client = Supabase.instance.client;
+
+  Future<List<int>> _loadMyTeamIdsFromRpc() async {
+    try {
+      final res = await _client.rpc('get_my_team_ids');
+      final rows = (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+      return rows
+          .map((r) => (r['team_id'] as num?)?.toInt())
+          .whereType<int>()
+          .toSet()
+          .toList()
+        ..sort();
+    } catch (_) {
+      return [];
+    }
+  }
 
   bool _loading = true;
   String? _error;
@@ -184,7 +179,13 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
 
       final userContext = ctx ?? AppUserContext.of(context);
       final targetProfileId = userContext.attendanceProfileId;
-      final myTeamIds = userContext.memberships.map((m) => m.teamId).toSet().toList();
+      List<int> myTeamIds = await _loadMyTeamIdsFromRpc();
+      if (myTeamIds.isEmpty) {
+        myTeamIds = userContext.memberships.map((m) => m.teamId).toSet().toList();
+      } else {
+        final fromContext = userContext.memberships.map((m) => m.teamId).toSet();
+        myTeamIds = {...myTeamIds, ...fromContext}.toList();
+      }
       myTeamIds.sort();
 
       if (myTeamIds.isEmpty) {
@@ -198,7 +199,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         return;
       }
 
-      // Load only matches Wedstrijdzaken linked to my teams.
+      // Wedstrijden gekoppeld aan mijn teams (nevobo_home_matches).
       final now = DateTime.now().toUtc();
       final mRes = await _client
           .from('nevobo_home_matches')
@@ -263,7 +264,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
 
       final signupNamesByTaskId = await _loadSignupNamesByTaskId(matchKeys: matchKeys);
       final myNames = await _loadProfileDisplayNames({targetProfileId});
-      final myDisplayName = myNames[targetProfileId] ?? _shortId(targetProfileId);
+      final myDisplayName = myNames[targetProfileId] ?? unknownUserName;
 
       if (!mounted) return;
       setState(() {
@@ -294,11 +295,6 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
     await _load(ctx: ctx);
   }
 
-  String _shortId(String value) {
-    if (value.length <= 8) return value;
-    return '${value.substring(0, 4)}…${value.substring(value.length - 4)}';
-  }
-
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
@@ -316,7 +312,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         if (id.isEmpty) continue;
         final raw = (r['display_name'] ?? '').toString().trim();
         final name = applyDisplayNameOverrides(raw);
-        map[id] = name.isNotEmpty ? name : _shortId(id);
+        map[id] = name.isNotEmpty ? name : unknownUserName;
       }
       if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
         map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -352,7 +348,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
               .toString()
               .trim();
       final overridden = applyDisplayNameOverrides(name);
-      map[id] = overridden.isNotEmpty ? overridden : _shortId(id);
+      map[id] = overridden.isNotEmpty ? overridden : unknownUserName;
     }
     if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
       map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -431,7 +427,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       final tid = (r['task_id'] as num?)?.toInt();
       final pid = r['profile_id']?.toString() ?? '';
       if (tid == null || pid.isEmpty) continue;
-      final name = (namesById[pid] ?? _shortId(pid)).trim();
+      final name = (namesById[pid] ?? unknownUserName).trim();
       out.putIfAbsent(tid, () => []).add(name);
     }
     for (final entry in out.entries) {
@@ -488,7 +484,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
     String myName = _myDisplayName ?? '';
     if (myName.isEmpty) {
       final map = await _loadProfileDisplayNames({targetProfileId});
-      myName = map[targetProfileId] ?? _shortId(targetProfileId);
+      myName = map[targetProfileId] ?? unknownUserName;
       if (mounted) _myDisplayName = myName;
     }
 
@@ -662,7 +658,10 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         separatorBuilder: (_, _) => const SizedBox(height: 12),
         itemBuilder: (context, index) {
           final m = _matches[index];
-          final teamLabel = (_teamNameById[m.linkedTeamId] ?? 'Team ${m.linkedTeamId}').trim();
+          final raw = (_teamNameById[m.linkedTeamId] ?? '').trim();
+          final teamLabel = raw.isEmpty
+              ? '(naam ontbreekt)'
+              : (raw.startsWith('Team ') ? raw : NevoboApi.displayTeamName(raw));
 
           return GlassCard(
             child: Padding(
@@ -673,7 +672,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
                   Row(
                     children: [
                       Text(
-                        m.teamCode,
+                        NevoboApi.displayTeamCode(m.teamCode),
                         style: const TextStyle(
                           color: AppColors.onBackground,
                           fontWeight: FontWeight.w900,
@@ -692,7 +691,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    m.summary,
+                    NevoboApi.displayTeamName(m.summary),
                     style: const TextStyle(
                       color: AppColors.onBackground,
                       fontWeight: FontWeight.w800,
@@ -890,7 +889,12 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     });
 
     try {
-      final teams = await NevoboApi.loadTeamsFromSupabase(client: _client);
+      // Alle teams uit Supabase (zelfde bron als Standen/Teams-tab), niet alleen de 4 fallback-teams.
+      final withIds = await NevoboApi.loadTeamsFromSupabaseWithIds(
+        client: _client,
+        excludeTrainingOnly: false,
+      );
+      final teams = withIds.map((e) => e.team).toList();
 
       final now = DateTime.now();
       final to = now.add(const Duration(days: 365));
@@ -991,11 +995,6 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     return 'nevobo_match:${m.teamCode}:$utc';
   }
 
-  String _shortId(String value) {
-    if (value.length <= 8) return value;
-    return '${value.substring(0, 4)}…${value.substring(value.length - 4)}';
-  }
-
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
@@ -1013,7 +1012,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         if (id.isEmpty) continue;
         final raw = (r['display_name'] ?? '').toString().trim();
         final name = applyDisplayNameOverrides(raw);
-        map[id] = name.isNotEmpty ? name : _shortId(id);
+        map[id] = name.isNotEmpty ? name : unknownUserName;
       }
       if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
         map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -1049,7 +1048,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
               .toString()
               .trim();
       final overridden = applyDisplayNameOverrides(name);
-      map[id] = overridden.isNotEmpty ? overridden : _shortId(id);
+      map[id] = overridden.isNotEmpty ? overridden : unknownUserName;
     }
     if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
       map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -1133,7 +1132,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       if (mapping == null) continue;
       final key = mapping.$1;
       final type = mapping.$2;
-      final name = (namesById[profileId] ?? _shortId(profileId)).trim();
+      final name = (namesById[profileId] ?? unknownUserName).trim();
       if (type == 'fluiten') {
         flByKey.putIfAbsent(key, () => []).add(name);
       } else if (type == 'tellen') {
@@ -1203,7 +1202,8 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     }
   }
 
-  String _teamLabel(int teamId) => (_teamLabelById[teamId] ?? 'Team $teamId').trim();
+  String _teamLabel(int teamId) =>
+      (_teamLabelById[teamId] ?? '(naam ontbreekt)').trim();
 
   Future<Map<String, Map<String, dynamic>>?> _upsertAndLoadLinkRows({
     required List<_HomeMatch> matches,
@@ -1430,13 +1430,13 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
             ),
           ),
           const SizedBox(height: 4),
-          SizedBox(
-            width: 70,
+          ConstrainedBox(
+            constraints: const BoxConstraints(minWidth: 70, maxWidth: 90),
             child: Text(
               teamTextUnder,
               textAlign: TextAlign.center,
               overflow: TextOverflow.ellipsis,
-              maxLines: 1,
+              maxLines: 2,
               style: TextStyle(
                 color: teamTextUnder == 'Niet gekoppeld'
                     ? AppColors.textSecondary.withValues(alpha: 0.8)
@@ -1538,7 +1538,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '${match.teamCode} • ${_formatDate(match.start)} ${_formatTime(match.start)}',
+                        '${NevoboApi.displayTeamCode(match.teamCode)} • ${_formatDate(match.start)} ${_formatTime(match.start)}',
                         style: const TextStyle(
                           color: AppColors.textSecondary,
                           fontWeight: FontWeight.w800,
@@ -1546,7 +1546,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                       ),
                       const SizedBox(height: 10),
                       Text(
-                        match.summary,
+                        NevoboApi.displayTeamName(match.summary),
                         style: const TextStyle(
                           color: AppColors.onBackground,
                           fontWeight: FontWeight.w800,
@@ -1762,7 +1762,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
             'notes': [
               key,
               'kind:$type',
-              match.summary,
+              NevoboApi.displayTeamName(match.summary),
               if (match.location.isNotEmpty) 'Locatie: ${match.location}',
             ].join('\n'),
             'created_by': user.id,
@@ -1805,7 +1805,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         if (existing != null) {
           toAssign.add(existing);
         } else {
-          await createTask('fluiten', 'Fluiten (${match.teamCode})');
+          await createTask('fluiten', 'Fluiten (${NevoboApi.displayTeamCode(match.teamCode)})');
         }
       }
 
@@ -1814,7 +1814,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         if (existing != null) {
           toAssign.add(existing);
         } else {
-          await createTask('tellen', 'Tellen (${match.teamCode})');
+          await createTask('tellen', 'Tellen (${NevoboApi.displayTeamCode(match.teamCode)})');
         }
       }
 
@@ -1843,6 +1843,30 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
   }
 
   Future<List<_TeamOption>> _fetchTeams() async {
+    // Zelfde bron als Standen/TC, zodat teamnamen (HS1, DS1, …) kloppen i.p.v. "Team 1".
+    try {
+      final all = await NevoboApi.loadAllTeamsFromSupabase(
+        client: _client,
+        excludeTrainingOnly: false,
+      );
+      if (all.isNotEmpty) {
+        final list = all
+            .map((t) => _TeamOption(
+                  teamId: t.teamId,
+                  label: t.name,
+                  code: NevoboApi.extractCodeFromTeamName(t.name),
+                ))
+            .toList()
+          ..sort((a, b) {
+            final ac = a.code;
+            final bc = b.code;
+            if (ac != null && bc != null) return NevoboApi.compareTeamCodes(ac, bc);
+            return NevoboApi.compareTeamNames(a.label, b.label, volleystarsLast: true);
+          });
+        return list;
+      }
+    } catch (_) {}
+
     final candidates = <String>[
       'team_name',
       'name',
@@ -1867,7 +1891,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
             list.add(
               _TeamOption(
                 teamId: id,
-                label: label.isNotEmpty ? label : 'Team $id',
+                label: label.isNotEmpty ? label : '(naam ontbreekt)',
                 code: code,
               ),
             );
@@ -2131,7 +2155,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
           children.add(
           GlassCard(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -2145,7 +2169,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                             Row(
                               children: [
                                 Text(
-                                  m.teamCode,
+                                  NevoboApi.displayTeamCode(m.teamCode),
                                   style: const TextStyle(
                                     color: AppColors.onBackground,
                                     fontWeight: FontWeight.w900,
@@ -2164,7 +2188,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                             ),
                             const SizedBox(height: 6),
                             Text(
-                              m.summary,
+                              NevoboApi.displayTeamName(m.summary),
                               style: const TextStyle(
                                 color: AppColors.onBackground,
                                 fontWeight: FontWeight.w700,
@@ -2176,8 +2200,11 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                               const SizedBox(height: 4),
                               Text(
                                 m.location,
-                                style: const TextStyle(color: AppColors.textSecondary),
-                                maxLines: 1,
+                                style: const TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontSize: 13,
+                                ),
+                                maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ],
@@ -2485,6 +2512,23 @@ class _MyTasksTabState extends State<MyTasksTab> {
     }
   }
 
+  /// Haalt alle team_ids op waar de gebruiker bij hoort (SECURITY DEFINER RPC).
+  Future<List<int>> _loadMyTeamIds() async {
+    try {
+      final res = await _client.rpc('get_my_team_ids');
+      final rows = (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+      final ids = rows
+          .map((r) => (r['team_id'] as num?)?.toInt())
+          .whereType<int>()
+          .toSet()
+          .toList()
+        ..sort();
+      return ids;
+    } catch (_) {
+      return [];
+    }
+  }
+
   Future<void> _load({AppUserContext? ctx}) async {
     setState(() {
       _loading = true;
@@ -2506,9 +2550,16 @@ class _MyTasksTabState extends State<MyTasksTab> {
       }
 
       final userContext = ctx ?? AppUserContext.of(context);
-      final myTeamIds = userContext.memberships.map((m) => m.teamId).toSet().toList();
+      // Alle teams waar ik bij hoor (RPC voorkomt RLS-blokkade), plus guardian-teams uit context.
+      List<int> myTeamIds = await _loadMyTeamIds();
+      if (myTeamIds.isEmpty) {
+        myTeamIds = userContext.memberships.map((m) => m.teamId).toSet().toList();
+      } else {
+        final fromContext = userContext.memberships.map((m) => m.teamId).toSet();
+        myTeamIds = {...myTeamIds, ...fromContext}.toList()..sort();
+      }
 
-      // Teamtaken: ONLY tasks assigned to my teams.
+      // Teamtaken: alle taken die aan één van mijn teams zijn gekoppeld.
       List<int> taskIds = const [];
       List<_ClubTask> tasks = const [];
       if (myTeamIds.isNotEmpty) {
@@ -2608,7 +2659,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
         if (id.isEmpty) continue;
         final raw = (r['display_name'] ?? '').toString().trim();
         final name = applyDisplayNameOverrides(raw);
-        map[id] = name.isNotEmpty ? name : shortId(id);
+        map[id] = name.isNotEmpty ? name : unknownUserName;
       }
       if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
         map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -2635,11 +2686,6 @@ class _MyTasksTabState extends State<MyTasksTab> {
       }
     }
 
-    String shortId(String value) {
-      if (value.length <= 8) return value;
-      return '${value.substring(0, 4)}…${value.substring(value.length - 4)}';
-    }
-
     final map = <String, String>{};
     for (final r in rows) {
       final id = r['id']?.toString() ?? '';
@@ -2649,7 +2695,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
               .toString()
               .trim();
       final overridden = applyDisplayNameOverrides(name);
-      map[id] = overridden.isNotEmpty ? overridden : shortId(id);
+      map[id] = overridden.isNotEmpty ? overridden : unknownUserName;
     }
     if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
       map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -2715,11 +2761,6 @@ class _MyTasksTabState extends State<MyTasksTab> {
 
         final namesById = await _loadProfileDisplayNames(profileIds);
 
-        String shortId(String value) {
-          if (value.length <= 8) return value;
-          return '${value.substring(0, 4)}…${value.substring(value.length - 4)}';
-        }
-
         for (final row in rows) {
           final tid = (row['task_id'] as num).toInt();
           final pid = row['profile_id']?.toString() ?? '';
@@ -2727,7 +2768,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
           final name = (namesById[pid] ?? '').trim();
           signupsByTaskId
               .putIfAbsent(tid, () => [])
-              .add(_TaskSignup(profileId: pid, displayName: name.isNotEmpty ? name : shortId(pid)));
+              .add(_TaskSignup(profileId: pid, displayName: name.isNotEmpty ? name : unknownUserName));
         }
 
         // Sort signups for stable UI
@@ -2822,7 +2863,12 @@ class _MyTasksTabState extends State<MyTasksTab> {
           ..._tasks.map((t) {
             final assignedTeamIds = _assignedTeamIdsByTaskId[t.taskId] ?? const [];
             final assignedLabels = assignedTeamIds
-                .map((id) => (_teamNameById[id] ?? 'Team $id').trim())
+                .map((id) {
+                  final raw = (_teamNameById[id] ?? '').trim();
+                  return raw.isEmpty
+                      ? '(naam ontbreekt)'
+                      : (raw.startsWith('Team ') ? raw : NevoboApi.displayTeamName(raw));
+                })
                 .where((s) => s.isNotEmpty)
                 .toList()
               ..sort();
@@ -2940,9 +2986,12 @@ class _MyTasksTabState extends State<MyTasksTab> {
           (index) {
             final t = _adminTasks[index];
             final assignedTeamIds = _adminAssignedTeamIdsByTaskId[t.taskId] ?? const [];
-            final assignedLabels = assignedTeamIds
-                .map((id) => (_adminTeamNameById[id] ?? 'Team $id').trim())
-                .where((s) => s.isNotEmpty)
+            final assignedLabels = assignedTeamIds.map((id) {
+              final raw = (_adminTeamNameById[id] ?? '').trim();
+              return raw.isEmpty
+                  ? '(naam ontbreekt)'
+                  : (raw.startsWith('Team ') ? raw : NevoboApi.displayTeamName(raw));
+            })
                 .toList()
               ..sort();
 
@@ -3238,7 +3287,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
             continue;
           }
 
-          final title = 'Thuiswedstrijd ${team.code}';
+          final title = 'Thuiswedstrijd ${NevoboApi.displayTeamCode(team.code)}';
           final location = (m.location ?? '').trim();
           final notes = [
             key,
@@ -3663,6 +3712,20 @@ class _CreateTaskPageState extends State<_CreateTaskPage> {
   }
 
   Future<List<_TeamOption>> _fetchTeams() async {
+    try {
+      final all = await NevoboApi.loadAllTeamsFromSupabase(
+        client: _client,
+        excludeTrainingOnly: false,
+      );
+      if (all.isNotEmpty) {
+        final list = all
+            .map((t) => _TeamOption(t.teamId, t.name.trim().isEmpty ? '(naam ontbreekt)' : t.name))
+            .toList()
+          ..sort((a, b) => NevoboApi.compareTeamNames(a.label, b.label, volleystarsLast: true));
+        return list;
+      }
+    } catch (_) {}
+
     final candidates = <String>[
       'team_name',
       'name',
@@ -3683,11 +3746,11 @@ class _CreateTaskPageState extends State<_CreateTaskPage> {
             final id = (row[idField] as num?)?.toInt();
             if (id == null) continue;
             final name = (row[nameField] as String?) ?? '';
-            final label = name.trim().isEmpty ? 'Team $id' : name.trim();
+            final label = name.trim().isEmpty ? '(naam ontbreekt)' : name.trim();
             list.add(_TeamOption(id, label));
           }
           if (list.isNotEmpty) {
-            list.sort((a, b) => a.label.compareTo(b.label));
+            list.sort((a, b) => NevoboApi.compareTeamNames(a.label, b.label, volleystarsLast: true));
             return list;
           }
         } catch (_) {
@@ -3700,8 +3763,8 @@ class _CreateTaskPageState extends State<_CreateTaskPage> {
   }
 
   Future<TimeOfDay?> _pickTimeTyped() async {
-    final hourController = TextEditingController();
-    final minuteController = TextEditingController();
+    var hourText = '';
+    var minuteText = '';
     String? errorText;
 
     final result = await showDialog<TimeOfDay?>(
@@ -3725,12 +3788,12 @@ class _CreateTaskPageState extends State<_CreateTaskPage> {
                     children: [
                       SizedBox(
                         width: 70,
-                        child: TextField(
-                          controller: hourController,
+                        child: TextFormField(
                           autofocus: true,
                           keyboardType: TextInputType.number,
                           textAlign: TextAlign.center,
                           maxLength: 2,
+                          onChanged: (v) => setState(() => hourText = v),
                           decoration: const InputDecoration(
                             counterText: '',
                             hintText: 'uu',
@@ -3749,11 +3812,11 @@ class _CreateTaskPageState extends State<_CreateTaskPage> {
                       ),
                       SizedBox(
                         width: 70,
-                        child: TextField(
-                          controller: minuteController,
+                        child: TextFormField(
                           keyboardType: TextInputType.number,
                           textAlign: TextAlign.center,
                           maxLength: 2,
+                          onChanged: (v) => setState(() => minuteText = v),
                           decoration: const InputDecoration(
                             counterText: '',
                             hintText: 'mm',
@@ -3778,8 +3841,8 @@ class _CreateTaskPageState extends State<_CreateTaskPage> {
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    final h = int.tryParse(hourController.text.trim());
-                    final m = int.tryParse(minuteController.text.trim());
+                    final h = int.tryParse(hourText.trim());
+                    final m = int.tryParse(minuteText.trim());
                     if (h == null || m == null) {
                       setState(() => errorText = 'Vul uur en minuten in.');
                       return;
@@ -3804,9 +3867,6 @@ class _CreateTaskPageState extends State<_CreateTaskPage> {
         );
       },
     );
-
-    hourController.dispose();
-    minuteController.dispose();
     return result;
   }
 

@@ -1,10 +1,11 @@
 -- Admin profile management RPCs (usernames)
 --
 -- Purpose:
--- - Allow admins to list users and update display names even if profiles has strict RLS.
+-- - Allow admins, bestuur and TC to list users and update display names (team toevoegen, namen wijzigen).
 --
 -- Requirements:
 -- - public.is_global_admin() exists (used by the app already).
+-- - public.committee_members (committee_name, profile_id) for bestuur/TC check.
 --
 -- Run this in Supabase SQL Editor.
 
@@ -23,7 +24,23 @@ begin
   if auth.uid() is null then
     raise exception 'Not authenticated';
   end if;
-  if not public.is_global_admin() then
+
+  -- Toegestaan: global admin, bestuur of technische commissie (tc)
+  if public.is_global_admin() then
+    null; -- fall through to return query
+  elsif exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'committee_members')
+    and exists (
+      select 1 from public.committee_members cm
+      where lower(cm.committee_name) = 'bestuur' and cm.profile_id = auth.uid()
+    ) then
+    null;
+  elsif exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'committee_members')
+    and exists (
+      select 1 from public.committee_members cm
+      where lower(cm.committee_name) in ('technische-commissie', 'tc') and cm.profile_id = auth.uid()
+    ) then
+    null;
+  else
     raise exception 'Not allowed';
   end if;
 
@@ -65,7 +82,23 @@ begin
   if auth.uid() is null then
     raise exception 'Not authenticated';
   end if;
-  if not public.is_global_admin() then
+
+  -- Zelfde toegang als admin_list_profiles: admin, bestuur, TC
+  if public.is_global_admin() then
+    null;
+  elsif exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'committee_members')
+    and exists (
+      select 1 from public.committee_members cm
+      where lower(cm.committee_name) = 'bestuur' and cm.profile_id = auth.uid()
+    ) then
+    null;
+  elsif exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'committee_members')
+    and exists (
+      select 1 from public.committee_members cm
+      where lower(cm.committee_name) in ('technische-commissie', 'tc') and cm.profile_id = auth.uid()
+    ) then
+    null;
+  else
     raise exception 'Not allowed';
   end if;
 

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/tab_page_header.dart';
-import 'package:minerva_app/ui/display_name_overrides.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -87,13 +87,23 @@ class _InfoTabState extends State<InfoTab> {
         if (pid.isNotEmpty) profileIds.add(pid);
       }
 
-      // Fetch names en emails (alleen namen en mailadressen — geen andere privacygevoelige data).
+      // Namen en emails: uit RPC-response als die een email-kolom heeft, anders apart laden.
       final nameByProfileId = await _loadProfileNames(
         profileIds: profileIds.toList(),
       );
-      final emailByProfileId = await _loadProfileEmails(
+      Map<String, String> emailByProfileId = await _loadProfileEmails(
         profileIds: profileIds.toList(),
       );
+      final hasEmailInRows = rows.any((r) => r['email'] != null && (r['email'] as String).trim().isNotEmpty);
+      if (hasEmailInRows) {
+        final fromRpc = <String, String>{};
+        for (final row in rows) {
+          final pid = row['profile_id']?.toString() ?? '';
+          final email = (row['email'] as String?)?.trim();
+          if (pid.isNotEmpty && email != null && email.isNotEmpty) fromRpc[pid] = email;
+        }
+        if (fromRpc.isNotEmpty) emailByProfileId = fromRpc;
+      }
 
       // Build members by committee
       for (final row in rows) {
@@ -108,8 +118,10 @@ class _InfoTabState extends State<InfoTab> {
         final memberName = (displayNameFromRow?.isNotEmpty == true)
             ? applyDisplayNameOverrides(displayNameFromRow!)
             : applyDisplayNameOverrides((nameByProfileId[pid] ?? '').trim());
-        final displayName = memberName.isNotEmpty ? memberName : _shortId(pid);
-        final email = emailByProfileId[pid]?.trim();
+        final displayName = memberName.isNotEmpty ? memberName : unknownUserName;
+        final email = (row['email'] as String?)?.trim().isNotEmpty == true
+            ? (row['email'] as String).trim()
+            : emailByProfileId[pid]?.trim();
         // Alleen @-adressen tonen (e-mail van Minerva)
         final emailToShow = (email != null && email.contains('@'))
             ? email
@@ -228,12 +240,6 @@ class _InfoTabState extends State<InfoTab> {
               : '${w[0].toUpperCase()}${w.substring(1).toLowerCase()}',
         )
         .join(' ');
-  }
-
-  String _shortId(String value) {
-    if (value.isEmpty) return '-';
-    if (value.length <= 8) return value;
-    return '${value.substring(0, 4)}…${value.substring(value.length - 4)}';
   }
 
   Future<void> _openMail(String email) async {

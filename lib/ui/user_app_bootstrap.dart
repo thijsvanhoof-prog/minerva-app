@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:minerva_app/ui/notifications/notification_service.dart';
 
 /// Wrapt jouw app met AppUserContext.
@@ -31,6 +32,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
   bool _suppressOuderKindReload = false;
 
   bool _loading = true;
+  bool _initialLoadComplete = false;
   bool _isGlobalAdmin = false;
 
   String _profileId = '';
@@ -93,6 +95,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
         _memberships = const [];
         _committees = const [];
         _loading = false;
+        _initialLoadComplete = false;
       });
       return;
     }
@@ -120,9 +123,9 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
             final m = e as Map<String, dynamic>?;
             if (m == null) return null;
             final id = m['profile_id']?.toString();
-            final name = m['display_name']?.toString() ?? m['profile_id']?.toString() ?? '';
+            final name = (m['display_name']?.toString() ?? '').trim();
             if (id == null || id.isEmpty) return null;
-            return LinkedChild(profileId: id, displayName: name.trim().isEmpty ? 'Kind' : name);
+            return LinkedChild(profileId: id, displayName: name.isEmpty ? 'Kind' : name);
           })
           .whereType<LinkedChild>()
           .toList() ??
@@ -185,9 +188,28 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       if (!teamIds.contains(teamId)) teamIds.add(teamId);
     }
 
-    // 3) Teamnamen ophalen zonder join (dus geen FK nodig).
-    // We don't know your exact teams column names, so we try a few common options.
-    final teamNamesById = await _loadTeamNames(teamIds: teamIds);
+    // 3) Teamnamen (+ nevobo_code) ophalen. Eerst directe tabel, dan RPC-fallback (zelfde als Profiel).
+    Map<int, String> teamNamesById = await _loadTeamNames(teamIds: teamIds);
+    final nevoboCodeById = <int, String>{};
+    if (teamIds.isNotEmpty) {
+      try {
+        final rpc = await _client.rpc(
+          'get_team_names_for_app',
+          params: {'p_team_ids': teamIds},
+        );
+        final rows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+        for (final r in rows) {
+          final tid = (r['team_id'] as num?)?.toInt();
+          if (tid == null) continue;
+          final name = (r['team_name'] as String?) ?? '';
+          if (name.trim().isNotEmpty && (teamNamesById[tid] ?? '').trim().isEmpty) {
+            teamNamesById = {...teamNamesById, tid: name.trim()};
+          }
+          final code = (r['nevobo_code'] as String?)?.trim();
+          if (code != null && code.isNotEmpty) nevoboCodeById[tid] = code;
+        }
+      } catch (_) {}
+    }
 
     // 4) Bouw memberships
     final memberships = <TeamMembership>[];
@@ -198,8 +220,10 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       final teamId = (m['team_id'] as num).toInt();
       final roleRaw = (m['role'] as String?) ?? 'player';
       final role = _normalizeRole(roleRaw);
-      final teamName = teamNamesById[teamId] ?? '';
-      memberships.add(TeamMembership(teamId: teamId, role: role, teamName: teamName));
+      final raw = teamNamesById[teamId] ?? '';
+      final teamName = raw.isEmpty ? raw : NevoboApi.displayTeamName(raw);
+      final nevoboCode = nevoboCodeById[teamId];
+      memberships.add(TeamMembership(teamId: teamId, role: role, teamName: teamName, nevoboCode: nevoboCode));
     }
 
     // Guardian roles (ouder/verzorger): include teams where ANY linked account is a player.
@@ -212,10 +236,12 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       final roleRaw = (m['role'] as String?) ?? 'player';
       final normalized = _normalizeRole(roleRaw);
       if (normalized != 'player') continue;
-      final teamName = teamNamesById[teamId] ?? '';
+      final raw = teamNamesById[teamId] ?? '';
+      final teamName = raw.isEmpty ? raw : NevoboApi.displayTeamName(raw);
+      final nevoboCode = nevoboCodeById[teamId];
       final key = '$teamId:guardian';
       if (seen.add(key)) {
-        memberships.add(TeamMembership(teamId: teamId, role: 'guardian', teamName: teamName));
+        memberships.add(TeamMembership(teamId: teamId, role: 'guardian', teamName: teamName, nevoboCode: nevoboCode));
       }
     }
 
@@ -267,18 +293,13 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       _committees = committees;
       _displayName = displayName;
       _loading = false;
+      _initialLoadComplete = true;
     });
 
-    // Best-effort OneSignal user sync (no-op if not supported / not initialized yet).
+    // FCM: token en standaardvoorkeur registreren na inloggen.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       try {
-        await NotificationService.syncUser(
-          profileId: _profileId,
-          email: _email,
-          isGlobalAdmin: _isGlobalAdmin,
-          memberships: _memberships,
-          committees: _committees,
-        );
+        await NotificationService.syncUser(profileId: _profileId);
       } catch (_) {}
     });
   }
@@ -341,11 +362,21 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
 
   Future<List<String>> _loadCommittees({required String profileId}) async {
     try {
+      final rpc = await _client.rpc('get_my_committees');
+      final rows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+      final set = <String>{};
+      for (final row in rows) {
+        final raw = row['committee_name']?.toString() ?? '';
+        final normalized = _normalizeCommittee(raw);
+        if (normalized.isNotEmpty) set.add(normalized);
+      }
+      if (set.isNotEmpty) return set.toList()..sort();
+    } catch (_) {}
+    try {
       final res = await _client
           .from('committee_members')
           .select('committee_name')
           .eq('profile_id', profileId);
-
       final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
       final set = <String>{};
       for (final row in rows) {
@@ -355,7 +386,6 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       }
       return set.toList()..sort();
     } catch (_) {
-      // If table/column doesn't exist or RLS blocks it, just return empty.
       return const [];
     }
   }
@@ -374,7 +404,8 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
   @override
   Widget build(BuildContext context) {
     final hasSession = _client.auth.currentUser != null;
-    final showApp = !hasSession || !_loading;
+    // Alleen volledig laadscherm bij eerste load; bij refresh blijft de huidige pagina zichtbaar.
+    final showApp = !hasSession || !_loading || _initialLoadComplete;
     final content = showApp
         ? widget.child
         : Scaffold(

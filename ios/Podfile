@@ -46,6 +46,7 @@ post_install do |installer|
   flutter_debug = File.join(flutter_engine, 'ios', 'Flutter.xcframework', 'ios-arm64')
   flutter_release = File.join(flutter_engine, 'ios-release', 'Flutter.xcframework', 'ios-arm64')
 
+  wrap = lambda { |v| v.is_a?(Array) ? v.join(' ') : (v || '$(inherited)') }
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
     target.build_configurations.each do |config|
@@ -54,10 +55,13 @@ post_install do |installer|
       # Incl. onesignal_flutter (nil passed to non-null in OneSignalPlugin.m, OSFlutterUser.m)
       if target.name.downcase.include?('onesignal') || target.name == 'onesignal_flutter'
         config.build_settings['GCC_WARN_NULL_PASSED_TO_NON_NULL_PARAMETER'] = 'NO'
+        config.build_settings['GCC_WARN_NULL_RETURN'] = 'NO'
         config.build_settings['CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER'] = 'NO'
         config.build_settings['CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS'] = 'NO'
         config.build_settings['GCC_TREAT_WARNINGS_AS_ERRORS'] = 'NO'
         config.build_settings['ENABLE_MODULE_VERIFIER'] = 'NO'
+        config.build_settings['ENABLE_CLANG_ANALYZER'] = 'NO'
+        config.build_settings['RUN_CLANG_STATIC_ANALYZER'] = 'NO'
         # Expliciet Flutter framework + header paths voor Archive-builds
         path = config.type == :debug ? flutter_debug : flutter_release
         header_path = File.join(path, 'Flutter.framework', 'Headers')
@@ -69,16 +73,39 @@ post_install do |installer|
         config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]'] = "\"#{sim_path}\" $(inherited)"
         config.build_settings['HEADER_SEARCH_PATHS[sdk=iphonesimulator*]'] = "\"#{sim_header}\" $(inherited)"
         extra = '-w -Wno-nonnull -Wno-incompatible-pointer-types -Wno-incomplete-implementation -Wno-incomplete-umbrella'
-        wrap = lambda { |v| v.is_a?(Array) ? v.join(' ') : (v || '$(inherited)') }
         config.build_settings['WARNING_CFLAGS'] = "#{wrap.call(config.build_settings['WARNING_CFLAGS'])} #{extra}"
         config.build_settings['OTHER_CFLAGS'] = "#{wrap.call(config.build_settings['OTHER_CFLAGS'])} #{extra}"
       end
-      # url_launcher Swift deprecation (keyWindow)
-      if target.name.include?('url_launcher')
+      # app_links / url_launcher / share_plus: Flutter-module vinden + deprecation (e.g. keyWindow)
+      if target.name.include?('app_links') || target.name.include?('url_launcher') || target.name.include?('share_plus')
         config.build_settings['CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS'] = 'NO'
+        config.build_settings['CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER'] = 'NO'
+        config.build_settings['ENABLE_MODULE_VERIFIER'] = 'NO'
+        config.build_settings['OTHER_CFLAGS'] = "#{wrap.call(config.build_settings['OTHER_CFLAGS'])} -Wno-deprecated-declarations"
         sw = config.build_settings['OTHER_SWIFT_FLAGS']
         sw = sw.is_a?(Array) ? sw.join(' ') : (sw || '$(inherited)')
         config.build_settings['OTHER_SWIFT_FLAGS'] = "#{sw} -suppress-warnings"
+        # Flutter framework + headers voor Xcode/Archive + VerifyModule
+        path = config.type == :debug ? flutter_debug : flutter_release
+        header_path = File.join(path, 'Flutter.framework', 'Headers')
+        config.build_settings['FRAMEWORK_SEARCH_PATHS'] = "\"#{path}\" $(inherited)"
+        config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]'] = "\"#{path}\" $(inherited)"
+        config.build_settings['HEADER_SEARCH_PATHS'] = "\"#{header_path}\" $(inherited)"
+        config.build_settings['HEADER_SEARCH_PATHS[sdk=iphoneos*]'] = "\"#{header_path}\" $(inherited)"
+        sim_dir = config.type == :debug ? File.join(flutter_engine, 'ios') : File.join(flutter_engine, 'ios-release')
+        sim_path = File.join(sim_dir, 'Flutter.xcframework', 'ios-arm64_x86_64-simulator')
+        sim_header = File.join(sim_path, 'Flutter.framework', 'Headers')
+        config.build_settings['FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]'] = "\"#{sim_path}\" $(inherited)"
+        config.build_settings['HEADER_SEARCH_PATHS[sdk=iphonesimulator*]'] = "\"#{sim_header}\" $(inherited)"
+      end
+      # image_picker_ios: alle waarschuwingen + analyzer onderdrukken (nil return in plugin pub-cache)
+      if target.name.downcase.include?('image_picker_ios')
+        config.build_settings['GCC_WARN_NULL_PASSED_TO_NON_NULL_PARAMETER'] = 'NO'
+        config.build_settings['GCC_WARN_NULL_RETURN'] = 'NO'
+        config.build_settings['ENABLE_CLANG_ANALYZER'] = 'NO'
+        config.build_settings['RUN_CLANG_STATIC_ANALYZER'] = 'NO'
+        config.build_settings['OTHER_CFLAGS'] = "#{wrap.call(config.build_settings['OTHER_CFLAGS'])} -w"
+        config.build_settings['WARNING_CFLAGS'] = "#{wrap.call(config.build_settings['WARNING_CFLAGS'])} -w"
       end
     end
   end

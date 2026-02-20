@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
+import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart' show unknownUserName;
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 
-/// Alleen voor admins: bekijk en wijzig gebruikersnamen (display_name) van leden.
+/// Bestuur, TC en admins: bekijk alle accounts, wijzig gebruikersnamen; admins kunnen ook accounts verwijderen.
 class AdminGebruikersnamenPage extends StatefulWidget {
   const AdminGebruikersnamenPage({super.key});
 
@@ -110,49 +112,51 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
   }
 
   Future<void> _changeNameFor(_ProfileRow profile) async {
-    final controller = TextEditingController(text: profile.displayName);
+    var draftName = profile.displayName;
     final newName = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Gebruikersnaam wijzigen'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (profile.email.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Text(
-                  profile.email,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 13,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Gebruikersnaam wijzigen'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (profile.email.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(
+                    profile.email,
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                    ),
                   ),
                 ),
+              TextFormField(
+                initialValue: draftName,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Nieuwe gebruikersnaam',
+                  hintText: 'Naam zoals anderen deze persoon zien',
+                ),
+                onChanged: (v) => setDialogState(() => draftName = v),
               ),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Nieuwe gebruikersnaam',
-                hintText: 'Naam zoals anderen deze persoon zien',
-              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: const Text('Annuleren'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(draftName.trim()),
+              child: const Text('Opslaan'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(null),
-            child: const Text('Annuleren'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-            child: const Text('Opslaan'),
-          ),
-        ],
       ),
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) => controller.dispose());
 
     if (newName == null) return;
 
@@ -306,7 +310,9 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
             color: AppColors.iconMuted,
           ),
           title: Text(
-            p.displayName.isEmpty ? p.email : p.displayName,
+            p.displayName.isNotEmpty
+                ? p.displayName
+                : (p.email.isNotEmpty ? p.email : unknownUserName),
             style: const TextStyle(
               color: AppColors.onBackground,
               fontWeight: FontWeight.w600,
@@ -323,12 +329,13 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              IconButton(
-                tooltip: 'Account verwijderen',
-                icon: const Icon(Icons.delete_outline),
-                color: AppColors.error,
-                onPressed: () => _deleteUser(p),
-              ),
+              if (AppUserContext.of(context).hasFullAdminRights)
+                IconButton(
+                  tooltip: 'Account verwijderen',
+                  icon: const Icon(Icons.delete_outline),
+                  color: AppColors.error,
+                  onPressed: () => _deleteUser(p),
+                ),
               const Icon(
                 Icons.edit_outlined,
                 color: AppColors.primary,

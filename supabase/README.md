@@ -49,6 +49,13 @@ Daarna kun je in de app nieuwsberichten toevoegen. Zonder deze tabel wordt mock-
 
 **"column home_news.description does not exist"?** Je hebt waarschijnlijk een oudere tabel zonder `description`. Voer `home_news_minimal.sql` **opnieuw** uit; het script voegt de ontbrekende kolom toe.
 
+**Foto's en linkjes bij nieuws:** Om bij nieuwsberichten afbeeldingen (URL's) en linkjes toe te voegen, voer daarna **`home_news_photos_links.sql`** uit. Daarmee krijg je de kolommen `image_urls` en `links` op `home_news`.
+
+**Foto's uit album (telefoon/desktop):** Om bij nieuws "Foto uit album" te laten uploaden naar Supabase in plaats van alleen als link:
+1. Maak in **Supabase Dashboard → Storage** een nieuwe bucket: naam **`news-images`**, **Public bucket** aan → Create.
+2. Voer in **SQL Editor** het script **`storage_news_images.sql`** uit (toegang voor lezen + upload).
+Daarna worden foto's uit het album geüpload naar Storage en alleen de URL in de database opgeslagen. **Gratis plan:** 1 GB bestandsopslag (ruimte voor veel foto's); database blijft licht.
+
 ## Match availability (Sport → Wedstrijden: Speler / Trainer/coach / Speel niet / Afmelden)
 
 De Sport-tab gebruikt de tabel `match_availability` om per wedstrijd je status op te slaan: **Speler** (speel mee), **Trainer/coach** (aanwezig als trainer/coach), **Speel niet** of **Afmelden**. Zonder deze tabel krijg je **"Could not find the table 'public.match_availability'"** bij het drukken op de knoppen.
@@ -88,3 +95,7 @@ Bij **Commissie → Bestuur → Commissies → Lid toevoegen** kun je normaal al
 3. Klik **Run**.
 
 Vereist: `committee_members`-tabel met je bestuur-leden.
+
+## Commissie → TC: teamleden toevoegen / rol wijzigen
+
+**"Bijwerken mislukt" / `team_members_role_check` (PostgrestException 23514)?** De constraint op `team_members.role` laat dan bijvoorbeeld `trainingslid` niet toe. Voer **`team_members_fix_role_constraint.sql`** uit in de SQL Editor. Daarna zou het toevoegen van leden aan teams en het wijzigen van hun rol weer moeten werken.

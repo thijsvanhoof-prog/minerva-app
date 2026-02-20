@@ -1,0 +1,7 @@
+# Supabase project config (Edge Functions e.d.)
+# Zie https://supabase.com/docs/guides/functions/function-configuration
+
+# Gateway checkt JWT niet; de functie valideert zelf met auth.getUser(jwt).
+# Zo voorkom je 401 Invalid JWT door gateway-problemen.
+[functions.update-onesignal-user-tags]
+verify_jwt = false

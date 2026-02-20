@@ -171,8 +171,8 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
     required String title,
     required TimeOfDay current,
   }) async {
-    final hourController = TextEditingController();
-    final minuteController = TextEditingController();
+    var hourText = '';
+    var minuteText = '';
     String? errorText;
 
     String two(int v) => v.toString().padLeft(2, '0');
@@ -199,8 +199,7 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
                     children: [
                       SizedBox(
                         width: 70,
-                        child: TextField(
-                          controller: hourController,
+                        child: TextFormField(
                           autofocus: true,
                           keyboardType: TextInputType.number,
                           textAlign: TextAlign.center,
@@ -208,6 +207,7 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
                           inputFormatters: [
                             FilteringTextInputFormatter.digitsOnly,
                           ],
+                          onChanged: (v) => setState(() => hourText = v),
                           decoration: const InputDecoration(
                             counterText: '',
                             hintText: 'uu',
@@ -226,14 +226,14 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
                       ),
                       SizedBox(
                         width: 70,
-                        child: TextField(
-                          controller: minuteController,
+                        child: TextFormField(
                           keyboardType: TextInputType.number,
                           textAlign: TextAlign.center,
                           maxLength: 2,
                           inputFormatters: [
                             FilteringTextInputFormatter.digitsOnly,
                           ],
+                          onChanged: (v) => setState(() => minuteText = v),
                           decoration: const InputDecoration(
                             counterText: '',
                             hintText: 'mm',
@@ -258,8 +258,8 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    final h = int.tryParse(hourController.text.trim());
-                    final m = int.tryParse(minuteController.text.trim());
+                    final h = int.tryParse(hourText.trim());
+                    final m = int.tryParse(minuteText.trim());
                     if (h == null || m == null) {
                       setState(() => errorText = 'Vul uur en minuten in.');
                       return;
@@ -284,9 +284,6 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
         );
       },
     );
-
-    hourController.dispose();
-    minuteController.dispose();
     return result;
   }
 
@@ -322,7 +319,7 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
     final raw = (team?.teamName ?? '').trim();
     final pretty = _teamAbbreviation(raw);
     if (pretty.isNotEmpty) return pretty;
-    return 'Team $teamId';
+    return '(naam ontbreekt)';
   }
 
   Widget _weekdayChip(String label, int weekday) {

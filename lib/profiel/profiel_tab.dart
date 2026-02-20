@@ -6,6 +6,7 @@ import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/profiel/ouder_kind_koppel_page.dart';
 import 'package:minerva_app/ui/notifications/notification_settings_page.dart';
+import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -27,6 +28,7 @@ class _ProfielTabState extends State<ProfielTab> {
   bool _isGlobalAdmin = false;
   List<Map<String, dynamic>> _teamRoles = [];
   Map<int, String> _teamNamesById = const {};
+  List<String> _committeesInProfiel = const [];
   final Set<String> _processingLinkRequestIds = {};
   bool _unlinking = false;
   bool _savingDisplayName = false;
@@ -61,6 +63,7 @@ class _ProfielTabState extends State<ProfielTab> {
           _isGlobalAdmin = false;
           _teamRoles = [];
           _teamNamesById = const {};
+          _committeesInProfiel = const [];
           _loading = false;
         });
         return;
@@ -92,18 +95,65 @@ class _ProfielTabState extends State<ProfielTab> {
           .toList()
         ..sort();
 
-      final teamNamesById = await _loadTeamNames(teamIds: teamIds);
+      Map<int, String> teamNamesById = await _loadTeamNames(teamIds: teamIds);
+      if (teamNamesById.isEmpty && teamIds.isNotEmpty) {
+        try {
+          final rpc = await _client.rpc(
+            'get_team_names_for_app',
+            params: {'p_team_ids': teamIds},
+          );
+          final rows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+          final map = <int, String>{};
+          for (final r in rows) {
+            final tid = (r['team_id'] as num?)?.toInt();
+            if (tid != null) {
+              map[tid] = ((r['team_name'] as String?) ?? '').trim();
+            }
+          }
+          teamNamesById = map;
+        } catch (_) {}
+      }
       if (!mounted) return;
 
-      // Sorteer teams volgens app-volgorde (DS -> HS -> MR -> MA -> JA -> MB -> JB -> MC -> JC ...)
+      // Commissies uit Supabase (RPC voorkomt RLS-blokkade), anders directe select als fallback
+      List<String> committeesInProfiel = const [];
+      try {
+        final rpc = await _client.rpc('get_my_committees');
+        final rows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+        final set = <String>{};
+        for (final row in rows) {
+          final raw = row['committee_name']?.toString() ?? '';
+          final n = _normalizeCommitteeName(raw);
+          if (n.isNotEmpty) set.add(n);
+        }
+        committeesInProfiel = set.toList()..sort((a, b) => _formatCommitteeName(a).compareTo(_formatCommitteeName(b)));
+      } catch (_) {
+        try {
+          final cmRes = await _client
+              .from('committee_members')
+              .select('committee_name')
+              .eq('profile_id', user.id);
+          final cmRows = (cmRes as List<dynamic>).cast<Map<String, dynamic>>();
+          final set = <String>{};
+          for (final row in cmRows) {
+            final raw = row['committee_name']?.toString() ?? '';
+            final n = _normalizeCommitteeName(raw);
+            if (n.isNotEmpty) set.add(n);
+          }
+          committeesInProfiel = set.toList()..sort();
+        } catch (_) {}
+      }
+      if (!mounted) return;
+
+      // Sorteer teams volgens app-volgorde (DS -> HS -> XR -> MA -> JA -> MB -> JB -> MC -> JC ...)
       roles.sort((a, b) {
         final ai = (a['team_id'] as num?)?.toInt() ?? 0;
         final bi = (b['team_id'] as num?)?.toInt() ?? 0;
         final an = (teamNamesById[ai] ?? '').trim();
         final bn = (teamNamesById[bi] ?? '').trim();
         return NevoboApi.compareTeamNames(
-          an.isEmpty ? 'Team $ai' : an,
-          bn.isEmpty ? 'Team $bi' : bn,
+          an.isEmpty ? '(naam ontbreekt)' : an,
+          bn.isEmpty ? '(naam ontbreekt)' : bn,
           volleystarsLast: true,
         );
       });
@@ -112,6 +162,7 @@ class _ProfielTabState extends State<ProfielTab> {
         _isGlobalAdmin = isAdmin;
         _teamRoles = roles;
         _teamNamesById = teamNamesById;
+        _committeesInProfiel = committeesInProfiel;
         _loading = false;
       });
     } catch (e) {
@@ -123,6 +174,7 @@ class _ProfielTabState extends State<ProfielTab> {
   }
 
   Future<void> _signOut() async {
+    NotificationService.logout();
     await _client.auth.signOut();
   }
 
@@ -208,6 +260,16 @@ class _ProfielTabState extends State<ProfielTab> {
     });
   }
 
+  String _normalizeCommitteeName(String value) {
+    final c = value.trim().toLowerCase();
+    if (c.isEmpty) return '';
+    if (c == 'bestuur') return 'bestuur';
+    if (c == 'tc' || c.contains('technische')) return 'technische-commissie';
+    if (c == 'cc' || c.contains('communicatie')) return 'communicatie';
+    if (c == 'wz' || c.contains('wedstrijd')) return 'wedstrijdzaken';
+    return c;
+  }
+
   String _formatCommitteeName(String key) {
     final k = key.trim();
     if (k.isEmpty) return key;
@@ -225,6 +287,18 @@ class _ProfielTabState extends State<ProfielTab> {
       default:
         return '${k[0].toUpperCase()}${k.substring(1).replaceAll('-', ' ')}';
     }
+  }
+
+  /// Commissies uit context én lokaal geladen samenvoegen (zodat ze altijd zichtbaar zijn).
+  List<String> _mergedCommittees(AppUserContext ctx) {
+    final seen = <String>{};
+    final list = <String>[];
+    for (final c in [...ctx.committees, ..._committeesInProfiel]) {
+      final n = _normalizeCommitteeName(c);
+      if (n.isNotEmpty && seen.add(n)) list.add(c);
+    }
+    list.sort((a, b) => _formatCommitteeName(a).compareTo(_formatCommitteeName(b)));
+    return list;
   }
 
   List<String> _buildRoleLabels(AppUserContext ctx) {
@@ -323,8 +397,8 @@ class _ProfielTabState extends State<ProfielTab> {
     if (teamId == null) return 'Team';
     final raw = (_teamNamesById[teamId] ?? '').trim();
     final pretty = _teamAbbreviation(raw);
-    if (pretty.isNotEmpty) return pretty;
-    return 'Team $teamId';
+    if (pretty.isNotEmpty) return NevoboApi.displayTeamName(pretty);
+    return '(naam ontbreekt)';
   }
 
   bool _showOuderKindSection(BuildContext context) {
@@ -360,7 +434,7 @@ class _ProfielTabState extends State<ProfielTab> {
                   final m = e as Map<String, dynamic>?;
                   if (m == null) return null;
                   final id = m['profile_id']?.toString();
-                  final name = m['display_name']?.toString() ?? m['profile_id']?.toString() ?? '';
+                  final name = m['display_name']?.toString().trim() ?? '';
                   if (id == null || id.isEmpty) return null;
                   return LinkedChild(profileId: id, displayName: name.trim().isEmpty ? 'Gekoppeld account' : name);
                 })
@@ -581,9 +655,7 @@ class _ProfielTabState extends State<ProfielTab> {
                                             final m = e as Map<String, dynamic>?;
                                             if (m == null) return null;
                                             final id = m['profile_id']?.toString();
-                                            final name = (m['display_name'] ??
-                                                    m['profile_id'] ??
-                                                    '')
+                                            final name = (m['display_name'] ?? '')
                                                 .toString()
                                                 .trim();
                                             if (id == null || id.isEmpty) return null;
@@ -890,7 +962,7 @@ class _ProfielTabState extends State<ProfielTab> {
                     const SizedBox(height: 12),
 
                     // Rollen: toon alleen als de gebruiker minstens één rol heeft.
-                    if (roleLabels.isNotEmpty)
+                    if (roleLabels.isNotEmpty) ...[
                       GlassCard(
                         child: ListTile(
                           leading: Icon(
@@ -914,92 +986,89 @@ class _ProfielTabState extends State<ProfielTab> {
                           ),
                         ),
                       ),
-
-                    // Commissies: expliciet tonen als de gebruiker commissielid is
-                    if (ctx.committees.isNotEmpty) ...[
                       const SizedBox(height: 12),
-                      GlassCard(
-                        child: ListTile(
-                          leading: const Icon(
-                            Icons.badge_outlined,
-                            color: AppColors.iconMuted,
-                          ),
-                          title: const Text(
-                            'Commissies',
-                            style: TextStyle(
-                              color: AppColors.onBackground,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          subtitle: Text(
-                            ctx.committees.map(_formatCommitteeName).join(' • '),
-                            style: const TextStyle(color: AppColors.onBackground),
-                          ),
-                        ),
-                      ),
                     ],
 
-                    const SizedBox(height: 12),
-
-                    // Teamrollen
+                    // Teams, rollen & commissies in één kaart
                     GlassCard(
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       child: Column(
                         children: [
                           ListTile(
                             title: const Text(
-                              'Teams & rollen',
+                              'Teams, rollen & commissies',
                               style: TextStyle(
                                 color: AppColors.onBackground,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
                           ),
-                          if (_teamRoles.isEmpty)
+                          if (_teamRoles.isEmpty && _mergedCommittees(ctx).isEmpty)
                             const Padding(
                               padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
                               child: Text(
-                                'Geen teams gevonden voor dit account.',
+                                'Geen teams of commissies gevonden voor dit account.',
                                 style: TextStyle(color: AppColors.textSecondary),
                               ),
                             )
                           else
-                            ..._teamRoles.map((row) {
-                              final teamId = row['team_id'];
-                              final role = row['role']?.toString() ?? 'player';
-
-                              return ListTile(
-                                dense: true,
-                                leading: const Icon(
-                                  Icons.groups_outlined,
-                                  color: AppColors.iconMuted,
-                                ),
-                                title: Text(
-                                  _teamLabel(teamId),
-                                  style: const TextStyle(
-                                    color: AppColors.onBackground,
-                                    fontWeight: FontWeight.w600,
+                            ...[
+                              ..._teamRoles.map((row) {
+                                final teamId = row['team_id'];
+                                final role = row['role']?.toString() ?? 'player';
+                                return ListTile(
+                                  dense: true,
+                                  leading: const Icon(
+                                    Icons.groups_outlined,
+                                    color: AppColors.iconMuted,
                                   ),
-                                ),
-                                subtitle: Text(
-                                  'Rol: ${_roleLabel(role)}',
-                                  style: const TextStyle(
-                                    color: AppColors.textSecondary,
+                                  title: Text(
+                                    _teamLabel(teamId),
+                                    style: const TextStyle(
+                                      color: AppColors.onBackground,
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
-                                ),
-                              );
-                            }),
+                                  subtitle: Text(
+                                    'Rol: ${_roleLabel(role)}',
+                                    style: const TextStyle(
+                                      color: AppColors.textSecondary,
+                                    ),
+                                  ),
+                                );
+                              }),
+                              ..._mergedCommittees(ctx).map((slug) => ListTile(
+                                        dense: true,
+                                        leading: const Icon(
+                                          Icons.badge_outlined,
+                                          color: AppColors.iconMuted,
+                                        ),
+                                        title: Text(
+                                          _formatCommitteeName(slug),
+                                          style: const TextStyle(
+                                            color: AppColors.onBackground,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                        subtitle: const Text(
+                                          'Commissie',
+                                          style: TextStyle(
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        ),
+                                      )),
+                            ],
                         ],
                       ),
                     ),
 
+                    const SizedBox(height: 12),
+
                     // Ouder-kind account: wissel naar kind of terug naar eigen account
                     if (_showOuderKindSection(context)) ...[
-                      const SizedBox(height: 12),
                       _buildOuderKindCard(context),
+                      const SizedBox(height: 12),
                     ],
-
-                    const SizedBox(height: 24),
 
                     GlassCard(
                       child: ListTile(
@@ -1218,6 +1287,7 @@ class _ProfielTabState extends State<ProfielTab> {
       if (!mounted) return;
 
       showTopMessage(context, 'Account verwijderd.');
+      NotificationService.logout();
       await _client.auth.signOut();
     } on PostgrestException catch (e) {
       if (!mounted) return;

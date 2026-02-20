@@ -5,7 +5,7 @@ import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
-import 'package:minerva_app/ui/display_name_overrides.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 class BestuurTab extends StatefulWidget {
@@ -22,12 +22,18 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
+    _tabController.addListener(_onTabChanged);
   }
 
   @override
   void dispose() {
+    _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     super.dispose();
+  }
+
+  void _onTabChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -56,13 +62,15 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              padding: AppColors.tabContentPadding,
               child: GlassCard(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 showBorder: false,
                 showShadow: false,
                 child: TabBar(
                   controller: _tabController,
+                  isScrollable: true,
+                  tabAlignment: TabAlignment.center,
                   dividerColor: Colors.transparent,
                   indicator: BoxDecoration(
                     color: AppColors.darkBlue,
@@ -70,20 +78,20 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
                   ),
                   indicatorSize: TabBarIndicatorSize.tab,
                   tabs: const [
+                    Tab(text: 'Commissies'),
                     Tab(text: 'Trainingen'),
                     Tab(text: 'Wedstrijden'),
-                    Tab(text: 'Commissies'),
                   ],
                 ),
               ),
             ),
             Expanded(
-              child: TabBarView(
-                controller: _tabController,
+              child: IndexedStack(
+                index: _tabController.index,
                 children: const [
+                  _BestuurCommissiesView(),
                   _BestuurTrainingenView(),
                   _BestuurWedstrijdenView(),
-                  _BestuurCommissiesView(),
                 ],
               ),
             ),
@@ -227,10 +235,29 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
             .gte('start_datetime', fromLocal.toUtc().toIso8601String())
             .order('start_datetime', ascending: true);
       } else {
-        res = await query.order('start_datetime', ascending: false).limit(500);
+        res = await query.order('start_datetime', ascending: true).limit(500);
       }
 
       final rows = res.cast<Map<String, dynamic>>();
+      if (_fromDateLocal == null) {
+        // Sorteer: eerst volgende datum bovenaan, verst onderaan.
+        rows.sort((a, b) {
+          final rawA = a['start_datetime'] ?? a['start_timestamp'];
+          final rawB = b['start_datetime'] ?? b['start_timestamp'];
+          final startA = rawA is DateTime ? rawA : DateTime.tryParse(rawA?.toString() ?? '');
+          final startB = rawB is DateTime ? rawB : DateTime.tryParse(rawB?.toString() ?? '');
+          if (startA == null && startB == null) return 0;
+          if (startA == null) return 1;
+          if (startB == null) return -1;
+          final now = DateTime.now();
+          final aFuture = startA.isAfter(now);
+          final bFuture = startB.isAfter(now);
+          if (aFuture && !bFuture) return -1;
+          if (!aFuture && bFuture) return 1;
+          if (aFuture && bFuture) return startA.compareTo(startB);
+          return startB.compareTo(startA);
+        });
+      }
       final teamIds = rows
           .map((r) => (r['team_id'] as num?)?.toInt())
           .whereType<int>()
@@ -338,22 +365,34 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
             )
           else if (_error != null)
             Text(_error!, style: const TextStyle(color: AppColors.error))
-          else if (_sessions.isEmpty)
-            Text(
-              _fromDateLocal == null
-                  ? 'Geen trainingen gevonden.'
-                  : 'Geen trainingen gevonden vanaf ${_formatDate(_fromDateLocal!)}.',
-              style: const TextStyle(color: AppColors.textSecondary),
-            )
-          else
-            ..._sessions.map((s) {
+          else ...[
+            Builder(
+              builder: (context) {
+                final now = DateTime.now();
+                final visible = _sessions.where((s) {
+                  final start = _parseDate(s['start_datetime'] ?? s['start_timestamp']);
+                  final end = _parseDate(s['end_timestamp']);
+                  final einde = end ?? start?.add(const Duration(hours: 2));
+                  return einde != null && einde.isAfter(now);
+                }).toList();
+                if (visible.isEmpty) {
+                  return Text(
+                    _fromDateLocal == null
+                        ? 'Geen trainingen gevonden.'
+                        : 'Geen trainingen gevonden vanaf ${_formatDate(_fromDateLocal!)}.',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  );
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: visible.map((s) {
               final id = (s['session_id'] as num).toInt();
               final teamId = (s['team_id'] as num?)?.toInt();
               final teamLabel = teamId == null
                   ? 'Team'
                   : (_teamNameById[teamId]?.trim().isNotEmpty == true
-                      ? _teamNameById[teamId]!.trim()
-                      : 'Team $teamId');
+                      ? NevoboApi.displayTeamName(_teamNameById[teamId]!.trim())
+                      : '(naam ontbreekt)');
               final title = (s['title'] ?? 'Training').toString().trim();
               final loc = (s['location'] ?? '').toString().trim();
               final start = _parseDate(s['start_datetime'] ?? s['start_timestamp']);
@@ -451,7 +490,11 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
                   ],
                 ),
               );
-            }),
+            }).toList(),
+                );
+              },
+            ),
+          ],
         ],
       ),
     );
@@ -489,12 +532,6 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
     _loadTeams();
   }
 
-  String _displayTeamCode(String code) {
-    final normalized = code.trim().toUpperCase();
-    if (normalized.startsWith('MR')) return 'XR${normalized.substring(2)}';
-    return normalized;
-  }
-
   String _formatDateTime(DateTime dt) {
     final d = dt.toLocal();
     String two(int v) => v.toString().padLeft(2, '0');
@@ -511,10 +548,14 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
       _error = null;
     });
     try {
-      final teams = await NevoboApi.loadTeamsFromSupabase(client: _client);
+      // Alle teams uit de tabel (zelfde bron als TC/Standen), inclusief training-only.
+      final withIds = await NevoboApi.loadTeamsFromSupabaseWithIds(
+        client: _client,
+        excludeTrainingOnly: false,
+      );
       if (!mounted) return;
       setState(() {
-        _teams = teams;
+        _teams = withIds.map((e) => e.team).toList();
         _loadingTeams = false;
       });
     } catch (e) {
@@ -743,7 +784,7 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                             borderRadius: BorderRadius.circular(AppColors.cardRadius),
                           ),
                           child: Text(
-                            _displayTeamCode(team.code),
+                            NevoboApi.displayTeamCode(team.code),
                             style: Theme.of(context).textTheme.titleLarge?.copyWith(
                                   color: AppColors.primary,
                                   fontWeight: FontWeight.w900,
@@ -822,7 +863,7 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                m.summary,
+                                NevoboApi.displayTeamName(m.summary),
                                 style: TextStyle(
                                   color: AppColors.onBackground,
                                   fontWeight: FontWeight.w800,
@@ -915,12 +956,6 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     _loadAllProfilesForManagement();
   }
 
-  String _shortId(String value) {
-    if (value.isEmpty) return '-';
-    if (value.length <= 8) return value;
-    return '${value.substring(0, 4)}…${value.substring(value.length - 4)}';
-  }
-
   String _normalizeCommittee(String value) {
     final c = value.trim().toLowerCase();
     if (c.isEmpty) return '';
@@ -969,26 +1004,44 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
   Future<void> _loadAllProfilesForManagement() async {
     setState(() => _loadingProfiles = true);
     List<_ProfileOption> list = [];
-    try {
-      // RPC bypasses profiles RLS (bestuur ziet anders alleen eigen profiel).
-      final res = await _client.rpc('list_profiles_for_committee_management');
-      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+    List<_ProfileOption> normalizeRows(List<dynamic>? rawRows) {
+      final rows = rawRows?.cast<Map<String, dynamic>>() ?? const <Map<String, dynamic>>[];
+      final out = <_ProfileOption>[];
       for (final p in rows) {
-        final id = p['profile_id']?.toString() ?? '';
+        final id = (p['profile_id'] ?? p['id'])?.toString() ?? '';
         if (id.isEmpty) continue;
-        final name = applyDisplayNameOverrides(
-          (p['display_name'] ?? '').toString().trim(),
-        );
+        final rawName = (p['display_name'] ?? p['full_name'] ?? p['name'] ?? '').toString().trim();
+        final name = applyDisplayNameOverrides(rawName);
         final email = (p['email'] ?? '').toString().trim();
-        list.add(_ProfileOption(
+        out.add(_ProfileOption(
           profileId: id,
-          name: name.isNotEmpty ? name : (email.isNotEmpty ? email : _shortId(id)),
+          name: name.isNotEmpty ? name : (email.isNotEmpty ? email : unknownUserName),
           email: email.isNotEmpty ? email : null,
         ));
       }
-      list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    } catch (_) {
-      // Fallback: direct profiles select (werkt alleen als RLS het toelaat).
+      out.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      return out;
+    }
+
+    // 1) Preferred for bestuur
+    for (final rpc in const [
+      'list_profiles_for_committee_management',
+      // Extra fallbacks (same shape) in case one RPC is missing/broken in DB.
+      'admin_list_profiles',
+      'get_profiles_for_tc',
+    ]) {
+      try {
+        final res = await _client.rpc(rpc);
+        final parsed = normalizeRows(res as List<dynamic>?);
+        if (parsed.isNotEmpty) {
+          list = parsed;
+          break;
+        }
+      } catch (_) {}
+    }
+
+    // 2) Last fallback: direct profiles select (werkt alleen als RLS het toelaat).
+    if (list.isEmpty) {
       List<Map<String, dynamic>> raw = const [];
       for (final select in const [
         'id, display_name, full_name, email',
@@ -1003,20 +1056,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
           break;
         } catch (_) {}
       }
-      for (final p in raw) {
-        final id = p['id']?.toString() ?? '';
-        if (id.isEmpty) continue;
-        final name = applyDisplayNameOverrides(
-          (p['display_name'] ?? p['full_name'] ?? p['name'] ?? '').toString().trim(),
-        );
-        final email = (p['email'] ?? '').toString().trim();
-        list.add(_ProfileOption(
-          profileId: id,
-          name: name.isNotEmpty ? name : (email.isNotEmpty ? email : _shortId(id)),
-          email: email.isNotEmpty ? email : null,
-        ));
-      }
-      list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      list = normalizeRows(raw);
     }
     if (!mounted) return;
     setState(() {
@@ -1082,7 +1122,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
         final memberName = (displayNameFromRow?.isNotEmpty == true)
             ? applyDisplayNameOverrides(displayNameFromRow!)
             : applyDisplayNameOverrides((nameByProfileId[pid] ?? '').trim());
-        final displayName = memberName.isNotEmpty ? memberName : _shortId(pid);
+        final displayName = memberName.isNotEmpty ? memberName : unknownUserName;
 
         final function = (row['function'] ?? row['role'] ?? row['title'])?.toString();
         _membersByCommittee.putIfAbsent(key, () => []).add(
@@ -1158,12 +1198,29 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
   }
 
   Future<void> _addMemberToCommittee(String committeeKey) async {
+    // Als de profielenlijst leeg is, eerst opnieuw laden (bijv. na eerdere fout).
+    if (_allProfiles.isEmpty) {
+      await _loadAllProfilesForManagement();
+      if (!mounted) return;
+    }
     final alreadyIn =
         (_membersByCommittee[committeeKey] ?? []).map((m) => m.profileId).toSet();
     final available =
         _allProfiles.where((p) => !alreadyIn.contains(p.profileId)).toList();
     if (available.isEmpty) {
-      showTopMessage(context, 'Iedereen zit al in deze commissie.', isError: true);
+      if (_allProfiles.isEmpty) {
+        showTopMessage(
+          context,
+          'Kon de ledenlijst niet laden. Trek omlaag om te vernieuwen en probeer het opnieuw.',
+          isError: true,
+        );
+      } else {
+        showTopMessage(
+          context,
+          'Geen extra accounts beschikbaar voor deze commissie (geladen: ${_allProfiles.length}, al in commissie: ${alreadyIn.length}).',
+          isError: true,
+        );
+      }
       return;
     }
     var search = '';
@@ -1318,41 +1375,43 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     String committeeKey,
     _CommitteeMember member,
   ) async {
-    final controller = TextEditingController(text: member.function ?? '');
+    var draftFunction = member.function ?? '';
     final result = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Lid in ${_committeeLabel(committeeKey)}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(member.name, style: const TextStyle(fontWeight: FontWeight.w800)),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              decoration: const InputDecoration(labelText: 'Functie of rol'),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Lid in ${_committeeLabel(committeeKey)}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(member.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 16),
+              TextFormField(
+                initialValue: draftFunction,
+                decoration: const InputDecoration(labelText: 'Functie of rol'),
+                onChanged: (v) => setDialogState(() => draftFunction = v),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop('remove'),
+              child: Text('Uit commissie halen', style: TextStyle(color: AppColors.error)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: const Text('Annuleren'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop('save'),
+              child: const Text('Opslaan'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop('remove'),
-            child: Text('Uit commissie halen', style: TextStyle(color: AppColors.error)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(null),
-            child: const Text('Annuleren'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop('save'),
-            child: const Text('Opslaan'),
-          ),
-        ],
       ),
     );
-    final newFunction = controller.text.trim();
-    controller.dispose();
+    final newFunction = draftFunction.trim();
     if (result == null) return;
 
     if (result == 'remove') {
@@ -1395,11 +1454,15 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     }
   }
 
+  Future<void> _refreshCommitteesAndProfiles() async {
+    await Future.wait([_loadCommittees(), _loadAllProfilesForManagement()]);
+  }
+
   @override
   Widget build(BuildContext context) {
     return RefreshIndicator(
       color: AppColors.primary,
-      onRefresh: _loadCommittees,
+      onRefresh: _refreshCommitteesAndProfiles,
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(12),

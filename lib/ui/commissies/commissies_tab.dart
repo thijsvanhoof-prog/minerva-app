@@ -76,33 +76,25 @@ class CommissiesTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
-    List<String> committees;
-    // Bestuur: alles kunnen zien (Admin-tab komt er alleen bij voor global admins).
-    if (ctx.isInBestuur) {
-      committees = [
-        'bestuur',
-        'technische-commissie',
-        'communicatie',
-        'wedstrijdzaken',
-      ];
-    } else {
-      // TC, WZ, CC: alleen de eigen tab. Overige commissies (jeugd, etc.) behouden.
-      committees = [];
-      if (ctx.isInTechnischeCommissie) committees.add('technische-commissie');
-      if (ctx.isInWedstrijdzaken) committees.add('wedstrijdzaken');
-      if (ctx.isInCommunicatie) committees.add('communicatie');
-      for (final c in ctx.committees) {
-        final k = c.trim().toLowerCase();
-        if (k != 'bestuur' && k != 'technische-commissie' && k != 'tc' &&
-            k != 'wedstrijdzaken' && k != 'communicatie' && k != 'admin') {
-          if (!committees.any((x) => x.trim().toLowerCase() == k)) {
-            committees.add(c);
-          }
+    // Altijd de vier vaste tabs tonen (Bestuur, TC, CC, WZ). Toegang tot inhoud regelt elke tab zelf.
+    final List<String> committees = [
+      'bestuur',
+      'technische-commissie',
+      'communicatie',
+      'wedstrijdzaken',
+    ];
+    // Eventuele extra commissies uit context (bijv. jeugd) toevoegen.
+    for (final c in ctx.committees) {
+      final k = c.trim().toLowerCase();
+      if (k != 'bestuur' && k != 'technische-commissie' && k != 'tc' &&
+          k != 'wedstrijdzaken' && k != 'communicatie' && k != 'admin') {
+        if (!committees.any((x) => x.trim().toLowerCase() == k)) {
+          committees.add(c);
         }
       }
     }
-    // Admin-tab alleen voor global admins: gebruikersnamen wijzigen en accounts verwijderen.
-    if (ctx.hasFullAdminRights && !committees.any((c) => c.trim().toLowerCase() == 'admin')) {
+    // Admin-tab voor iedereen die alle accounts mag zien (bestuur, TC, admins).
+    if (ctx.canViewAllAccounts && !committees.any((c) => c.trim().toLowerCase() == 'admin')) {
       committees.add('admin');
     }
     committees.sort((a, b) {
@@ -218,7 +210,7 @@ class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              padding: AppColors.tabContentPadding,
               child: GlassCard(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 showBorder: false,
@@ -240,50 +232,22 @@ class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
               ),
             ),
             Expanded(
-              child: TabBarView(
-                controller: controller,
-                children: widget.committees.asMap().entries.map((e) {
-                  return _LazyCommitteeContent(
-                    committeeKey: e.value,
-                    committeeName: CommissiesTab._formatCommitteeName(e.value),
-                    tabIndex: e.key,
-                  );
-                }).toList(),
+              child: AnimatedBuilder(
+                animation: controller,
+                builder: (context, _) => IndexedStack(
+                  index: controller.index,
+                  children: widget.committees.map((c) {
+                    return _CommitteeContent(
+                      committeeKey: c,
+                      committeeName: CommissiesTab._formatCommitteeName(c),
+                    );
+                  }).toList(),
+                ),
               ),
             ),
           ],
         ),
       ),
-    );
-  }
-}
-
-/// Bouwt alleen de inhoud wanneer dit tabblad geselecteerd is – voorkomt freeze bij opstarten.
-class _LazyCommitteeContent extends StatelessWidget {
-  final String committeeKey;
-  final String committeeName;
-  final int tabIndex;
-
-  const _LazyCommitteeContent({
-    required this.committeeKey,
-    required this.committeeName,
-    required this.tabIndex,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final controller = DefaultTabController.of(context);
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, _) {
-        if (controller.index != tabIndex) {
-          return const SizedBox.expand(); // Placeholder, geen zware content
-        }
-        return _CommitteeContent(
-          committeeKey: committeeKey,
-          committeeName: committeeName,
-        );
-      },
     );
   }
 }
@@ -352,7 +316,7 @@ class _AdminCommitteeView extends StatelessWidget {
                 ),
               ),
               subtitle: const Text(
-                'Wijzig gebruikersnamen van leden of verwijder accounts. Alleen zichtbaar voor admins.',
+                'Bekijk alle accounts, wijzig gebruikersnamen of voeg leden aan teams toe. Zichtbaar voor bestuur, TC en admins.',
                 style: TextStyle(color: AppColors.textSecondary),
               ),
               trailing: const Icon(Icons.chevron_right),

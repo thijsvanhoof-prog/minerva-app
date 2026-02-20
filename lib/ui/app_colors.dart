@@ -50,4 +50,7 @@ class AppColors {
 
   /// Standaard afronding voor kaarten
   static const double cardRadius = 18.0;
+
+  /// Zelfde afstand tussen header/tabbar en inhoud op alle tabbladen
+  static const EdgeInsets tabContentPadding = EdgeInsets.fromLTRB(16, 12, 16, 12);
 }

@@ -6,7 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart'; // TeamMembership
-import 'package:minerva_app/ui/display_name_overrides.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/trainingen_wedstrijden/add_training_page.dart';
 
 /// playing = speler, coach = trainer/coach. Aanwezig = één van beide; Afwezig = delete.
@@ -111,9 +111,26 @@ class _TrainingsTabState extends State<TrainingsTab> {
         )
         .eq('session_type', 'training')
         .inFilter('team_id', teamIds)
-        .order('start_datetime', ascending: false);
+        .order('start_datetime', ascending: true);
 
     final sessions = (sessionsRes as List<dynamic>).cast<Map<String, dynamic>>();
+    // Sorteer: eerst volgende datum bovenaan, verst onderaan.
+    sessions.sort((a, b) {
+      final rawA = a['start_datetime'] ?? a['start_timestamp'];
+      final rawB = b['start_datetime'] ?? b['start_timestamp'];
+      final startA = rawA is DateTime ? rawA : DateTime.tryParse(rawA?.toString() ?? '');
+      final startB = rawB is DateTime ? rawB : DateTime.tryParse(rawB?.toString() ?? '');
+      if (startA == null && startB == null) return 0;
+      if (startA == null) return 1;
+      if (startB == null) return -1;
+      final now = DateTime.now();
+      final aFuture = startA.isAfter(now);
+      final bFuture = startB.isAfter(now);
+      if (aFuture && !bFuture) return -1;
+      if (!aFuture && bFuture) return 1;
+      if (aFuture && bFuture) return startA.compareTo(startB);
+      return startB.compareTo(startA);
+    });
     _trainings = sessions;
 
     _statusBySessionId.clear();
@@ -148,7 +165,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
       if (sid == null) continue;
       final pid = r['person_id']?.toString() ?? '';
       final status = (r['status'] ?? '').toString().trim().toLowerCase();
-      final name = pid.isEmpty ? '' : (namesById[pid] ?? _shortId(pid));
+      final name = pid.isEmpty ? '' : (namesById[pid] ?? unknownUserName);
 
       if (pid == targetProfileId) {
         final s = _statusFromString(status);
@@ -170,7 +187,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
 
     if (!mounted) return;
-    final myName = namesById[targetProfileId] ?? _shortId(targetProfileId);
+    final myName = namesById[targetProfileId] ?? unknownUserName;
     setState(() {
       _myDisplayName = myName;
       _playingBySessionId
@@ -204,9 +221,6 @@ class _TrainingsTabState extends State<TrainingsTab> {
     _coachBySessionId[sessionId] = coaches;
   }
 
-  String _shortId(String v) =>
-      v.length <= 8 ? v : '${v.substring(0, 4)}…${v.substring(v.length - 4)}';
-
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> ids) async {
     if (ids.isEmpty) return {};
     final list = ids.toList();
@@ -224,7 +238,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
         if (id.isEmpty) continue;
         final raw = (r['display_name'] ?? '').toString().trim();
         final name = applyDisplayNameOverrides(raw);
-        map[id] = name.isNotEmpty ? name : _shortId(id);
+        map[id] = name.isNotEmpty ? name : unknownUserName;
       }
       if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
         map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -256,7 +270,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
           .toString()
           .trim();
       final name = applyDisplayNameOverrides(n);
-      map[id] = name.isNotEmpty ? name : _shortId(id);
+      map[id] = name.isNotEmpty ? name : unknownUserName;
     }
     if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
       map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -303,8 +317,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
     return roles.any((r) => r == 'trainer' || r == 'coach');
   }
 
-  /// Binnenkomende trainingen (niet geannuleerd, start in de toekomst).
-  List<Map<String, dynamic>> get _upcomingTrainings {
+  /// Trainingen die nog niet afgelopen zijn (niet geannuleerd, start in de toekomst).
+  /// Gebruikt voor zowel de "Voor alle"-kaart als de lijst; verleden wordt niet getoond.
+  List<Map<String, dynamic>> get _visibleTrainings {
     final now = DateTime.now();
     return _trainings.where((t) {
       if (t['is_cancelled'] == true) return false;
@@ -466,7 +481,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
   Future<void> _setMyStatusForAllTrainingsAanwezig() async {
     final user = _client.auth.currentUser;
     if (user == null) return;
-    final upcoming = _upcomingTrainings;
+    final upcoming = _visibleTrainings;
     if (upcoming.isEmpty) return;
 
     final ctx = AppUserContext.of(context);
@@ -620,7 +635,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
               );
             }
 
-            if (_trainings.isEmpty) {
+            final visible = _visibleTrainings;
+            if (visible.isEmpty) {
               return ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.all(16),
@@ -635,14 +651,14 @@ class _TrainingsTabState extends State<TrainingsTab> {
               );
             }
 
-            final upcoming = _upcomingTrainings;
+            final upcoming = visible;
             final hasUpcomingCard = upcoming.isNotEmpty;
             final hasHeader = _canCreateTrainings;
 
             return ListView.separated(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(12),
-              itemCount: (hasUpcomingCard ? 1 : 0) + (hasHeader ? 1 : 0) + _trainings.length,
+              itemCount: (hasUpcomingCard ? 1 : 0) + (hasHeader ? 1 : 0) + visible.length,
               separatorBuilder: (_, _) => const SizedBox(height: 8),
               itemBuilder: (context, index) {
                 if (hasUpcomingCard && index == 0) {
@@ -756,7 +772,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
                 final trainingIndex =
                     index - (hasUpcomingCard ? 1 : 0) - (hasHeader ? 1 : 0);
-                final session = _trainings[trainingIndex];
+                final session = visible[trainingIndex];
                 final sessionId = (session['session_id'] as num).toInt();
                 final teamId = (session['team_id'] as num?)?.toInt() ?? 0;
                 final isCancelled = (session['is_cancelled'] == true);

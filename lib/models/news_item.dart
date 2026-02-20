@@ -1,3 +1,21 @@
+/// Een link bij een nieuwsbericht (url + optioneel label).
+class NewsLink {
+  final String url;
+  final String? label;
+
+  const NewsLink({required this.url, this.label});
+
+  String get displayLabel => (label != null && label!.trim().isNotEmpty)
+      ? label!.trim()
+      : _shortUrl(url);
+
+  static String _shortUrl(String url) {
+    final u = url.trim();
+    if (u.length <= 45) return u;
+    return '${u.substring(0, 42)}…';
+  }
+}
+
 class NewsItem {
   final String id;
   final String title;
@@ -7,6 +25,10 @@ class NewsItem {
   final NewsCategory category;
   final bool pinned;
   final DateTime? visibleUntil;
+  /// URL's van afbeeldingen (Supabase Storage of externe URLs).
+  final List<String> imageUrls;
+  /// Linkjes bij het bericht (url + optioneel label).
+  final List<NewsLink> links;
 
   const NewsItem({
     required this.id,
@@ -17,6 +39,8 @@ class NewsItem {
     required this.category,
     this.pinned = false,
     this.visibleUntil,
+    this.imageUrls = const [],
+    this.links = const [],
   });
 }
 

@@ -60,11 +60,14 @@ class TeamMembership {
   final int teamId;
   final String role;
   final String teamName;
+  /// Nevobo-teamcode (HS1, DS1, …) indien bekend; gebruikt voor Standen/Wedstrijden.
+  final String? nevoboCode;
 
   const TeamMembership({
     required this.teamId,
     required this.role,
     required this.teamName,
+    this.nevoboCode,
   });
 
   bool get canManageTeam {
@@ -163,6 +166,10 @@ class AppUserContext extends InheritedWidget {
   // Tasks
   bool get canViewAllTasks => hasFullAdminRights || isInBestuur || isInWedstrijdzaken;
   bool get canManageTasks => hasFullAdminRights || isInWedstrijdzaken;
+
+  /// Weergave van alle accounts (gebruikersnamen, team toevoegen): bestuur, TC en admins.
+  bool get canViewAllAccounts =>
+      hasFullAdminRights || isInBestuur || isInTechnischeCommissie;
 
   static AppUserContext of(BuildContext context) {
     final result =

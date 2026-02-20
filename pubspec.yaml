@@ -17,11 +17,18 @@ dependencies:
   url_launcher: ^6.3.0
   path_provider: ^2.1.4
   share_plus: ^10.1.4
+  image_picker: ^1.0.7
 
   shared_preferences: ^2.3.3
   supabase_flutter: ^2.9.0
-  onesignal_flutter: 5.3.7
+  firebase_core: ^3.8.1
+  firebase_messaging: ^15.1.5
   flutter_dotenv: ^5.2.1
+
+dependency_overrides:
+  # Workaround: path_provider_foundation 2.6.0 gebruikt objective_c 9.x native assets;
+  # de iOS-build vindt dat asset niet in build/native_assets/ios. Pin op 2.5.1 (plugin-based).
+  path_provider_foundation: 2.5.1
 
 dev_dependencies:
   flutter_test:

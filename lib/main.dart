@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui';
 
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -31,6 +32,13 @@ Future<void> main() async {
     };
 
     try {
+      // Firebase moet vóór elk Firebase-gebruik (incl. plugins) geïnitialiseerd zijn.
+      try {
+        await Firebase.initializeApp();
+      } catch (e) {
+        debugPrint('Firebase init failed (push uit): $e');
+      }
+
       await dotenv.load(fileName: '.env');
 
       final supabaseUrl = dotenv.env['SUPABASE_URL'] ?? '';
@@ -84,17 +92,14 @@ Future<void> main() async {
         anonKey: supabaseKey,
       );
 
-      runApp(const MinervaApp());
+      // Firebase (FCM) – vereist GoogleService-Info.plist (iOS) en google-services.json (Android).
+      try {
+        await NotificationService.initialize();
+      } catch (e) {
+        debugPrint('Notification init failed (push uit): $e');
+      }
 
-      // OneSignal init after first frame (safer on cold-start iOS).
-      WidgetsBinding.instance.addPostFrameCallback((_) async {
-        try {
-          final oneSignalAppId = dotenv.env['ONESIGNAL_APP_ID'] ?? '';
-          await NotificationService.initialize(oneSignalAppId: oneSignalAppId);
-        } catch (e) {
-          debugPrint('OneSignal init failed: $e');
-        }
-      });
+      runApp(const MinervaApp());
     } catch (e, stackTrace) {
       debugPrint('Startup error: $e');
       debugPrint('$stackTrace');
