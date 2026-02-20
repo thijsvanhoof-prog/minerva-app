@@ -6,6 +6,7 @@ import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
+import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/utils/dutch_holidays.dart';
 
 class AddTrainingPage extends StatefulWidget {
@@ -432,6 +433,10 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
       }
 
       await _client.from('sessions').insert(inserts);
+      await NotificationService.sendBroadcastUpdate(
+        title: 'Nieuwe training toegevoegd',
+        body: '$title (${inserts.length}x)',
+      );
 
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {

@@ -118,31 +118,41 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: const Text('Gebruikersnaam wijzigen'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (profile.email.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Text(
-                    profile.email,
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 13,
+          content: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.22),
+                width: 1.1,
+              ),
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (profile.email.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      profile.email,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 13,
+                      ),
                     ),
                   ),
+                TextFormField(
+                  initialValue: draftName,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Nieuwe gebruikersnaam',
+                    hintText: 'Naam zoals anderen deze persoon zien',
+                  ),
+                  onChanged: (v) => setDialogState(() => draftName = v),
                 ),
-              TextFormField(
-                initialValue: draftName,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  labelText: 'Nieuwe gebruikersnaam',
-                  hintText: 'Naam zoals anderen deze persoon zien',
-                ),
-                onChanged: (v) => setDialogState(() => draftName = v),
-              ),
-            ],
+              ],
+            ),
           ),
           actions: [
             TextButton(

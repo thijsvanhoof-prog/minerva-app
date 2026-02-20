@@ -5,6 +5,7 @@ import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -106,16 +107,41 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final parts = summary.split(sep);
     if (parts.isEmpty) return Text(summary, style: base);
 
+    final minervaSegmentCount = parts
+        .where((p) => p.toLowerCase().contains('minerva'))
+        .length;
+    final isInternalMinervaMatch = minervaSegmentCount >= 2;
+
     if (teamCode != null && teamCode.trim().isNotEmpty) {
       final spans = <InlineSpan>[];
+      var anyExactMatch = false;
       for (var i = 0; i < parts.length; i++) {
         if (i > 0) spans.add(TextSpan(text: sep, style: base));
         final segment = parts[i].trim();
-        final highlight = _segmentMatchesTeamCode(segment, teamCode);
+        final highlight = _segmentMatchesTeamCode(segment, teamCode) ||
+            (isInternalMinervaMatch && segment.toLowerCase().contains('minerva'));
+        if (highlight) anyExactMatch = true;
         spans.add(TextSpan(
           text: parts[i],
           style: highlight ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900) : base,
         ));
+      }
+      // Fallback: als exacte teamcode niet matcht, highlight alsnog eerste "Minerva"-segment.
+      if (!anyExactMatch) {
+        spans.clear();
+        var highlighted = false;
+        for (var i = 0; i < parts.length; i++) {
+          if (i > 0) spans.add(TextSpan(text: sep, style: base));
+          final raw = parts[i];
+          final isMinervaSegment = !highlighted && raw.toLowerCase().contains('minerva');
+          if (isMinervaSegment) highlighted = true;
+          spans.add(TextSpan(
+            text: raw,
+            style: isMinervaSegment
+                ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)
+                : base,
+          ));
+        }
       }
       return RichText(
         text: TextSpan(style: base, children: spans),
@@ -704,6 +730,11 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
             final standings = await NevoboApi.fetchStandingsForTeam(team: team);
             if (!mounted) return;
             setState(() => _leaderboardByTeam[team.code] = standings);
+            await NotificationService.sendBroadcastUpdateWithCooldown(
+              title: 'Stand bijgewerkt',
+              body: NevoboApi.displayTeamCode(team.code),
+              cooldownKey: 'stand:${team.code}',
+            );
             // Sync teamnaam uit API naar Supabase (geen team_id in deze tab).
             for (final s in standings) {
               if (s.teamName.trim().toLowerCase().contains('minerva')) {
@@ -1118,7 +1149,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                                 child: Text(
                                   NevoboApi.displayTeamName(s.teamName),
                                   style: TextStyle(
-                                    color: AppColors.onBackground,
+                                    color: isOurTeam ? AppColors.primary : AppColors.onBackground,
                                     fontWeight: isOurTeam ? FontWeight.w900 : FontWeight.w700,
                                   ),
                                   overflow: TextOverflow.ellipsis,

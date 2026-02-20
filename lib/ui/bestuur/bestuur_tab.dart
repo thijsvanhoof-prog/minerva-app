@@ -6,6 +6,7 @@ import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 class BestuurTab extends StatefulWidget {
@@ -285,12 +286,19 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
   Future<void> _setCancelled({
     required int sessionId,
     required bool cancelled,
+    required String trainingLabel,
   }) async {
     try {
       await _client
           .from('sessions')
           .update({'is_cancelled': cancelled})
           .eq('session_id', sessionId);
+      if (cancelled) {
+        await NotificationService.sendBroadcastUpdate(
+          title: 'Training geannuleerd',
+          body: trainingLabel,
+        );
+      }
       if (!mounted) return;
       await _load();
       if (!mounted) return;
@@ -473,6 +481,7 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
                             onPressed: () => _setCancelled(
                               sessionId: id,
                               cancelled: !cancelled,
+                              trainingLabel: '$teamLabel - $title',
                             ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: cancelled ? AppColors.card : AppColors.error,
@@ -695,6 +704,12 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
         },
         onConflict: 'match_key',
       );
+      if (cancelled) {
+        await NotificationService.sendBroadcastUpdate(
+          title: 'Wedstrijd geannuleerd',
+          body: NevoboApi.displayTeamName(match.summary),
+        );
+      }
 
       if (!mounted) return;
       setState(() {
@@ -1313,26 +1328,36 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: const Text('Functie (optioneel)'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(chosen.name, style: const TextStyle(fontWeight: FontWeight.w800)),
-              if (chosen.email != null) ...[
-                const SizedBox(height: 4),
-                Text(
-                  chosen.email!,
-                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+          content: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.22),
+                width: 1.1,
+              ),
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(chosen.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                if (chosen.email != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    chosen.email!,
+                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                TextField(
+                  decoration: const InputDecoration(
+                    labelText: 'Functie of rol',
+                    hintText: 'bijv. Voorzitter',
+                  ),
+                  onChanged: (v) => function = v.trim(),
                 ),
               ],
-              const SizedBox(height: 16),
-              TextField(
-                decoration: const InputDecoration(
-                  labelText: 'Functie of rol',
-                  hintText: 'bijv. Voorzitter',
-                ),
-                onChanged: (v) => function = v.trim(),
-              ),
-            ],
+            ),
           ),
           actions: [
             TextButton(
@@ -1387,18 +1412,28 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: Text('Lid in ${_committeeLabel(committeeKey)}'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(member.name, style: const TextStyle(fontWeight: FontWeight.w800)),
-              const SizedBox(height: 16),
-              TextFormField(
-                initialValue: draftFunction,
-                decoration: const InputDecoration(labelText: 'Functie of rol'),
-                onChanged: (v) => setDialogState(() => draftFunction = v),
+          content: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.22),
+                width: 1.1,
               ),
-            ],
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(member.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 16),
+                TextFormField(
+                  initialValue: draftFunction,
+                  decoration: const InputDecoration(labelText: 'Functie of rol'),
+                  onChanged: (v) => setDialogState(() => draftFunction = v),
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(

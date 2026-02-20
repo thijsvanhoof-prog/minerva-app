@@ -18,6 +18,7 @@ import 'package:minerva_app/models/news_item.dart';
 import 'package:minerva_app/utils/news_storage_upload.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 /// Home-tab van VV Minerva. Stap voor stap herbouwd.
@@ -340,6 +341,14 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           start = rawStart;
         } else if (rawStart != null) {
           start = DateTime.tryParse(rawStart.toString());
+        }
+        if (start == null) {
+          final legacyDate = (row['event_date'] ?? row['date'])?.toString();
+          final legacyTime = (row['event_time'] ?? '').toString().trim();
+          if (legacyDate != null && legacyDate.trim().isNotEmpty) {
+            final sep = legacyTime.isEmpty ? '00:00:00' : legacyTime;
+            start = DateTime.tryParse('${legacyDate.trim()} $sep');
+          }
         }
 
         DateTime? end;
@@ -1320,12 +1329,6 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     return '$dayName ${two(d.day)}-${two(d.month)}-${d.year}';
   }
 
-  String _formatNamesCompact(List<String> names) {
-    if (names.isEmpty) return 'Nog niet ingedeeld';
-    if (names.length <= 2) return names.join(', ');
-    return '${names.take(2).join(', ')} +${names.length - 2}';
-  }
-
   String _normalizeTeamCode(String raw) {
     final normalized = raw.trim().toUpperCase().replaceAll(' ', '');
     if (normalized.startsWith('XR')) return 'MR${normalized.substring(2)}';
@@ -1358,6 +1361,79 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final code = m.teamCode.trim();
     if (code.isNotEmpty) return NevoboApi.displayTeamCode(code);
     return 'Wedstrijd';
+  }
+
+  bool _homeSegmentMatchesTeamCode(String segment, String teamCode) {
+    final s = segment.trim();
+    if (s.isEmpty || !s.toLowerCase().contains('minerva')) return false;
+    final extracted = NevoboApi.extractCodeFromTeamName(s);
+    if (extracted == null || extracted.isEmpty) return false;
+    final a = extracted.trim().toUpperCase();
+    final b = teamCode.trim().toUpperCase();
+    if (a.startsWith('XR') && b.startsWith('MR') && a.substring(2) == b.substring(2)) return true;
+    if (b.startsWith('XR') && a.startsWith('MR') && b.substring(2) == a.substring(2)) return true;
+    return a == b;
+  }
+
+  Widget _buildHomeMatchTitleText(_HomeUpcomingMatch m, {TextStyle? style}) {
+    final summary = m.summary.trim();
+    final base = style ??
+        const TextStyle(
+          color: AppColors.onBackground,
+          fontWeight: FontWeight.w800,
+        );
+    if (summary.isEmpty) return Text(_matchTitle(m), style: base);
+
+    const sep = ' - ';
+    final parts = summary.split(sep);
+    if (parts.length < 2) return Text(NevoboApi.displayTeamName(summary), style: base);
+    final minervaSegmentCount = parts
+        .where((p) => p.toLowerCase().contains('minerva'))
+        .length;
+    final isInternalMinervaMatch = minervaSegmentCount >= 2;
+
+    final spans = <InlineSpan>[];
+    var anyExactMatch = false;
+    for (var i = 0; i < parts.length; i++) {
+      if (i > 0) spans.add(TextSpan(text: sep, style: base));
+      final part = NevoboApi.displayTeamName(parts[i]);
+      final highlight = _homeSegmentMatchesTeamCode(parts[i], m.teamCode) ||
+          (isInternalMinervaMatch && parts[i].toLowerCase().contains('minerva'));
+      if (highlight) anyExactMatch = true;
+      spans.add(
+        TextSpan(
+          text: part,
+          style: highlight
+              ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)
+              : base,
+        ),
+      );
+    }
+    if (!anyExactMatch) {
+      spans
+        ..clear();
+      var highlighted = false;
+      for (var i = 0; i < parts.length; i++) {
+        if (i > 0) spans.add(TextSpan(text: sep, style: base));
+        final raw = NevoboApi.displayTeamName(parts[i]);
+        final isMinervaSegment =
+            !highlighted && parts[i].toLowerCase().contains('minerva');
+        if (isMinervaSegment) highlighted = true;
+        spans.add(
+          TextSpan(
+            text: raw,
+            style: isMinervaSegment
+                ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)
+                : base,
+          ),
+        );
+      }
+    }
+    return RichText(
+      text: TextSpan(style: base, children: spans),
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+    );
   }
 
   Future<void> _toggleAgendaRsvp(_AgendaItem item) async {
@@ -2091,6 +2167,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         }
       }
       await _loadNews();
+      await NotificationService.sendBroadcastUpdate(
+        title: 'Nieuw nieuwsbericht',
+        body: title,
+      );
       if (!mounted) return;
       if (usedFallbackWithoutMedia) {
         showTopMessage(
@@ -2915,6 +2995,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 
     final title = titleController.text.trim();
     if (title.isEmpty) return;
+    if (pickedDateTime == null) {
+      if (!mounted) return;
+      showTopMessage(context, 'Kies een begindatum en -tijd.', isError: true);
+      return;
+    }
 
     final rsvpLabelVal = rsvpLabelController.text.trim();
     List<int>? teamIdsVal;
@@ -2929,15 +3014,31 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     }
 
     try {
+      String two(int v) => v.toString().padLeft(2, '0');
+      String toSqlDate(DateTime dt) {
+        final d = dt.toLocal();
+        return '${d.year}-${two(d.month)}-${two(d.day)}';
+      }
+
+      String toSqlTime(DateTime dt) {
+        final d = dt.toLocal();
+        return '${two(d.hour)}:${two(d.minute)}:00';
+      }
+
+      final startLocal = pickedDateTime!;
+      final endLocal = pickedEndDateTime;
       final payload = <String, dynamic>{
         'title': title,
         'description': descriptionController.text.trim().isEmpty
             ? null
             : descriptionController.text.trim(),
-        'location': locationController.text.trim().isEmpty
-            ? null
-            : locationController.text.trim(),
+        'location': locationController.text.trim(),
         'can_rsvp': canRsvp,
+        // Legacy schema compat (home_agenda_schema.sql)
+        'event_date': toSqlDate(startLocal),
+        'event_time': toSqlTime(startLocal),
+        'end_date': endLocal != null ? toSqlDate(endLocal) : null,
+        'end_time': endLocal != null ? toSqlTime(endLocal) : null,
       };
       if (canRsvp) {
         payload['rsvp_label'] = rsvpLabelVal.isEmpty ? null : rsvpLabelVal;
@@ -2950,25 +3051,43 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         payload['rsvp_allowed_team_ids'] = null;
         payload['rsvp_allowed_committee_keys'] = null;
       }
-      if (pickedDateTime != null) {
-        payload['start_datetime'] = pickedDateTime!.toUtc().toIso8601String();
-      }
-      if (pickedEndDateTime != null) {
-        payload['end_datetime'] = pickedEndDateTime!.toUtc().toIso8601String();
+      payload['start_datetime'] = startLocal.toUtc().toIso8601String();
+      if (endLocal != null) {
+        payload['end_datetime'] = endLocal.toUtc().toIso8601String();
       }
       try {
         await _client.from('home_agenda').insert(payload);
       } on PostgrestException catch (e) {
         if (e.code == 'PGRST204') {
-          payload.remove('rsvp_label');
-          payload.remove('rsvp_allowed_team_ids');
-          payload.remove('rsvp_allowed_committee_keys');
-          await _client.from('home_agenda').insert(payload);
+          // Stap 1: schema zonder RSVP-kolommen (maar met legacy event_*).
+          final noRsvp = <String, dynamic>{...payload}
+            ..remove('rsvp_label')
+            ..remove('rsvp_allowed_team_ids')
+            ..remove('rsvp_allowed_committee_keys');
+          try {
+            await _client.from('home_agenda').insert(noRsvp);
+          } on PostgrestException catch (e2) {
+            if (e2.code == 'PGRST204') {
+              // Stap 2: schema zonder legacy event_* (nieuw schema).
+              final noLegacy = <String, dynamic>{...noRsvp}
+                ..remove('event_date')
+                ..remove('event_time')
+                ..remove('end_date')
+                ..remove('end_time');
+              await _client.from('home_agenda').insert(noLegacy);
+            } else {
+              rethrow;
+            }
+          }
         } else {
           rethrow;
         }
       }
       await _loadAgenda();
+      await NotificationService.sendBroadcastUpdate(
+        title: 'Nieuw agendapunt',
+        body: title,
+      );
       if (!mounted) return;
       showTopMessage(context, 'Activiteit toegevoegd.');
     } catch (e) {
@@ -3380,6 +3499,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 
     final title = titleController.text.trim();
     if (title.isEmpty) return;
+    if (pickedDateTime == null) {
+      if (!mounted) return;
+      showTopMessage(context, 'Kies een begindatum en -tijd.', isError: true);
+      return;
+    }
 
     final rsvpLabelVal = rsvpLabelController.text.trim();
     List<int>? teamIdsVal;
@@ -3394,15 +3518,31 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     }
 
     try {
+      String two(int v) => v.toString().padLeft(2, '0');
+      String toSqlDate(DateTime dt) {
+        final d = dt.toLocal();
+        return '${d.year}-${two(d.month)}-${two(d.day)}';
+      }
+
+      String toSqlTime(DateTime dt) {
+        final d = dt.toLocal();
+        return '${two(d.hour)}:${two(d.minute)}:00';
+      }
+
+      final startLocal = pickedDateTime!;
+      final endLocal = pickedEndDateTime;
       final payload = <String, dynamic>{
         'title': title,
         'description': descriptionController.text.trim().isEmpty
             ? null
             : descriptionController.text.trim(),
-        'location': locationController.text.trim().isEmpty
-            ? null
-            : locationController.text.trim(),
+        'location': locationController.text.trim(),
         'can_rsvp': canRsvp,
+        // Legacy schema compat (home_agenda_schema.sql)
+        'event_date': toSqlDate(startLocal),
+        'event_time': toSqlTime(startLocal),
+        'end_date': endLocal != null ? toSqlDate(endLocal) : null,
+        'end_time': endLocal != null ? toSqlTime(endLocal) : null,
       };
       if (canRsvp) {
         payload['rsvp_label'] = rsvpLabelVal.isEmpty ? null : rsvpLabelVal;
@@ -3415,11 +3555,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         payload['rsvp_allowed_team_ids'] = null;
         payload['rsvp_allowed_committee_keys'] = null;
       }
-      if (pickedDateTime != null) {
-        payload['start_datetime'] = pickedDateTime!.toUtc().toIso8601String();
-      }
-      if (pickedEndDateTime != null) {
-        payload['end_datetime'] = pickedEndDateTime!.toUtc().toIso8601String();
+      payload['start_datetime'] = startLocal.toUtc().toIso8601String();
+      if (endLocal != null) {
+        payload['end_datetime'] = endLocal.toUtc().toIso8601String();
       } else {
         payload['end_datetime'] = null;
       }
@@ -3430,13 +3568,32 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             .eq('agenda_id', existing.id!);
       } on PostgrestException catch (e) {
         if (e.code == 'PGRST204') {
-          payload.remove('rsvp_label');
-          payload.remove('rsvp_allowed_team_ids');
-          payload.remove('rsvp_allowed_committee_keys');
-          await _client
-              .from('home_agenda')
-              .update(payload)
-              .eq('agenda_id', existing.id!);
+          // Stap 1: schema zonder RSVP-kolommen (maar met legacy event_*).
+          final noRsvp = <String, dynamic>{...payload}
+            ..remove('rsvp_label')
+            ..remove('rsvp_allowed_team_ids')
+            ..remove('rsvp_allowed_committee_keys');
+          try {
+            await _client
+                .from('home_agenda')
+                .update(noRsvp)
+                .eq('agenda_id', existing.id!);
+          } on PostgrestException catch (e2) {
+            if (e2.code == 'PGRST204') {
+              // Stap 2: schema zonder legacy event_* (nieuw schema).
+              final noLegacy = <String, dynamic>{...noRsvp}
+                ..remove('event_date')
+                ..remove('event_time')
+                ..remove('end_date')
+                ..remove('end_time');
+              await _client
+                  .from('home_agenda')
+                  .update(noLegacy)
+                  .eq('agenda_id', existing.id!);
+            } else {
+              rethrow;
+            }
+          }
         } else {
           rethrow;
         }
@@ -3852,8 +4009,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                     child: Text(
                                       _formatMatchdayLabel(m.startsAt),
                                       style: const TextStyle(
-                                        color: AppColors.textSecondary,
-                                        fontWeight: FontWeight.w700,
+                                        color: AppColors.darkBlue,
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 18,
                                       ),
                                     ),
                                   ),
@@ -3866,8 +4024,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Text(
-                                          _matchTitle(m),
+                                        _buildHomeMatchTitleText(
+                                          m,
                                           style: Theme.of(
                                             context,
                                           ).textTheme.titleMedium?.copyWith(
@@ -3880,22 +4038,6 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                           '${_formatTime(dt)} • ${m.location.trim().isEmpty ? 'Locatie onbekend' : m.location.trim()}',
                                           style: const TextStyle(
                                             color: AppColors.textSecondary,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 10),
-                                        Text(
-                                          'Scheidsrechter: ${_formatNamesCompact(m.fluitenNames)}',
-                                          style: const TextStyle(
-                                            color: AppColors.onBackground,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          'Teller: ${_formatNamesCompact(m.tellenNames)}',
-                                          style: const TextStyle(
-                                            color: AppColors.onBackground,
-                                            fontWeight: FontWeight.w600,
                                           ),
                                         ),
                                       ],

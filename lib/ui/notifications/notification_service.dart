@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Pushnotificaties via Firebase Cloud Messaging (FCM).
@@ -11,6 +12,7 @@ class NotificationService {
   NotificationService._();
 
   static bool _firebaseInitialized = false;
+  static final Map<String, DateTime> _cooldowns = {};
 
   static bool get pushSupported {
     if (kIsWeb) return false;
@@ -187,5 +189,64 @@ class NotificationService {
         });
       }
     } catch (_) {}
+  }
+
+  /// Verstuur een clubbrede push via de Supabase Edge Function `send-push-fcm`.
+  /// Best-effort: fouten mogen de primaire gebruikersactie niet blokkeren.
+  static Future<void> sendBroadcastUpdate({
+    required String title,
+    required String body,
+    String? dedupeKey,
+    int? cooldownSeconds,
+  }) async {
+    final t = title.trim();
+    final b = body.trim();
+    if (t.isEmpty || b.isEmpty) return;
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final accessToken = session?.accessToken;
+      final anonKey = dotenv.env['SUPABASE_ANON_KEY']?.trim() ?? '';
+      final headers = <String, String>{
+        if (accessToken != null && accessToken.isNotEmpty)
+          'Authorization': 'Bearer $accessToken',
+        if (anonKey.isNotEmpty) 'apikey': anonKey,
+      };
+      await Supabase.instance.client.functions.invoke(
+        'send-push-fcm',
+        headers: headers.isEmpty ? null : headers,
+        body: {
+          'title': t,
+          'body': b,
+          'broadcast': true,
+          if (dedupeKey != null && dedupeKey.trim().isNotEmpty)
+            'dedupe_key': dedupeKey.trim(),
+          if (cooldownSeconds != null && cooldownSeconds > 0)
+            'cooldown_seconds': cooldownSeconds,
+        },
+      );
+    } catch (e) {
+      debugPrint('NotificationService: versturen club-push mislukt: $e');
+    }
+  }
+
+  /// Verstuur een push met cooldown per sleutel om spam te voorkomen.
+  static Future<void> sendBroadcastUpdateWithCooldown({
+    required String title,
+    required String body,
+    required String cooldownKey,
+    Duration cooldown = const Duration(hours: 6),
+  }) async {
+    final key = cooldownKey.trim();
+    if (key.isEmpty) return;
+    final now = DateTime.now();
+    final last = _cooldowns[key];
+    if (last != null && now.difference(last) < cooldown) return;
+    _cooldowns[key] = now;
+    await sendBroadcastUpdate(
+      title: title,
+      body: body,
+      dedupeKey: key,
+      cooldownSeconds: cooldown.inSeconds,
+    );
   }
 }

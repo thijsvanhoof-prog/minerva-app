@@ -5,6 +5,7 @@ import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -1835,6 +1836,12 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       if (!mounted) return;
       await _refreshStatusForKey(key);
       if (!mounted) return;
+      if (created > 0) {
+        await NotificationService.sendBroadcastUpdate(
+          title: 'Nieuwe taken voor wedstrijd',
+          body: NevoboApi.displayTeamName(match.summary),
+        );
+      }
       showTopMessageWithMessenger(messenger, 'Gekoppeld. ($created aangemaakt)');
     } catch (e) {
       if (!mounted) return;
@@ -3322,6 +3329,12 @@ class _MyTasksTabState extends State<MyTasksTab> {
       }
 
       if (!mounted) return;
+      if (created > 0) {
+        await NotificationService.sendBroadcastUpdate(
+          title: 'Nieuwe wedstrijdtaken toegevoegd',
+          body: '$created taak/taken',
+        );
+      }
       showTopMessageWithMessenger(
         messenger,
         'Import klaar: $created taken toegevoegd, $skipped overgeslagen.'
@@ -3912,6 +3925,10 @@ class _CreateTaskPageState extends State<_CreateTaskPage> {
             .toList();
         await _client.from('club_task_team_assignments').insert(assignments);
       }
+      await NotificationService.sendBroadcastUpdate(
+        title: 'Nieuwe taak toegevoegd',
+        body: title,
+      );
 
       if (!mounted) return;
       Navigator.of(context).pop(true);

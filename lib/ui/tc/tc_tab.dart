@@ -571,44 +571,54 @@ class _TcTabState extends State<TcTab> {
                   .toList();
           return AlertDialog(
             title: Text('Lid toevoegen aan $teamLabel'),
-            content: SizedBox(
-              width: double.maxFinite,
-              height: 320,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  TextField(
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      prefixIcon: Icon(Icons.search),
-                      labelText: 'Zoek op naam of e-mail',
+            content: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+                border: Border.all(
+                  color: AppColors.primary.withValues(alpha: 0.22),
+                  width: 1.1,
+                ),
+              ),
+              padding: const EdgeInsets.all(10),
+              child: SizedBox(
+                width: double.maxFinite,
+                height: 320,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    TextField(
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        labelText: 'Zoek op naam of e-mail',
+                      ),
+                      onChanged: (v) => setDialogState(() => search = v),
                     ),
-                    onChanged: (v) => setDialogState(() => search = v),
-                  ),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: list.isEmpty
-                        ? const Center(
-                            child: Text(
-                              'Geen leden gevonden.',
-                              style: TextStyle(color: AppColors.textSecondary),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: list.isEmpty
+                          ? const Center(
+                              child: Text(
+                                'Geen leden gevonden.',
+                                style: TextStyle(color: AppColors.textSecondary),
+                              ),
+                            )
+                          : ListView.builder(
+                              itemCount: list.length,
+                              itemBuilder: (context, i) {
+                                final m = list[i];
+                                return ListTile(
+                                  dense: true,
+                                  title: Text(m.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                                  subtitle: m.email != null ? Text(m.email!, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)) : null,
+                                  onTap: () => Navigator.of(context).pop(m),
+                                );
+                              },
                             ),
-                          )
-                        : ListView.builder(
-                            itemCount: list.length,
-                            itemBuilder: (context, i) {
-                              final m = list[i];
-                              return ListTile(
-                                dense: true,
-                                title: Text(m.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                                subtitle: m.email != null ? Text(m.email!, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)) : null,
-                                onTap: () => Navigator.of(context).pop(m),
-                              );
-                            },
-                          ),
-                  ),
-                ],
+                    ),
+                  ],
+                ),
               ),
             ),
             actions: [
@@ -629,26 +639,36 @@ class _TcTabState extends State<TcTab> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: const Text('Rol kiezen'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(chosen.name, style: const TextStyle(fontWeight: FontWeight.w800)),
-              if (chosen.email != null) ...[
-                const SizedBox(height: 4),
-                Text(chosen.email!, style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
-              ],
-              const SizedBox(height: 16),
-              DropdownButtonFormField<String>(
-                initialValue: selectedRole,
-                items: const [
-                  DropdownMenuItem(value: 'player', child: Text('Speler')),
-                  DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
-                  DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
-                ],
-                onChanged: (v) => setDialogState(() => selectedRole = v ?? selectedRole),
-                decoration: const InputDecoration(labelText: 'Rol'),
+          content: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.22),
+                width: 1.1,
               ),
-            ],
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(chosen.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                if (chosen.email != null) ...[
+                  const SizedBox(height: 4),
+                  Text(chosen.email!, style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
+                ],
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  initialValue: selectedRole,
+                  items: const [
+                    DropdownMenuItem(value: 'player', child: Text('Speler')),
+                    DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
+                    DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
+                  ],
+                  onChanged: (v) => setDialogState(() => selectedRole = v ?? selectedRole),
+                  decoration: const InputDecoration(labelText: 'Rol'),
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(
@@ -688,33 +708,43 @@ class _TcTabState extends State<TcTab> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: Text('Lid in $teamLabel'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                member.name,
-                style: const TextStyle(fontWeight: FontWeight.w800),
+          content: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.22),
+                width: 1.1,
               ),
-              if (member.email != null) ...[
-                const SizedBox(height: 4),
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 Text(
-                  member.email!,
-                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  member.name,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                if (member.email != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    member.email!,
+                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  initialValue: chosenRole,
+                  items: const [
+                    DropdownMenuItem(value: 'player', child: Text('Speler')),
+                    DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
+                    DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
+                  ],
+                  onChanged: (v) => setDialogState(() => chosenRole = v ?? chosenRole),
+                  decoration: const InputDecoration(labelText: 'Rol'),
                 ),
               ],
-              const SizedBox(height: 16),
-              DropdownButtonFormField<String>(
-                initialValue: chosenRole,
-                items: const [
-                  DropdownMenuItem(value: 'player', child: Text('Speler')),
-                  DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
-                  DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
-                ],
-                onChanged: (v) => setDialogState(() => chosenRole = v ?? chosenRole),
-                decoration: const InputDecoration(labelText: 'Rol'),
-              ),
-            ],
+            ),
           ),
           actions: [
             TextButton(

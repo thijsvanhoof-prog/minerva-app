@@ -27,6 +27,10 @@ type Body = {
   user_ids?: string[];
   /** Stuur naar alle users met notify_enabled = true */
   broadcast?: boolean;
+  /** Server-side dedupe sleutel (optioneel) */
+  dedupe_key?: string;
+  /** Cooldown in seconden voor dedupe_key (optioneel) */
+  cooldown_seconds?: number;
 };
 
 serve(async (req) => {
@@ -69,6 +73,11 @@ serve(async (req) => {
 
   const title = body.title ?? "Minerva";
   const bodyText = body.body ?? "";
+  const dedupeKey = (body.dedupe_key ?? "").toString().trim();
+  const rawCooldown = Number(body.cooldown_seconds ?? 0);
+  const cooldownSeconds = Number.isFinite(rawCooldown)
+    ? Math.max(0, Math.min(7 * 24 * 3600, Math.floor(rawCooldown)))
+    : 0;
   if (!bodyText) {
     return new Response(JSON.stringify({ error: "body is required" }), {
       status: 400,
@@ -77,39 +86,74 @@ serve(async (req) => {
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
-  let userIds: string[] = [];
 
-  if (body.broadcast) {
-    const { data: prefs } = await supabase
-      .from("notification_preferences")
-      .select("user_id")
-      .eq("notify_enabled", true);
-    userIds = (prefs ?? []).map((r: { user_id: string }) => r.user_id);
-  } else if (body.user_ids?.length) {
-    const { data: prefs } = await supabase
-      .from("notification_preferences")
-      .select("user_id")
-      .in("user_id", body.user_ids)
-      .eq("notify_enabled", true);
-    userIds = (prefs ?? []).map((r: { user_id: string }) => r.user_id);
+  // Server-side anti-spam: lock op dedupe_key + cooldown.
+  if (dedupeKey.length > 0 && cooldownSeconds > 0) {
+    try {
+      const { data: acquired, error: lockError } = await supabase.rpc(
+        "try_acquire_push_dispatch_lock",
+        {
+          p_dedupe_key: dedupeKey,
+          p_cooldown_seconds: cooldownSeconds,
+        }
+      );
+      if (lockError) {
+        console.warn("push dedupe lock rpc failed:", lockError.message);
+      } else if (acquired === false) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            sent: 0,
+            total: 0,
+            skipped: true,
+            reason: "cooldown_active",
+          }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    } catch (e) {
+      console.warn("push dedupe lock failed:", String(e));
+    }
   }
 
-  if (userIds.length === 0) {
+  const tokenQuery = supabase.from("push_tokens").select("user_id, token");
+  const { data: rawTokens } = body.broadcast
+    ? await tokenQuery
+    : body.user_ids?.length
+    ? await tokenQuery.in("user_id", body.user_ids)
+    : { data: [] as Array<{ user_id: string; token: string }> };
+
+  const tokenRows = (rawTokens ?? []) as Array<{ user_id: string; token: string }>;
+  if (tokenRows.length === 0) {
     return new Response(
-      JSON.stringify({ success: true, sent: 0, message: "No eligible users" }),
+      JSON.stringify({ success: true, sent: 0, message: "No FCM tokens" }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 
-  const { data: tokens } = await supabase
-    .from("push_tokens")
-    .select("token")
-    .in("user_id", userIds);
-  const fcmTokens = [...new Set((tokens ?? []).map((r: { token: string }) => r.token))];
+  // Default = meldingen aan. Alleen expliciet notify_enabled=false wordt uitgesloten.
+  const candidateUserIds = [...new Set(tokenRows.map((r) => r.user_id))];
+  const { data: disabledPrefs } = await supabase
+    .from("notification_preferences")
+    .select("user_id")
+    .in("user_id", candidateUserIds)
+    .eq("notify_enabled", false);
+  const disabledUserIds = new Set(
+    (disabledPrefs ?? []).map((r: { user_id: string }) => r.user_id)
+  );
+
+  const fcmTokens = [
+    ...new Set(
+      tokenRows
+        .filter((r) => !disabledUserIds.has(r.user_id))
+        .map((r) => r.token)
+        .filter((t) => t.trim().length > 0)
+    ),
+  ];
 
   if (fcmTokens.length === 0) {
     return new Response(
-      JSON.stringify({ success: true, sent: 0, message: "No FCM tokens" }),
+      JSON.stringify({ success: true, sent: 0, message: "No eligible users" }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
