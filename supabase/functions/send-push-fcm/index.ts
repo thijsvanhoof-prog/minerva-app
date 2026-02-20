@@ -42,13 +42,16 @@ serve(async (req) => {
 
   const projectId = Deno.env.get("FIREBASE_PROJECT_ID");
   const saJson = Deno.env.get("FIREBASE_SERVICE_ACCOUNT_JSON");
-  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const serviceRoleKey =
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
+    Deno.env.get("SERVICE_ROLE_KEY");
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
 
   if (!projectId || !saJson || !serviceRoleKey || !supabaseUrl) {
     return new Response(
       JSON.stringify({
-        error: "Missing FIREBASE_PROJECT_ID, FIREBASE_SERVICE_ACCOUNT_JSON, SUPABASE_SERVICE_ROLE_KEY or SUPABASE_URL",
+        error:
+          "Missing FIREBASE_PROJECT_ID, FIREBASE_SERVICE_ACCOUNT_JSON, (SUPABASE_SERVICE_ROLE_KEY or SERVICE_ROLE_KEY) or SUPABASE_URL",
       }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
@@ -117,12 +120,14 @@ serve(async (req) => {
       client_email: string;
       private_key: string;
     };
-    const jwt = await new jose.SignJWT({})
+    const jwt = await new jose.SignJWT({
+      scope: "https://www.googleapis.com/auth/firebase.messaging",
+    })
+      .setProtectedHeader({ alg: "RS256", typ: "JWT" })
       .setIssuer(sa.client_email)
       .setAudience("https://oauth2.googleapis.com/token")
       .setIssuedAt()
       .setExpirationTime("1h")
-      .setClaim("scope", "https://www.googleapis.com/auth/firebase.messaging")
       .sign(await jose.importPKCS8(sa.private_key.replace(/\\n/g, "\n"), "RS256"));
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",

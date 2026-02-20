@@ -51,6 +51,9 @@ post_install do |installer|
     flutter_additional_ios_build_settings(target)
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+      # Xcode script sandbox can report hundreds of "stale file outside allowed root" warnings
+      # for CocoaPods-generated resource scripts. Disable for Pods targets to keep iOS builds stable.
+      config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
       # OneSignal: Flutter.h vinden, umbrella-header, nullability, module verifier
       # Incl. onesignal_flutter (nil passed to non-null in OneSignalPlugin.m, OSFlutterUser.m)
       if target.name.downcase.include?('onesignal') || target.name == 'onesignal_flutter'

@@ -107,28 +107,65 @@ class NotificationService {
 
   /// Registreer het FCM-token voor de ingelogde user in Supabase. Aanroepen na inloggen of op de notificatiepagina.
   static Future<void> registerToken() async {
-    if (!pushSupported || !_firebaseInitialized) return;
-    final userId = Supabase.instance.client.auth.currentUser?.id;
-    if (userId == null) return;
-    String? token;
-    try {
-      token = await FirebaseMessaging.instance.getToken();
-    } catch (_) {
-      return;
+    if (!pushSupported || !_firebaseInitialized) {
+      throw Exception('Push niet beschikbaar op dit platform of Firebase niet geïnitialiseerd.');
     }
-    if (token == null || token.isEmpty) return;
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) {
+      throw Exception('Geen ingelogde gebruiker gevonden voor token-registratie.');
+    }
+
+    final messaging = FirebaseMessaging.instance;
+
+    // Op iOS kan APNs-token vertraagd beschikbaar komen; log dit, maar faal niet direct.
+    if (Platform.isIOS) {
+      String? apnsToken;
+      for (var i = 0; i < 8; i++) {
+        apnsToken = await messaging.getAPNSToken();
+        if (apnsToken != null && apnsToken.isNotEmpty) break;
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      }
+      if (apnsToken == null || apnsToken.isEmpty) {
+        debugPrint(
+          'NotificationService: APNs-token nog niet beschikbaar, probeer toch FCM-token op te halen.',
+        );
+      } else {
+        debugPrint('NotificationService: APNs-token ontvangen.');
+      }
+    }
+
+    String? token;
+    Object? tokenError;
+    for (var i = 0; i < 10; i++) {
+      try {
+        token = await messaging.getToken();
+      } catch (e) {
+        tokenError = e;
+      }
+      if (token != null && token.isNotEmpty) break;
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+    }
+    if (token == null || token.isEmpty) {
+      throw Exception(
+        'FCM-token ophalen mislukt${tokenError != null ? ': $tokenError' : ''}. '
+        'Controleer Push Notifications capability + juiste provisioning profile voor deze bundle id.',
+      );
+    }
+    debugPrint('NotificationService: FCM-token ontvangen.');
+
     final platform = Platform.isIOS ? 'ios' : 'android';
-    try {
-      await Supabase.instance.client.from('push_tokens').upsert(
-            {
-              'user_id': userId,
-              'token': token,
-              'platform': platform,
-              'updated_at': DateTime.now().toUtc().toIso8601String(),
-            },
-            onConflict: 'user_id,token',
-          );
-    } catch (_) {}
+    await Supabase.instance.client.from('push_tokens').upsert(
+          {
+            'user_id': userId,
+            'token': token,
+            'platform': platform,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          onConflict: 'user_id,token',
+        );
+    debugPrint(
+      'NotificationService: token opgeslagen in push_tokens ($platform).',
+    );
   }
 
   /// Na inloggen: token registreren en standaardvoorkeur zetten als die nog niet bestaat.
