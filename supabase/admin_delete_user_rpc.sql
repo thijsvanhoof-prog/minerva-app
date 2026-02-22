@@ -1,7 +1,10 @@
 -- Admin-only: delete another user's account.
 --
--- Run this in Supabase SQL Editor.
+-- Run this in Supabase SQL Editor (na cascade_delete_user_data.sql).
 -- App can call: supabase.rpc('admin_delete_user', params: { 'target_user_id': '<uuid>' })
+--
+-- Verwijdert de gebruiker overal: commissies, teams, aanwezigheid, agenda-RSVPs,
+-- taken, account-koppelingen, push-tokens, profiel en auth (via _cascade_delete_user_data).
 --
 -- Security:
 -- - Uses SECURITY DEFINER so it can delete from auth.users
@@ -30,13 +33,7 @@ begin
     raise exception 'Forbidden';
   end if;
 
-  -- Best-effort cleanup of public profile row (if you have one).
-  delete from public.profiles
-  where id = target_user_id;
-
-  -- Delete auth user (admin action).
-  delete from auth.users
-  where id = target_user_id;
+  perform public._cascade_delete_user_data(target_user_id);
 end;
 $$;
 

@@ -5,7 +5,6 @@ import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
-import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -32,9 +31,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   final Map<String, String> _matchErrorByTeam = {};
 
   // Availability state
-  final Map<String, String> _myStatusByMatchKey = {}; // match_key -> playing | coach (null = afwezig)
+  final Map<String, String> _myStatusByMatchKey = {}; // match_key -> playing | coach | not_playing (null = nog geen keuze)
   final Map<String, List<String>> _playingNamesByMatchKey = {};
   final Map<String, List<String>> _coachNamesByMatchKey = {};
+  final Map<String, List<String>> _notPlayingNamesByMatchKey = {};
   final Map<String, List<String>> _refereeNamesByMatchKey = {};
   final Map<String, List<String>> _tellerNamesByMatchKey = {};
   final Map<String, bool> _cancelledByMatchKey = {}; // match_key -> true if cancelled
@@ -47,9 +47,6 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
 
   /// Alle komende wedstrijden (voor "voor alle wedstrijden"-acties)
   List<_MatchRef> _upcomingMatchRefs = const [];
-
-  /// Welke teams zijn uitgeklapt (alleen bij meerdere teams)
-  final Set<String> _expandedWedstrijdenTeamCodes = {};
 
   @override
   void initState() {
@@ -84,6 +81,23 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     if (a.startsWith('XR') && b.startsWith('MR') && a.substring(2) == b.substring(2)) return true;
     if (b.startsWith('XR') && a.startsWith('MR') && b.substring(2) == a.substring(2)) return true;
     return a == b;
+  }
+
+  /// Displaylabel voor team (inclusief "(kindnaam)" bij gekoppeld kind).
+  String _teamDisplayLabelForCode(String teamCode) {
+    try {
+      final ctx = AppUserContext.of(context);
+      final code = teamCode.trim().toUpperCase();
+      for (final m in ctx.memberships) {
+        final extracted = NevoboApi.extractCodeFromTeamName(m.teamName);
+        final match = extracted != null && extracted.toUpperCase() == code;
+        final nevoboMatch = (m.nevoboCode?.trim().toUpperCase() ?? '') == code;
+        if (match || nevoboMatch) return m.displayLabel;
+      }
+      return NevoboApi.displayTeamCode(teamCode);
+    } catch (_) {
+      return NevoboApi.displayTeamCode(teamCode);
+    }
   }
 
   /// Fallback: match op teamPath als de naam geen "Minerva" bevat (API kan andere naam geven).
@@ -264,11 +278,14 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       final pid = r['profile_id']?.toString() ?? '';
       if (pid.isNotEmpty) profileIds.add(pid);
     }
+    // Altijd naam van huidig profiel (zelf of kind) laden, ook als die nog nergens is aangemeld.
+    if (targetProfileId.isNotEmpty) profileIds.add(targetProfileId);
     final namesById = await _loadProfileDisplayNames(profileIds);
 
     final myStatus = <String, String>{};
     final playingByKey = <String, List<String>>{};
     final coachByKey = <String, List<String>>{};
+    final notPlayingByKey = <String, List<String>>{};
 
     for (final r in rows) {
       final key = (r['match_key'] ?? '').toString();
@@ -277,7 +294,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       final status = (r['status'] ?? '').toString().trim().toLowerCase();
       final name = pid.isEmpty ? '' : (namesById[pid] ?? unknownUserName);
 
-      if (pid == targetProfileId && (status == 'playing' || status == 'coach')) {
+      if (pid == targetProfileId && (status == 'playing' || status == 'coach' || status == 'not_playing')) {
         myStatus[key] = status;
       }
       if (name.trim().isEmpty) continue;
@@ -285,6 +302,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         playingByKey.putIfAbsent(key, () => []).add(name);
       } else if (status == 'coach') {
         coachByKey.putIfAbsent(key, () => []).add(name);
+      } else if (status == 'not_playing') {
+        notPlayingByKey.putIfAbsent(key, () => []).add(name);
       }
     }
 
@@ -292,6 +311,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       entry.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
     for (final entry in coachByKey.entries) {
+      entry.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    }
+    for (final entry in notPlayingByKey.entries) {
       entry.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
 
@@ -308,6 +330,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       _coachNamesByMatchKey
         ..clear()
         ..addAll(coachByKey);
+      _notPlayingNamesByMatchKey
+        ..clear()
+        ..addAll(notPlayingByKey);
     });
   }
 
@@ -315,6 +340,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     if (matches.isEmpty) return;
     final keys = matches.map((m) => m.matchKey).toSet().toList();
     if (keys.isEmpty) return;
+    final targetProfileId = AppUserContext.of(context).attendanceProfileId;
 
     try {
       final linksRes = await _client
@@ -365,6 +391,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         final pid = row['profile_id']?.toString() ?? '';
         if (pid.isNotEmpty) profileIds.add(pid);
       }
+      // Altijd naam van huidig profiel laden (voor correcte weergave na aanmelden fluiten/tellen).
+      if (targetProfileId.isNotEmpty) profileIds.add(targetProfileId);
       final namesByProfile = await _loadProfileDisplayNames(profileIds);
 
       final namesByTaskId = <int, List<String>>{};
@@ -444,14 +472,19 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final me = _myDisplayName ?? 'Ik';
     final playing = List<String>.from(_playingNamesByMatchKey[key] ?? []);
     final coaches = List<String>.from(_coachNamesByMatchKey[key] ?? []);
+    final notPlaying = List<String>.from(_notPlayingNamesByMatchKey[key] ?? []);
     playing.remove(me);
     coaches.remove(me);
+    notPlaying.remove(me);
     if (status == 'playing') {
       playing.add(me);
       playing.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     } else if (status == 'coach') {
       coaches.add(me);
       coaches.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    } else if (status == 'not_playing') {
+      notPlaying.add(me);
+      notPlaying.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
     if (status == null) {
       _myStatusByMatchKey.remove(key);
@@ -460,6 +493,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     }
     _playingNamesByMatchKey[key] = playing;
     _coachNamesByMatchKey[key] = coaches;
+    _notPlayingNamesByMatchKey[key] = notPlaying;
   }
 
   /// Bepaal of gebruiker als trainer/coach wordt aangemeld voor dit team (anders speler).
@@ -479,10 +513,11 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     }
   }
 
-  String _matchAttendanceSummary(List<String> playing, List<String> coaches) {
+  String _matchAttendanceSummary(List<String> playing, List<String> coaches, List<String> notPlaying) {
     final parts = <String>[];
     if (coaches.isNotEmpty) parts.add('Trainer/coach: ${coaches.length}');
     if (playing.isNotEmpty) parts.add('Speler(s): ${playing.length}');
+    if (notPlaying.isNotEmpty) parts.add('Afgemeld: ${notPlaying.length}');
     return parts.isEmpty ? '' : parts.join(' • ');
   }
 
@@ -504,6 +539,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final prevStatus = _myStatusByMatchKey[key];
     final prevPlaying = List<String>.from(_playingNamesByMatchKey[key] ?? []);
     final prevCoaches = List<String>.from(_coachNamesByMatchKey[key] ?? []);
+    final prevNotPlaying = List<String>.from(_notPlayingNamesByMatchKey[key] ?? []);
 
     _applyOptimisticMatchUpdate(key, status);
     if (!mounted) return;
@@ -540,6 +576,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         }
         _playingNamesByMatchKey[key] = prevPlaying;
         _coachNamesByMatchKey[key] = prevCoaches;
+        _notPlayingNamesByMatchKey[key] = prevNotPlaying;
       });
       showTopMessage(context, 'Kon status niet opslaan: $e', isError: true);
     }
@@ -558,6 +595,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     };
     final prevCoaches = <String, List<String>>{
       for (final e in _coachNamesByMatchKey.entries) e.key: List<String>.from(e.value),
+    };
+    final prevNotPlaying = <String, List<String>>{
+      for (final e in _notPlayingNamesByMatchKey.entries) e.key: List<String>.from(e.value),
     };
 
     for (final m in _upcomingMatchRefs) {
@@ -598,7 +638,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         );
       }
       if (!mounted) return;
-      final label = status == null ? 'Afwezig' : 'Aanwezig';
+      final label = status == null ? 'Afwezig' : (status == 'not_playing' ? 'Afgemeld' : 'Aanwezig');
       showTopMessage(
         context,
         '$label voor ${_upcomingMatchRefs.length} wedstrijd(en) opgeslagen.',
@@ -616,6 +656,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         _coachNamesByMatchKey
           ..clear()
           ..addAll(prevCoaches);
+        _notPlayingNamesByMatchKey
+          ..clear()
+          ..addAll(prevNotPlaying);
       });
       showTopMessage(context, 'Kon status niet opslaan: $e', isError: true);
     }
@@ -730,11 +773,6 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
             final standings = await NevoboApi.fetchStandingsForTeam(team: team);
             if (!mounted) return;
             setState(() => _leaderboardByTeam[team.code] = standings);
-            await NotificationService.sendBroadcastUpdateWithCooldown(
-              title: 'Stand bijgewerkt',
-              body: NevoboApi.displayTeamCode(team.code),
-              cooldownKey: 'stand:${team.code}',
-            );
             // Sync teamnaam uit API naar Supabase (geen team_id in deze tab).
             for (final s in standings) {
               if (s.teamName.trim().toLowerCase().contains('minerva')) {
@@ -805,10 +843,392 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     return '${two(d.day)}-${two(d.month)}-${d.year} ${two(d.hour)}:${two(d.minute)}';
   }
 
+  static const List<String> _weekdayNames = [
+    'maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag', 'zondag',
+  ];
+  static const List<String> _monthNames = [
+    'januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli',
+    'augustus', 'september', 'oktober', 'november', 'december',
+  ];
+
+  String _formatDateHeader(DateTime dt) {
+    final d = dt.toLocal();
+    final weekday = _weekdayNames[d.weekday - 1];
+    final month = _monthNames[d.month - 1];
+    return '$weekday ${d.day} $month ${d.year}';
+  }
+
   String _formatRoleNames(List<String> names) {
     if (names.isEmpty) return 'Nog niet ingedeeld';
     if (names.length <= 2) return names.join(', ');
     return '${names.take(2).join(', ')} +${names.length - 2}';
+  }
+
+  Widget _buildSectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 6),
+      child: Text(
+        title,
+        style: const TextStyle(
+          color: AppColors.onBackground,
+          fontWeight: FontWeight.w800,
+          fontSize: 18,
+        ),
+      ),
+    );
+  }
+
+  /// Kaart met alleen standen voor één team (geen wedstrijden).
+  Widget _buildStandenCard(NevoboTeam team) {
+    final leaderboard = _leaderboardByTeam[team.code];
+    final error = _errorByTeam[team.code];
+
+    return GlassCard(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppColors.darkBlue,
+              borderRadius: BorderRadius.circular(AppColors.cardRadius),
+            ),
+            child: Text(
+              _teamDisplayLabelForCode(team.code),
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w900,
+                  ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (error != null)
+            Text(error, style: const TextStyle(color: AppColors.error))
+          else if (leaderboard == null)
+            const Text(
+              'Laden...',
+              style: TextStyle(color: AppColors.textSecondary),
+            )
+          else if (leaderboard.isEmpty)
+            const Text(
+              'Geen leaderboard gevonden.',
+              style: TextStyle(color: AppColors.textSecondary),
+            )
+          else
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      const SizedBox(width: 28, child: Text('', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600))),
+                      const Expanded(child: Text('Team', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600))),
+                      const SizedBox(width: 10),
+                      SizedBox(
+                        width: 36,
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerRight,
+                          child: const Text('Wedstr.', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600)),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      SizedBox(
+                        width: 36,
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerRight,
+                          child: const Text('Punten', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                ...leaderboard.map((s) {
+                  final isOurTeam = _standingMatchesTeam(s, team.code) || _standingMatchesTeamByPath(s, team.code);
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: isOurTeam
+                            ? AppColors.primary.withValues(alpha: 0.12)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(12),
+                        border: isOurTeam
+                            ? Border.all(
+                                color: AppColors.primary.withValues(alpha: 0.35),
+                              )
+                            : null,
+                      ),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 28,
+                            child: Text(
+                              s.position > 0 ? '${s.position}.' : '-',
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              NevoboApi.displayTeamName(s.teamName),
+                              style: TextStyle(
+                                color: isOurTeam ? AppColors.primary : AppColors.onBackground,
+                                fontWeight: isOurTeam ? FontWeight.w900 : FontWeight.w700,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          SizedBox(
+                            width: 36,
+                            child: Text(
+                              '${s.played}',
+                              textAlign: TextAlign.right,
+                              style: const TextStyle(color: AppColors.textSecondary),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          SizedBox(
+                            width: 36,
+                            child: Text(
+                              '${s.points}',
+                              textAlign: TextAlign.right,
+                              style: const TextStyle(
+                                color: AppColors.primary,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Eén wedstrijdrij (tijd, teamlabel, samenvatting, locatie, aanwezigheid). Voor weergave per dag.
+  Widget _buildMatchRow(_MatchRef ref, String teamDisplayLabel) {
+    final key = ref.matchKey;
+    final isCancelled = _cancelledByMatchKey[key] == true;
+    final cancelReason = _cancelReasonByMatchKey[key];
+    final myStatus = _myStatusByMatchKey[key];
+    final isPresent = myStatus == 'playing' || myStatus == 'coach';
+    final playing = _playingNamesByMatchKey[key] ?? const [];
+    final coaches = _coachNamesByMatchKey[key] ?? const [];
+    final notPlaying = _notPlayingNamesByMatchKey[key] ?? const [];
+    final referees = _refereeNamesByMatchKey[key] ?? const [];
+    final tellers = _tellerNamesByMatchKey[key] ?? const [];
+    final hasCounts = playing.isNotEmpty || coaches.isNotEmpty || notPlaying.isNotEmpty;
+    final expanded = _expandedMatchKeys.contains(key);
+    final summary = _matchAttendanceSummary(playing, coaches, notPlaying);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _formatDateTime(ref.start),
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            teamDisplayLabel,
+            style: TextStyle(
+              color: AppColors.primary,
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Row(
+            children: [
+              Expanded(
+                child: _buildMatchSummaryText(
+                  NevoboApi.displayTeamName(ref.summary),
+                  style: TextStyle(
+                    color: AppColors.onBackground,
+                    fontWeight: FontWeight.w800,
+                    decoration: isCancelled
+                        ? TextDecoration.lineThrough
+                        : TextDecoration.none,
+                  ),
+                  teamCode: ref.teamCode,
+                ),
+              ),
+              if (isCancelled)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: AppColors.error.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: AppColors.error.withValues(alpha: 0.35),
+                    ),
+                  ),
+                  child: const Text(
+                    'Geannuleerd',
+                    style: TextStyle(
+                      color: AppColors.error,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          if (ref.location.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              ref.location,
+              style: const TextStyle(color: AppColors.textSecondary),
+            ),
+          ],
+          const SizedBox(height: 4),
+          Text(
+            'Scheidsrechter: ${_formatRoleNames(referees)}',
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Teller: ${_formatRoleNames(tellers)}',
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 13,
+            ),
+          ),
+          if (isCancelled && cancelReason != null && cancelReason.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Reden: $cancelReason',
+              style: const TextStyle(color: AppColors.textSecondary),
+            ),
+          ],
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              isPresent
+                  ? FilledButton.icon(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _setMyStatus(
+                                match: ref,
+                                status: _isTrainerOrCoachForTeamCode(ref.teamCode)
+                                    ? 'coach'
+                                    : 'playing',
+                              ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.success,
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.check_circle, size: 18),
+                      label: const Text('Aanmelden'),
+                    )
+                  : OutlinedButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _setMyStatus(
+                                match: ref,
+                                status: _isTrainerOrCoachForTeamCode(ref.teamCode)
+                                    ? 'coach'
+                                    : 'playing',
+                              ),
+                      child: const Text('Aanmelden'),
+                    ),
+              isPresent
+                  ? OutlinedButton.icon(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _confirmAndSetAfwezig(match: ref),
+                      icon: const Icon(Icons.person_off, size: 18),
+                      label: const Text('Afmelden'),
+                    )
+                  : FilledButton.icon(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _confirmAndSetAfwezig(match: ref),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.textSecondary.withValues(alpha: 0.25),
+                        foregroundColor: AppColors.onBackground,
+                      ),
+                      icon: const Icon(Icons.person_off, size: 18),
+                      label: const Text('Afmelden'),
+                    ),
+            ],
+          ),
+          if (hasCounts) ...[
+            const SizedBox(height: 6),
+            GestureDetector(
+              onTap: () {
+                setState(() {
+                  if (expanded) {
+                    _expandedMatchKeys.remove(key);
+                  } else {
+                    _expandedMatchKeys.add(key);
+                  }
+                });
+              },
+              child: Row(
+                children: [
+                  Icon(
+                    expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: AppColors.textSecondary,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    summary,
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (expanded) ...[
+              const SizedBox(height: 4),
+              if (coaches.isNotEmpty)
+                Text(
+                  'Trainer/coach: ${coaches.join(', ')}',
+                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                ),
+              if (coaches.isNotEmpty && (playing.isNotEmpty || notPlaying.isNotEmpty)) const SizedBox(height: 2),
+              if (playing.isNotEmpty)
+                Text(
+                  'Speler(s): ${playing.join(', ')}',
+                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                ),
+              if (playing.isNotEmpty && notPlaying.isNotEmpty) const SizedBox(height: 2),
+              if (notPlaying.isNotEmpty)
+                Text(
+                  'Afgemeld: ${notPlaying.join(', ')}',
+                  style: TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.9), fontSize: 13),
+                ),
+            ],
+          ],
+        ],
+      ),
+    );
   }
 
   Widget _buildVoorAlleWedstrijdenBar() {
@@ -859,31 +1279,90 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                         foregroundColor: Colors.white,
                       ),
                       icon: const Icon(Icons.check_circle, size: 18),
-                      label: const Text('Aanwezig'),
+                      label: const Text('Aanmelden'),
                     )
                   : OutlinedButton(
                       onPressed: _setMyStatusForAllMatchesAanwezig,
-                      child: const Text('Aanwezig'),
+                      child: const Text('Aanmelden'),
                     ),
               anyPresent
-                  ? OutlinedButton(
-                      onPressed: () => _setMyStatusForAllMatches(null),
-                      child: const Text('Afwezig'),
+                  ? OutlinedButton.icon(
+                      onPressed: () => _confirmAndSetAfwezigVoorAlleWedstrijden(),
+                      icon: const Icon(Icons.person_off, size: 18),
+                      label: const Text('Afmelden'),
                     )
                   : FilledButton.icon(
-                      onPressed: () => _setMyStatusForAllMatches(null),
+                      onPressed: () => _confirmAndSetAfwezigVoorAlleWedstrijden(),
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.textSecondary.withValues(alpha: 0.25),
                         foregroundColor: AppColors.onBackground,
                       ),
                       icon: const Icon(Icons.person_off, size: 18),
-                      label: const Text('Afwezig'),
+                      label: const Text('Afmelden'),
                     ),
             ],
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _confirmAndSetAfwezig({required _MatchRef match}) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Afmelden bevestigen'),
+        content: const Text(
+          'Weet je zeker dat je je wilt afmelden voor deze wedstrijd?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: AppColors.background,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Afmelden'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true && mounted) {
+      _setMyStatus(match: match, status: 'not_playing');
+    }
+  }
+
+  Future<void> _confirmAndSetAfwezigVoorAlleWedstrijden() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Afmelden bevestigen'),
+        content: const Text(
+          'Weet je zeker dat je je wilt afmelden voor alle wedstrijden?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: AppColors.background,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Afmelden'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true && mounted) {
+      _setMyStatusForAllMatches('not_playing');
+    }
   }
 
   @override
@@ -922,8 +1401,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                       ),
                       const SizedBox(height: 6),
                       ...ctx.memberships.map((m) {
-                        final naam = m.teamName.trim().isNotEmpty
-                            ? NevoboApi.displayTeamName(m.teamName)
+                        final naam = m.displayLabel.trim().isNotEmpty
+                            ? m.displayLabel
                             : '(naam ontbreekt)';
                         return Text(
                           '- $naam',
@@ -978,443 +1457,76 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
 
     final showBulkBar = _upcomingMatchRefs.isNotEmpty;
 
+    // Wedstrijden gegroepeerd per dag (lokale datum) voor "Wedstrijden per dag".
+    final matchesByDate = <DateTime, List<_MatchRef>>{};
+    for (final ref in _upcomingMatchRefs) {
+      final local = ref.start.toLocal();
+      final dateKey = DateTime(local.year, local.month, local.day);
+      matchesByDate.putIfAbsent(dateKey, () => []).add(ref);
+    }
+    for (final list in matchesByDate.values) {
+      list.sort((a, b) => a.start.compareTo(b.start));
+    }
+    final sortedDates = matchesByDate.keys.toList()..sort();
+
+    final listChildren = <Widget>[
+      if (showBulkBar) ...[
+        _buildVoorAlleWedstrijdenBar(),
+        const SizedBox(height: 10),
+      ],
+      _buildSectionHeader('Standen'),
+      ..._teams.expand((team) => [
+            _buildStandenCard(team),
+            const SizedBox(height: 10),
+          ]),
+      _buildSectionHeader('Wedstrijden per dag'),
+      if (sortedDates.isEmpty)
+        const Padding(
+          padding: EdgeInsets.only(top: 8, bottom: 16),
+          child: Text(
+            'Geen komende wedstrijden.',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+        )
+      else
+        ...sortedDates.expand((date) => [
+              Padding(
+                padding: const EdgeInsets.only(top: 12, bottom: 6),
+                child: Text(
+                  _formatDateHeader(date),
+                  style: const TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+              GlassCard(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final ref in matchesByDate[date]!)
+                      _buildMatchRow(
+                        ref,
+                        _teamDisplayLabelForCode(ref.teamCode),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+            ]),
+    ];
+
     return RefreshIndicator(
       color: AppColors.primary,
       onRefresh: () async {
-        // Reload memberships first (e.g. after TC linking).
         await ctx.reloadUserContext?.call();
         await _loadAll();
       },
-      child: ListView.separated(
+      child: ListView(
         padding: const EdgeInsets.all(12),
-        itemCount: (showBulkBar ? 1 : 0) + _teams.length,
-        separatorBuilder: (_, _) => const SizedBox(height: 10),
-        itemBuilder: (context, index) {
-          if (showBulkBar && index == 0) {
-            return _buildVoorAlleWedstrijdenBar();
-          }
-          final teamIndex = showBulkBar ? index - 1 : index;
-          final team = _teams[teamIndex];
-          final matches = _matchesByTeam[team.code] ?? const [];
-          final matchError = _matchErrorByTeam[team.code];
-          final leaderboard = _leaderboardByTeam[team.code];
-          final error = _errorByTeam[team.code];
-
-          final useAccordion = _teams.length > 1;
-          final expanded = !useAccordion || _expandedWedstrijdenTeamCodes.contains(team.code);
-
-          return GlassCard(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                InkWell(
-                  onTap: useAccordion
-                      ? () {
-                          setState(() {
-                            if (_expandedWedstrijdenTeamCodes.contains(team.code)) {
-                              _expandedWedstrijdenTeamCodes.remove(team.code);
-                            } else {
-                              _expandedWedstrijdenTeamCodes.add(team.code);
-                            }
-                          });
-                        }
-                      : null,
-                  borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: AppColors.darkBlue,
-                            borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                          ),
-                          child: Text(
-                            NevoboApi.displayTeamCode(team.code),
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                  color: AppColors.primary,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                          ),
-                        ),
-                        const Spacer(),
-                        if (useAccordion)
-                          Icon(
-                            expanded ? Icons.expand_less : Icons.expand_more,
-                            color: AppColors.textSecondary,
-                          )
-                        else if (_loading && (leaderboard == null && error == null))
-                          const SizedBox(
-                            height: 16,
-                            width: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: AppColors.primary,
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-                if (expanded) ...[
-                  const SizedBox(height: 12),
-
-                  const Text(
-                  'Leaderboard',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                if (error != null)
-                  Text(
-                    error,
-                    style: const TextStyle(color: AppColors.error),
-                  )
-                else ...[
-                  if (leaderboard == null)
-                    const Text(
-                      'Laden...',
-                      style: TextStyle(color: AppColors.textSecondary),
-                    )
-                  else if (leaderboard.isEmpty)
-                    const Text(
-                      'Geen leaderboard gevonden.',
-                      style: TextStyle(color: AppColors.textSecondary),
-                    )
-                  else
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Row(
-                            children: [
-                              const SizedBox(width: 28, child: Text('', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600))),
-                              const Expanded(child: Text('Team', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600))),
-                              const SizedBox(width: 10),
-                              SizedBox(
-                                width: 36,
-                                child: FittedBox(
-                                  fit: BoxFit.scaleDown,
-                                  alignment: Alignment.centerRight,
-                                  child: const Text('Wedstr.', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600)),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              SizedBox(
-                                width: 36,
-                                child: FittedBox(
-                                  fit: BoxFit.scaleDown,
-                                  alignment: Alignment.centerRight,
-                                  child: const Text('Punten', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600)),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        ...leaderboard.map((s) {
-                      final isOurTeam = _standingMatchesTeam(s, team.code) || _standingMatchesTeamByPath(s, team.code);
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: isOurTeam
-                                ? AppColors.primary.withValues(alpha: 0.12)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(12),
-                            border: isOurTeam
-                                ? Border.all(
-                                    color: AppColors.primary.withValues(alpha: 0.35),
-                                  )
-                                : null,
-                          ),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: 28,
-                                child: Text(
-                                  s.position > 0 ? '${s.position}.' : '-',
-                                  style: const TextStyle(
-                                    color: AppColors.textSecondary,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  NevoboApi.displayTeamName(s.teamName),
-                                  style: TextStyle(
-                                    color: isOurTeam ? AppColors.primary : AppColors.onBackground,
-                                    fontWeight: isOurTeam ? FontWeight.w900 : FontWeight.w700,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              SizedBox(
-                                width: 36,
-                                child: Text(
-                                  '${s.played}',
-                                  textAlign: TextAlign.right,
-                                  style: const TextStyle(
-                                    color: AppColors.textSecondary,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              SizedBox(
-                                width: 36,
-                                child: Text(
-                                  '${s.points}',
-                                  textAlign: TextAlign.right,
-                                  style: const TextStyle(
-                                    color: AppColors.primary,
-                                    fontWeight: FontWeight.w900,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    }),
-                      ],
-                    ),
-                ],
-
-                const SizedBox(height: 14),
-
-                const Text(
-                  'Wedstrijden',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                if (matchError != null)
-                  Text(
-                    matchError,
-                    style: const TextStyle(color: AppColors.error),
-                  )
-                else if (matches.isEmpty)
-                  const Text(
-                    'Geen wedstrijden gevonden.',
-                    style: TextStyle(color: AppColors.textSecondary),
-                  )
-                else ...[
-                  ...matches.where((m) {
-                    final start = m.start;
-                    if (start == null) return false;
-                    return start.isAfter(DateTime.now().subtract(const Duration(hours: 2)));
-                  }).take(20).map((m) {
-                    final start = m.start;
-                    if (start == null) return const SizedBox.shrink();
-                    final key = _matchKey(teamCode: team.code, start: start);
-                    final isCancelled = _cancelledByMatchKey[key] == true;
-                    final cancelReason = _cancelReasonByMatchKey[key];
-                    final myStatus = _myStatusByMatchKey[key];
-                    final isPresent = myStatus == 'playing' || myStatus == 'coach';
-                    final playing = _playingNamesByMatchKey[key] ?? const [];
-                    final coaches = _coachNamesByMatchKey[key] ?? const [];
-                    final referees = _refereeNamesByMatchKey[key] ?? const [];
-                    final tellers = _tellerNamesByMatchKey[key] ?? const [];
-                    final hasCounts = playing.isNotEmpty || coaches.isNotEmpty;
-                    final expanded = _expandedMatchKeys.contains(key);
-                    final summary = _matchAttendanceSummary(playing, coaches);
-
-                    final ref = _MatchRef(
-                      matchKey: key,
-                      teamCode: team.code,
-                      start: start,
-                      summary: m.summary,
-                      location: (m.location ?? '').trim(),
-                    );
-
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            _formatDateTime(start),
-                            style: const TextStyle(
-                              color: AppColors.textSecondary,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: _buildMatchSummaryText(
-                                  NevoboApi.displayTeamName(m.summary),
-                                  style: TextStyle(
-                                    color: AppColors.onBackground,
-                                    fontWeight: FontWeight.w800,
-                                    decoration: isCancelled
-                                        ? TextDecoration.lineThrough
-                                        : TextDecoration.none,
-                                  ),
-                                  teamCode: team.code,
-                                ),
-                              ),
-                              if (isCancelled)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.error.withValues(alpha: 0.14),
-                                    borderRadius: BorderRadius.circular(999),
-                                    border: Border.all(
-                                      color: AppColors.error.withValues(alpha: 0.35),
-                                    ),
-                                  ),
-                                  child: const Text(
-                                    'Geannuleerd',
-                                    style: TextStyle(
-                                      color: AppColors.error,
-                                      fontWeight: FontWeight.w900,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                          if ((m.location ?? '').trim().isNotEmpty) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              (m.location ?? '').trim(),
-                              style: const TextStyle(color: AppColors.textSecondary),
-                            ),
-                          ],
-                          const SizedBox(height: 4),
-                          Text(
-                            'Scheidsrechter: ${_formatRoleNames(referees)}',
-                            style: const TextStyle(
-                              color: AppColors.textSecondary,
-                              fontSize: 13,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            'Teller: ${_formatRoleNames(tellers)}',
-                            style: const TextStyle(
-                              color: AppColors.textSecondary,
-                              fontSize: 13,
-                            ),
-                          ),
-                          if (isCancelled && cancelReason != null && cancelReason.trim().isNotEmpty) ...[
-                            const SizedBox(height: 6),
-                            Text(
-                              'Reden: $cancelReason',
-                              style: const TextStyle(color: AppColors.textSecondary),
-                            ),
-                          ],
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              isPresent
-                                  ? FilledButton.icon(
-                                      onPressed: isCancelled
-                                          ? null
-                                          : () => _setMyStatus(
-                                                match: ref,
-                                                status: _isTrainerOrCoachForTeamCode(ref.teamCode)
-                                                    ? 'coach'
-                                                    : 'playing',
-                                              ),
-                                      style: FilledButton.styleFrom(
-                                        backgroundColor: AppColors.success,
-                                        foregroundColor: Colors.white,
-                                      ),
-                                      icon: const Icon(Icons.check_circle, size: 18),
-                                      label: const Text('Aanwezig'),
-                                    )
-                                  : OutlinedButton(
-                                      onPressed: isCancelled
-                                          ? null
-                                          : () => _setMyStatus(
-                                                match: ref,
-                                                status: _isTrainerOrCoachForTeamCode(ref.teamCode)
-                                                    ? 'coach'
-                                                    : 'playing',
-                                              ),
-                                      child: const Text('Aanwezig'),
-                                    ),
-                              isPresent
-                                  ? OutlinedButton(
-                                      onPressed: isCancelled
-                                          ? null
-                                          : () => _setMyStatus(match: ref, status: null),
-                                      child: const Text('Afwezig'),
-                                    )
-                                  : FilledButton.icon(
-                                      onPressed: isCancelled
-                                          ? null
-                                          : () => _setMyStatus(match: ref, status: null),
-                                      style: FilledButton.styleFrom(
-                                        backgroundColor: AppColors.textSecondary.withValues(alpha: 0.25),
-                                        foregroundColor: AppColors.onBackground,
-                                      ),
-                                      icon: const Icon(Icons.person_off, size: 18),
-                                      label: const Text('Afwezig'),
-                                    ),
-                            ],
-                          ),
-                          if (hasCounts) ...[
-                            const SizedBox(height: 6),
-                            GestureDetector(
-                              onTap: () {
-                                setState(() {
-                                  if (expanded) {
-                                    _expandedMatchKeys.remove(key);
-                                  } else {
-                                    _expandedMatchKeys.add(key);
-                                  }
-                                });
-                              },
-                              child: Row(
-                                children: [
-                                  Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 18, color: AppColors.textSecondary),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    summary,
-                                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            if (expanded) ...[
-                              const SizedBox(height: 4),
-                              if (coaches.isNotEmpty)
-                                Text(
-                                  'Trainer/coach: ${coaches.join(', ')}',
-                                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                                ),
-                              if (coaches.isNotEmpty && playing.isNotEmpty) const SizedBox(height: 2),
-                              if (playing.isNotEmpty)
-                                Text(
-                                  'Speler(s): ${playing.join(', ')}',
-                                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                                ),
-                            ],
-                          ],
-                        ],
-                      ),
-                    );
-                  }),
-                ],
-                ],
-              ],
-            ),
-          );
-        },
+        children: listChildren,
       ),
     );
   }

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -42,11 +43,15 @@ Future<void> main() async {
     };
 
     try {
-      // Firebase moet vóór elk Firebase-gebruik (incl. plugins) geïnitialiseerd zijn.
-      try {
-        await Firebase.initializeApp();
-      } catch (e) {
-        debugPrint('Firebase init failed (push uit): $e');
+      // Firebase alleen op iOS/Android (FCM push); op macOS/web geen config en niet nodig.
+      final isMobile = defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.android;
+      if (!kIsWeb && isMobile) {
+        try {
+          await Firebase.initializeApp();
+        } catch (e) {
+          debugPrint('Firebase init failed (push uit): $e');
+        }
       }
 
       await dotenv.load(fileName: '.env');

@@ -9,7 +9,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart'
     show applyDisplayNameOverrides, unknownUserName;
-import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 class NevoboStandenTab extends StatefulWidget {
@@ -980,11 +979,6 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
           setState(() {
             _standingsByTeam[team.code] = standings;
           });
-          await NotificationService.sendBroadcastUpdateWithCooldown(
-            title: 'Stand bijgewerkt',
-            body: NevoboApi.displayTeamCode(team.code),
-            cooldownKey: 'stand:${team.code}',
-          );
           // Sync teamnaam uit API naar Supabase (standen bevatten officiële naam).
           for (final s in standings) {
             if (_standingMatchesTeam(s, team.code)) {

@@ -1,11 +1,10 @@
 -- Admin profile management RPCs (usernames)
 --
 -- Purpose:
--- - Allow admins, bestuur and TC to list users and update display names (team toevoegen, namen wijzigen).
+-- - Alleen globale admins mogen alle gebruikers lijsten en display names wijzigen.
 --
 -- Requirements:
 -- - public.is_global_admin() exists (used by the app already).
--- - public.committee_members (committee_name, profile_id) for bestuur/TC check.
 --
 -- Run this in Supabase SQL Editor.
 
@@ -25,23 +24,8 @@ begin
     raise exception 'Not authenticated';
   end if;
 
-  -- Toegestaan: global admin, bestuur of technische commissie (tc)
-  if public.is_global_admin() then
-    null; -- fall through to return query
-  elsif exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'committee_members')
-    and exists (
-      select 1 from public.committee_members cm
-      where lower(cm.committee_name) = 'bestuur' and cm.profile_id = auth.uid()
-    ) then
-    null;
-  elsif exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'committee_members')
-    and exists (
-      select 1 from public.committee_members cm
-      where lower(cm.committee_name) in ('technische-commissie', 'tc') and cm.profile_id = auth.uid()
-    ) then
-    null;
-  else
-    raise exception 'Not allowed';
+  if not coalesce(public.is_global_admin(), false) then
+    raise exception 'Not allowed: only global admins can list all profiles';
   end if;
 
   return query
@@ -83,23 +67,8 @@ begin
     raise exception 'Not authenticated';
   end if;
 
-  -- Zelfde toegang als admin_list_profiles: admin, bestuur, TC
-  if public.is_global_admin() then
-    null;
-  elsif exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'committee_members')
-    and exists (
-      select 1 from public.committee_members cm
-      where lower(cm.committee_name) = 'bestuur' and cm.profile_id = auth.uid()
-    ) then
-    null;
-  elsif exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'committee_members')
-    and exists (
-      select 1 from public.committee_members cm
-      where lower(cm.committee_name) in ('technische-commissie', 'tc') and cm.profile_id = auth.uid()
-    ) then
-    null;
-  else
-    raise exception 'Not allowed';
+  if not coalesce(public.is_global_admin(), false) then
+    raise exception 'Not allowed: only global admins can change display names';
   end if;
 
   if target_profile_id is null then

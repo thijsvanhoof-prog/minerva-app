@@ -54,7 +54,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   bool _loadingAgenda = true;
   String? _agendaError;
   List<_AgendaItem> _agendaItems = const [];
-  Set<int> _myRsvpAgendaIds = const {};
+  /// Per agenda_id: welke profile_ids (zelf + gekoppelde kinderen) zijn aangemeld. Voor Fase E multi-select.
+  Map<int, Set<String>> _rsvpProfileIdsByAgendaId = const {};
 
   // Agenda sub-tab: 0 = agenda, 1 = aanmeldingen (bestuur/communicatie)
   int _agendaMode = 0;
@@ -314,7 +315,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         if (!mounted) return;
         setState(() {
           _agendaItems = _mockAgenda();
-          _myRsvpAgendaIds = const {};
+          _rsvpProfileIdsByAgendaId = const {};
           _loadingAgenda = false;
         });
         return;
@@ -425,27 +426,38 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           .where((a) => a.canRsvp)
           .map((a) => a.id!)
           .toList();
-      Set<int> myRsvps = {};
+      Map<int, Set<String>> rsvpProfileIdsByAgendaId = {};
       if (user != null && agendaIdsWithRsvp.isNotEmpty) {
         try {
+          final ctx = AppUserContext.of(context);
+          final profileIdsToLoad = [
+            ctx.loggedInProfileId,
+            ...ctx.linkedChildProfiles.map((c) => c.profileId),
+          ].where((id) => id.isNotEmpty).toSet().toList();
+          if (profileIdsToLoad.isEmpty) profileIdsToLoad.add(user.id);
+
           final res = await _client
               .from('home_agenda_rsvps')
-              .select('agenda_id')
-              .eq('profile_id', user.id)
+              .select('agenda_id, profile_id')
               .inFilter('agenda_id', agendaIdsWithRsvp)
+              .inFilter('profile_id', profileIdsToLoad)
               .timeout(_loadTimeout);
           final rsvpRows = (res as List<dynamic>).cast<Map<String, dynamic>>();
-          myRsvps = rsvpRows
-              .map((r) => (r['agenda_id'] as num?)?.toInt())
-              .whereType<int>()
-              .toSet();
+          for (final r in rsvpRows) {
+            final aid = (r['agenda_id'] as num?)?.toInt();
+            final pid = r['profile_id']?.toString() ?? '';
+            if (aid == null || pid.isEmpty) continue;
+            rsvpProfileIdsByAgendaId
+                .putIfAbsent(aid, () => {})
+                .add(pid);
+          }
         } catch (_) {}
       }
 
       if (!mounted) return;
       setState(() {
         _agendaItems = visibleItems;
-        _myRsvpAgendaIds = myRsvps;
+        _rsvpProfileIdsByAgendaId = rsvpProfileIdsByAgendaId;
         _loadingAgenda = false;
       });
 
@@ -464,7 +476,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       if (!mounted) return;
       setState(() {
         _agendaItems = _mockAgenda();
-        _myRsvpAgendaIds = const {};
+        _rsvpProfileIdsByAgendaId = const {};
         _agendaError = e.toString();
         _loadingAgenda = false;
       });
@@ -955,17 +967,19 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 
           final itemIndex = i - 1;
           final item = _agendaItems[itemIndex];
-          final signedUp =
-              item.id != null && _myRsvpAgendaIds.contains(item.id);
+          final signedUpProfileIds = item.id != null ? (_rsvpProfileIdsByAgendaId[item.id] ?? <String>{}) : <String>{};
+          final signedUp = signedUpProfileIds.isNotEmpty;
           final canSignUp = item.canUserSignUp(AppUserContext.of(context));
           final enabled = item.canRsvp && item.id != null && canSignUp;
+          final signedUpLabel = signedUp ? _rsvpNamesLabel(item.id) : null;
           return _AgendaCard(
             item: item,
             signedUp: signedUp,
+            signedUpLabel: signedUpLabel,
             enabled: enabled,
             showSignupButton: canSignUp && item.canRsvp,
             canManage: canManageAgenda,
-            onToggleRsvp: () => _toggleAgendaRsvp(item),
+            onToggleRsvp: () => _showAgendaRsvpDialog(item),
             onReadMore: () => _showAgendaDetail(item),
             onEdit: item.id != null ? () => _openEditAgendaDialog(item) : null,
             onDelete: item.id != null ? () => _deleteAgendaItem(item) : null,
@@ -1458,7 +1472,41 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     );
   }
 
-  Future<void> _toggleAgendaRsvp(_AgendaItem item) async {
+  /// Optionen voor "Aanmelden voor". Alleen ouders krijgen multi-select (zelf + kinderen); anderen alleen "Zelf".
+  List<({String profileId, String displayName})> _agendaRsvpOptions(AppUserContext ctx) {
+    final options = <({String profileId, String displayName})>[
+      (profileId: ctx.loggedInProfileId, displayName: 'Zelf'),
+    ];
+    if (ctx.linkedChildProfiles.isNotEmpty) {
+      options.addAll(
+        ctx.linkedChildProfiles.map(
+          (c) => (profileId: c.profileId, displayName: c.displayName.trim().isEmpty ? 'Gekoppeld kind' : c.displayName),
+        ),
+      );
+    }
+    return options;
+  }
+
+  /// Namen van aangemelde personen voor dit agendapunt (voor knoptekst).
+  String? _rsvpNamesLabel(int? agendaId) {
+    if (agendaId == null) return null;
+    final ids = _rsvpProfileIdsByAgendaId[agendaId];
+    if (ids == null || ids.isEmpty) return null;
+    final ctx = AppUserContext.of(context);
+    final names = <String>[];
+    for (final pid in ids) {
+      if (pid == ctx.loggedInProfileId) {
+        names.add('Zelf');
+      } else {
+        final child = ctx.linkedChildProfiles.where((c) => c.profileId == pid).firstOrNull;
+        names.add(child?.displayName.trim().isEmpty == true ? 'Gekoppeld kind' : (child?.displayName ?? '?'));
+      }
+    }
+    names.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return names.join(', ');
+  }
+
+  Future<void> _showAgendaRsvpDialog(_AgendaItem item) async {
     final user = _client.auth.currentUser;
     if (user == null) {
       if (!mounted) return;
@@ -1467,30 +1515,121 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     }
     if (item.id == null) return;
 
-    final isSignedUp = _myRsvpAgendaIds.contains(item.id);
+    final ctx = AppUserContext.of(context);
+    final options = _agendaRsvpOptions(ctx);
+    if (options.isEmpty) return;
+
+    final current = _rsvpProfileIdsByAgendaId[item.id] ?? {};
+    final selected = Set<String>.from(current);
+
+    final result = await showDialog<Set<String>>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Aanmelden voor'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item.title,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    ...options.map((opt) => CheckboxListTile(
+                          value: selected.contains(opt.profileId),
+                          onChanged: (v) {
+                            setDialogState(() {
+                              if (v == true) {
+                                selected.add(opt.profileId);
+                              } else {
+                                selected.remove(opt.profileId);
+                              }
+                            });
+                          },
+                          title: Text(opt.displayName),
+                          controlAffinity: ListTileControlAffinity.leading,
+                          contentPadding: EdgeInsets.zero,
+                        )),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Annuleren'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(Set<String>.from(selected)),
+                  child: const Text('Opslaan'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null || !mounted) return;
+
+    final toAdd = result.difference(current);
+    final toRemove = current.difference(result);
+
+    if (toRemove.isNotEmpty) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Afmelden bevestigen'),
+          content: const Text(
+            'Weet je zeker dat je je wilt afmelden voor deze activiteit?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Annuleren'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: AppColors.background,
+              ),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Afmelden'),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true || !mounted) return;
+    }
+
     try {
-      if (isSignedUp) {
+      for (final pid in toRemove) {
         await _client
             .from('home_agenda_rsvps')
             .delete()
             .eq('agenda_id', item.id!)
-            .eq('profile_id', user.id);
-      } else {
+            .eq('profile_id', pid);
+      }
+      for (final pid in toAdd) {
         await _client.from('home_agenda_rsvps').insert({
           'agenda_id': item.id,
-          'profile_id': user.id,
+          'profile_id': pid,
         });
       }
 
+      if (!mounted) return;
       setState(() {
-        final next = {..._myRsvpAgendaIds};
-        if (isSignedUp) {
-          next.remove(item.id);
-        } else {
-          next.add(item.id!);
-        }
-        _myRsvpAgendaIds = next;
+        final nextMap = Map<int, Set<String>>.from(_rsvpProfileIdsByAgendaId);
+        nextMap[item.id!] = Set<String>.from(result);
+        _rsvpProfileIdsByAgendaId = nextMap;
       });
+      showTopMessage(context, 'Aanmelding bijgewerkt.');
     } catch (e) {
       if (!mounted) return;
       showTopMessage(context, 'Aanmelding mislukt: $e', isError: true);
@@ -4599,6 +4738,8 @@ class _AgendaSignup {
 class _AgendaCard extends StatelessWidget {
   final _AgendaItem item;
   final bool signedUp;
+  /// Bij aanmelding: "Zelf, Jan" voor knoptekst "Aangemeld (Zelf, Jan)".
+  final String? signedUpLabel;
   final bool enabled;
   final bool showSignupButton;
   final bool canManage;
@@ -4610,6 +4751,7 @@ class _AgendaCard extends StatelessWidget {
   const _AgendaCard({
     required this.item,
     required this.signedUp,
+    this.signedUpLabel,
     required this.enabled,
     this.showSignupButton = true,
     required this.canManage,
@@ -4747,38 +4889,50 @@ class _AgendaCard extends StatelessWidget {
           Row(
             children: [
               if (showSignupButton) ...[
-                SizedBox(
-                  height: 36,
-                  child: signedUp
-                      ? Tooltip(
-                          message: 'Tik om af te melden',
-                          child: FilledButton.icon(
-                            onPressed: enabled ? onToggleRsvp : null,
-                            style: FilledButton.styleFrom(
-                              backgroundColor: AppColors.success,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
+                Expanded(
+                  child: SizedBox(
+                    height: 36,
+                    child: signedUp
+                        ? Tooltip(
+                            message: 'Tik om aanmelding te wijzigen',
+                            child: FilledButton.icon(
+                              onPressed: enabled ? onToggleRsvp : null,
+                              style: FilledButton.styleFrom(
+                                backgroundColor: AppColors.success,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                ),
+                                minimumSize: Size.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                               ),
+                              icon: const Icon(Icons.check_circle, size: 18),
+                              label: Text(
+                                (signedUpLabel ?? '').trim().isNotEmpty
+                                    ? 'Aangemeld ($signedUpLabel)'
+                                    : 'Aangemeld',
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                              ),
+                            ),
+                          )
+                        : OutlinedButton(
+                            onPressed: enabled ? onToggleRsvp : null,
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
                               minimumSize: Size.zero,
                               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             ),
-                            icon: const Icon(Icons.check_circle, size: 18),
-                            label: const Text('Aangemeld'),
+                            child: Text(
+                              item.signupButtonLabel,
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            ),
                           ),
-                        )
-                      : OutlinedButton(
-                          onPressed: enabled ? onToggleRsvp : null,
-                          style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            minimumSize: Size.zero,
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          ),
-                          child: Text(item.signupButtonLabel),
-                        ),
+                  ),
                 ),
               ],
-              const Spacer(),
+              const SizedBox(width: 8),
               TextButton(
                 onPressed: onReadMore,
                 style: TextButton.styleFrom(

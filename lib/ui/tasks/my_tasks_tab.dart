@@ -1130,8 +1130,22 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       await _load();
     } catch (e) {
       if (!mounted) return;
-      showTopMessage(context, 'Aanmelden mislukt: $e', isError: true);
+      showTopMessage(context, _signupErrorMessage(e), isError: true);
     }
+  }
+
+  /// Gebruiksvriendelijke melding bij RLS/permission-fout (42501, Forbidden).
+  static String _signupErrorMessage(Object e) {
+    if (e is PostgrestException) {
+      final code = e.code;
+      final msg = e.message.toLowerCase();
+      if (code == '42501' ||
+          msg.contains('row-level security') ||
+          msg.contains('forbidden')) {
+        return 'Je bent niet bevoegd om jezelf hier aan te melden.';
+      }
+    }
+    return 'Aanmelden mislukt: $e';
   }
 
   Future<int?> _ensureTaskForMatchRole(_HomeMatch match, String role) async {
@@ -1186,7 +1200,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       await _toggleSignupForTask(taskId);
     } catch (e) {
       if (!mounted) return;
-      showTopMessage(context, 'Aanmelden mislukt: $e', isError: true);
+      showTopMessage(context, _signupErrorMessage(e), isError: true);
     }
   }
 

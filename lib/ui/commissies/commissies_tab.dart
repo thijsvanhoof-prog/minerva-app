@@ -100,11 +100,17 @@ class CommissiesTab extends StatelessWidget {
     }
   }
 
+  /// Of de gebruiker deze commissie mag inzien/aanpassen: alleen eigen commissies, tenzij bestuur of admin.
+  static bool _mayViewCommittee(AppUserContext ctx, String committeeKey) {
+    if (ctx.hasFullAdminRights || ctx.isInBestuur) return true;
+    return ctx.isInCommittee(committeeKey);
+  }
+
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
-    // Altijd de vier vaste tabs tonen (Bestuur, TC, CC, WZ). Toegang tot inhoud regelt elke tab zelf.
-    final List<String> committees = [
+    // Alle mogelijke commissies (vaste set + eventueel uit context).
+    final List<String> allPossible = [
       'bestuur',
       'technische-commissie',
       'communicatie',
@@ -113,7 +119,6 @@ class CommissiesTab extends StatelessWidget {
       'jeugdcommissie',
       'scheidsrechters-tellers',
     ];
-    // Eventuele extra commissies uit context (bijv. jeugd) toevoegen.
     for (final c in ctx.committees) {
       final k = c.trim().toLowerCase();
       if (k != 'bestuur' && k != 'technische-commissie' && k != 'tc' &&
@@ -123,13 +128,17 @@ class CommissiesTab extends StatelessWidget {
           k != 'scheidsrechters/tellers' && k != 'scheidsrechters-tellers' &&
           k != 'vrijwilligers' &&
           k != 'admin') {
-        if (!committees.any((x) => x.trim().toLowerCase() == k)) {
-          committees.add(c);
+        if (!allPossible.any((x) => x.trim().toLowerCase() == k)) {
+          allPossible.add(c);
         }
       }
     }
-    // Admin-tab voor iedereen die alle accounts mag zien (bestuur, TC, admins).
-    if (ctx.canViewAllAccounts && !committees.any((c) => c.trim().toLowerCase() == 'admin')) {
+    // Alleen commissies tonen waar de gebruiker in zit, tenzij bestuur of admin (die zien alles).
+    final List<String> committees = allPossible
+        .where((c) => _mayViewCommittee(ctx, c))
+        .toList();
+    // Admin-tab alleen voor globale admins (gebruikersnamen wijzigen, accounts verwijderen).
+    if (ctx.hasFullAdminRights && !committees.any((c) => c.trim().toLowerCase() == 'admin')) {
       committees.add('admin');
     }
     committees.sort((a, b) {
@@ -225,8 +234,28 @@ class _CommissiesTabBody extends StatefulWidget {
 }
 
 class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
+  bool _nevoboTableMissing = false;
+  bool _schemaCheckDone = false;
+
+  Future<void> _checkNevoboTable() async {
+    if (_schemaCheckDone) return;
+    _schemaCheckDone = true;
+    try {
+      await Supabase.instance.client
+          .from('nevobo_home_matches')
+          .select('match_key')
+          .limit(1);
+    } catch (_) {
+      if (mounted) setState(() => _nevoboTableMissing = true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final ctx = AppUserContext.of(context);
+    if ((ctx.isInBestuur || ctx.hasFullAdminRights) && !_schemaCheckDone) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _checkNevoboTable());
+    }
     final controller = DefaultTabController.of(context);
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -244,6 +273,34 @@ class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
                     ),
               ),
             ),
+            if (_nevoboTableMissing) ...[
+              Padding(
+                padding: AppColors.tabContentPadding,
+                child: GlassCard(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Supabase tabel ontbreekt',
+                          style: TextStyle(
+                            color: AppColors.onBackground,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Run `supabase/nevobo_home_matches_schema.sql` in Supabase om koppelingen op te slaan (nodig voor Google Sheet sync).',
+                          style: TextStyle(color: AppColors.textSecondary),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
             Padding(
               padding: AppColors.tabContentPadding,
               child: GlassCard(
@@ -361,7 +418,7 @@ class _AdminCommitteeView extends StatelessWidget {
                 ),
               ),
               subtitle: const Text(
-                'Bekijk alle accounts, wijzig gebruikersnamen of voeg leden aan teams toe. Zichtbaar voor bestuur, TC en admins.',
+                'Bekijk alle accounts, wijzig gebruikersnamen of voeg leden aan teams toe. Alleen voor admins.',
                 style: TextStyle(color: AppColors.textSecondary),
               ),
               trailing: const Icon(Icons.chevron_right),

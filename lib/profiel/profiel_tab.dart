@@ -29,14 +29,38 @@ class _ProfielTabState extends State<ProfielTab> {
   List<Map<String, dynamic>> _teamRoles = [];
   Map<int, String> _teamNamesById = const {};
   List<String> _committeesInProfiel = const [];
+  /// Future voor gekoppelde ouders (kind ziet met wie die is gekoppeld). Bij refresh opnieuw inladen.
+  Future<List<Map<String, dynamic>>>? _linkedParentsFuture;
+
   final Set<String> _processingLinkRequestIds = {};
-  bool _unlinking = false;
+  String? _unlinkingChildId;
   bool _savingDisplayName = false;
+
+  /// Fase B: 0 = Mijn gegevens, 1..n = tab voor gekoppeld kind.
+  int _selectedProfileTabIndex = 0;
 
   @override
   void initState() {
     super.initState();
     _reload();
+    _linkedParentsFuture = _loadLinkedParentsFuture();
+  }
+
+  Future<List<Map<String, dynamic>>> _loadLinkedParentsFuture() async {
+    try {
+      final rpc = await _client.rpc('get_my_linked_parent_profiles');
+      final rows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+      return rows
+          .map((r) => {
+                'profile_id': r['profile_id']?.toString(),
+                'display_name': (r['display_name']?.toString() ?? '').trim(),
+              })
+          .where((m) =>
+              m['profile_id'] != null && (m['profile_id'] as String).isNotEmpty)
+          .toList();
+    } catch (_) {
+      return [];
+    }
   }
 
   void _safeSetState(VoidCallback fn) {
@@ -145,6 +169,9 @@ class _ProfielTabState extends State<ProfielTab> {
       }
       if (!mounted) return;
 
+      // Bij vernieuwen ook gekoppelde ouders opnieuw laden (voor kind-weergave)
+      _linkedParentsFuture = _loadLinkedParentsFuture();
+
       // Sorteer teams volgens app-volgorde (DS -> HS -> XR -> MA -> JA -> MB -> JB -> MC -> JC ...)
       roles.sort((a, b) {
         final ai = (a['team_id'] as num?)?.toInt() ?? 0;
@@ -170,6 +197,45 @@ class _ProfielTabState extends State<ProfielTab> {
         _error = e.toString();
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _unlinkChild(
+    BuildContext context,
+    OuderKindNotifier notifier,
+    String childId,
+  ) async {
+    _safeSetState(() => _unlinkingChildId = childId);
+    try {
+      await _client.rpc(
+        'unlink_child_account',
+        params: {'child_profile_id': childId},
+      );
+      final res = await _client.rpc('get_my_linked_child_profiles');
+      final list = (res as List<dynamic>?)
+              ?.map((e) {
+                final m = e as Map<String, dynamic>?;
+                if (m == null) return null;
+                final id = m['profile_id']?.toString();
+                final name = m['display_name']?.toString().trim() ?? '';
+                if (id == null || id.isEmpty) return null;
+                return LinkedChild(
+                  profileId: id,
+                  displayName: name.trim().isEmpty ? 'Gekoppeld account' : name,
+                );
+              })
+              .whereType<LinkedChild>()
+              .toList() ??
+          const [];
+      notifier.setChildren(list);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_shortError(e))),
+        );
+      }
+    } finally {
+      _safeSetState(() => _unlinkingChildId = null);
     }
   }
 
@@ -464,8 +530,7 @@ class _ProfielTabState extends State<ProfielTab> {
             ),
             subtitle: const Text(
               'Wat kan wel: elkaars trainingen en wedstrijden bekijken, aanwezigheid voor een gekoppeld kind invullen. '
-              'Wat kan niet: wachtwoorden of e-mail van anderen wijzigen. '
-              'Beide partijen moeten de koppeling bevestigen via e-mail.',
+              'Wat kan niet: wachtwoorden of e-mail van anderen wijzigen.',
               style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
             ),
           ),
@@ -594,211 +659,135 @@ class _ProfielTabState extends State<ProfielTab> {
             animation: notifier,
             builder: (context, _) {
               final linked = notifier.linkedChildren;
-              final viewingAsId = notifier.viewingAsProfileId;
-              final viewingAsName = notifier.viewingAsDisplayName;
-              final isViewingAsChild = viewingAsId != null;
-              final isOuderVerzorger = linked.isNotEmpty;
-
               final widgets = <Widget>[];
 
-              // Only the ouder/verzorger (parent) can unlink. The linked account (child) never sees this.
-              if (isViewingAsChild && isOuderVerzorger) {
+              // Per gekoppeld kind: naam + ontkoppelknop (ouder kan altijd ontkoppelen).
+              for (final c in linked) {
+                final childId = c.profileId;
+                final childName = c.displayName;
+                final isUnlinkingThis = _unlinkingChildId == childId;
                 widgets.add(
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.error,
-                          foregroundColor: Colors.white,
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                    child: Row(
+                      children: [
+                        Icon(Icons.person_outline, color: AppColors.iconMuted, size: 22),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            childName,
+                            style: const TextStyle(
+                              color: AppColors.onBackground,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
-                        onPressed: _unlinking
-                            ? null
-                            : () async {
-                                final messenger = ScaffoldMessenger.of(context);
-                                final childId = viewingAsId;
-                                if (childId.isEmpty) {
-                                  showTopMessage(
-                                    messenger.context,
-                                    'Geen gekoppeld account geselecteerd.',
-                                    isError: true,
-                                  );
-                                  return;
-                                }
-
-                                final prevChildren =
-                                    List<LinkedChild>.from(notifier.linkedChildren);
-                                final prevViewingAsId = notifier.viewingAsProfileId;
-                                final prevViewingAsName = notifier.viewingAsDisplayName;
-
-                                try {
-                                  setState(() => _unlinking = true);
-
-                                  // Optimistic UI update: remove immediately so it feels responsive.
-                                  notifier.clearViewingAs();
-                                  notifier.setChildren(
-                                    prevChildren.where((c) => c.profileId != childId).toList(),
-                                  );
-
-                                  await _client.rpc(
-                                    'unlink_child_account',
-                                    params: {'child_profile_id': childId},
-                                  );
-
-                                  // After unlink, refresh the list from backend (source of truth).
-                                  // If we cannot fetch, we must NOT claim success (otherwise it may "come back").
-                                  final res =
-                                      await _client.rpc('get_my_linked_child_profiles');
-                                  final fresh = (res as List<dynamic>?)
-                                          ?.map((e) {
-                                            final m = e as Map<String, dynamic>?;
-                                            if (m == null) return null;
-                                            final id = m['profile_id']?.toString();
-                                            final name = (m['display_name'] ?? '')
-                                                .toString()
-                                                .trim();
-                                            if (id == null || id.isEmpty) return null;
-                                            return LinkedChild(
-                                              profileId: id,
-                                              displayName: name.isNotEmpty
-                                                  ? name
-                                                  : 'Gekoppeld account',
-                                            );
-                                          })
-                                          .whereType<LinkedChild>()
-                                          .toList() ??
-                                      const [];
-
-                                  notifier.setChildren(fresh);
-                                  // Keep viewing-as cleared after unlink attempt.
-
-                                  // Verify: if still present, treat as failure (no silent success).
-                                  final stillLinked =
-                                      fresh.any((c) => c.profileId == childId);
-
-                                  if (!mounted) return;
-                                  if (stillLinked) {
-                                    // Restore optimistic state if unlink didn't actually happen.
-                                    notifier.setChildren(prevChildren);
-                                    if (prevViewingAsId != null) {
-                                      notifier.setViewingAs(prevViewingAsId, prevViewingAsName);
-                                    }
-                                    showTopMessage(
-                                      messenger.context,
-                                      'Ontkoppelen is niet gelukt (koppeling bestaat nog). Controleer of de Supabase RPC `unlink_child_account` correct is geïnstalleerd en rechten heeft.',
-                                      isError: true,
-                                    );
-                                  } else {
-                                    showTopMessage(messenger.context, 'Account ontkoppeld.');
-                                  }
-                                } on PostgrestException catch (e) {
-                                  if (!mounted) return;
-                                  final msg = e.message;
-                                  final hint = msg.contains('Could not find the function') ||
-                                          msg.contains('PGRST202')
-                                      ? '\n\nRun `supabase/account_link_requests_schema.sql` (of alleen de unlink RPC) in Supabase.'
-                                      : '';
-                                  // Restore optimistic state on failure.
-                                  notifier.setChildren(prevChildren);
-                                  if (prevViewingAsId != null) {
-                                    notifier.setViewingAs(prevViewingAsId, prevViewingAsName);
-                                  }
-                                  showTopMessage(
-                                    messenger.context,
-                                    'Ontkoppelen mislukt: $msg$hint',
-                                    isError: true,
-                                  );
-                                } catch (e) {
-                                  if (!mounted) return;
-                                  notifier.setChildren(prevChildren);
-                                  if (prevViewingAsId != null) {
-                                    notifier.setViewingAs(prevViewingAsId, prevViewingAsName);
-                                  }
-                                  showTopMessage(
-                                    messenger.context,
-                                    'Ontkoppelen mislukt: $e',
-                                    isError: true,
-                                  );
-                                } finally {
-                                  if (mounted) setState(() => _unlinking = false);
-                                }
-                              },
-                        icon: _unlinking
-                            ? const SizedBox(
-                                height: 16,
-                                width: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Icon(Icons.link_off),
-                        label: Text(
-                          _unlinking
-                              ? 'Ontkoppelen…'
-                              : "Ontkoppelen (${viewingAsName ?? 'Gekoppeld account'})",
+                        TextButton.icon(
+                          onPressed: _unlinkingChildId != null ? null
+                              : () => _unlinkChild(context, notifier, childId),
+                          icon: isUnlinkingThis
+                              ? const SizedBox(
+                                  height: 16,
+                                  width: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.link_off, size: 20),
+                          label: Text(
+                            isUnlinkingThis ? '…' : 'Ontkoppelen',
+                            style: const TextStyle(color: AppColors.error),
+                          ),
                         ),
-                      ),
+                      ],
                     ),
                   ),
                 );
               }
 
-              // Linked accounts list
-              widgets.addAll(
-                linked.map((c) {
-                  final isActive = viewingAsId == c.profileId;
-                  return ListTile(
-                    dense: true,
-                    leading: Icon(
-                      isActive ? Icons.check_circle : Icons.person_outline,
-                      color: isActive ? AppColors.primary : AppColors.iconMuted,
-                    ),
-                    title: Text(
-                      isActive
-                          ? 'Bekijk als ${c.displayName} (actief)'
-                          : 'Bekijk als ${c.displayName}',
-                      style: const TextStyle(
-                        color: AppColors.onBackground,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    onTap: isActive ? null : () => notifier.setViewingAs(c.profileId, c.displayName),
-                  );
-                }),
+              // Als kind: toon met wie je bent gekoppeld (geen ontkoppelknop; alleen ouder kan ontkoppelen).
+              widgets.add(
+                FutureBuilder<List<Map<String, dynamic>>>(
+                  future: _linkedParentsFuture,
+                  builder: (context, snapshot) {
+                    final parents = snapshot.data ?? const <Map<String, dynamic>>[];
+                    if (parents.isEmpty) return const SizedBox.shrink();
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
+                          child: Text(
+                            'Je bent gekoppeld aan',
+                            style: TextStyle(
+                              color: AppColors.onBackground,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                        ...parents.map((p) {
+                          final name = (p['display_name'] as String? ?? '').trim();
+                          final displayName = name.isEmpty ? 'Gekoppeld account' : name;
+                          return Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                            child: Row(
+                              children: [
+                                Icon(Icons.person_outline, color: AppColors.iconMuted, size: 22),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    displayName,
+                                    style: const TextStyle(
+                                      color: AppColors.onBackground,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
+                          child: Text(
+                            'Je bent gekoppeld aan bovenstaande ouder(s)/verzorger(s). Alleen zij kunnen de koppeling verbreken.',
+                            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
               );
 
-              // Account koppelen (only when not viewing as)
-              if (!isViewingAsChild) {
-                widgets.add(
-                  ListTile(
-                    dense: true,
-                    leading:
-                        const Icon(Icons.person_add_outlined, color: AppColors.iconMuted),
-                    title: const Text(
-                      'Account koppelen',
-                      style: TextStyle(
-                        color: AppColors.onBackground,
-                        fontWeight: FontWeight.w600,
-                      ),
+              // Altijd tonen: nog een account koppelen (zodat je meerdere kinderen kunt toevoegen).
+              widgets.add(
+                ListTile(
+                  dense: true,
+                  leading:
+                      const Icon(Icons.person_add_outlined, color: AppColors.iconMuted),
+                  title: const Text(
+                    'Account koppelen',
+                    style: TextStyle(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w600,
                     ),
-                    subtitle: Text(
-                      linked.isEmpty
-                          ? 'Start een koppeling. De ouder/verzorger kan daarna als kind meekijken en aanwezigheid voor trainingen/wedstrijden invullen. Koppeling wordt bevestigd via e-mail.'
-                          : 'Nog een account toevoegen.',
-                      style: const TextStyle(color: AppColors.textSecondary),
-                    ),
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const OuderKindKoppelPage(),
-                        ),
-                      );
-                    },
                   ),
-                );
-              }
+                  subtitle: Text(
+                    linked.isEmpty
+                        ? 'Start een koppeling. In de app genereer je een code of voer je de code van de ander in.'
+                        : 'Nog een account toevoegen.',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const OuderKindKoppelPage(),
+                      ),
+                    );
+                  },
+                ),
+              );
 
               return Column(children: widgets);
             },
@@ -806,6 +795,82 @@ class _ProfielTabState extends State<ProfielTab> {
         ],
       ),
     );
+  }
+
+  /// Teams van dit gekoppelde kind (memberships met linkedChildDisplayName = kind).
+  List<TeamMembership> _teamsForChild(LinkedChild child, AppUserContext ctx) {
+    final name = child.displayName.trim();
+    return ctx.memberships
+        .where((m) => m.linkedChildDisplayName?.trim() == name)
+        .toList();
+  }
+
+  /// Inhoud van een kind-tab: teams van dat kind + uitleg over aanwezigheid/agenda.
+  List<Widget> _buildKindTabContent(LinkedChild child, AppUserContext ctx) {
+    final teams = _teamsForChild(child, ctx);
+    final name = child.displayName.trim().isEmpty ? 'Gekoppeld kind' : child.displayName.trim();
+    return [
+      GlassCard(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Teams van $name',
+              style: const TextStyle(
+                color: AppColors.onBackground,
+                fontWeight: FontWeight.w700,
+                fontSize: 16,
+              ),
+            ),
+            const SizedBox(height: 8),
+            if (teams.isEmpty)
+              const Text(
+                'Geen teams gekoppeld voor dit kind.',
+                style: TextStyle(color: AppColors.textSecondary),
+              )
+            else
+              ...teams.map((m) => ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.groups_outlined, color: AppColors.iconMuted),
+                    title: Text(
+                      m.displayLabel,
+                      style: const TextStyle(
+                        color: AppColors.onBackground,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    subtitle: Text(
+                      'Rol: ${m.role == 'guardian' ? 'Ouder/verzorger' : _roleLabel(m.role)}',
+                      style: const TextStyle(color: AppColors.textSecondary),
+                    ),
+                  )),
+          ],
+        ),
+      ),
+      const SizedBox(height: 12),
+      GlassCard(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Aanwezigheid en aanmeldingen',
+              style: TextStyle(
+                color: AppColors.onBackground,
+                fontWeight: FontWeight.w700,
+                fontSize: 16,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Aanwezigheid voor trainingen en wedstrijden van $name regel je in de tab Teams (Trainingen en Wedstrijden). Aanmeldingen voor activiteiten kun je doen op Home bij Agenda.',
+              style: const TextStyle(color: AppColors.textSecondary, height: 1.4),
+            ),
+          ],
+        ),
+      ),
+    ];
   }
 
   String _teamAbbreviation(String raw) {
@@ -862,6 +927,14 @@ class _ProfielTabState extends State<ProfielTab> {
     final displayName = ctx.displayName.trim().isNotEmpty ? ctx.displayName.trim() : (user?.email ?? 'Onbekend');
     final roleLabels = _buildRoleLabels(ctx);
 
+    final linkedChildren = ctx.linkedChildProfiles;
+    final padding = EdgeInsets.fromLTRB(
+      16,
+      16,
+      16,
+      16 + MediaQuery.paddingOf(context).bottom,
+    );
+
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: SafeArea(
@@ -878,46 +951,99 @@ class _ProfielTabState extends State<ProfielTab> {
                     ),
               ),
             ),
+            if (linkedChildren.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _profileTabChip(
+                        context,
+                        label: 'Mijn gegevens',
+                        selected: _selectedProfileTabIndex == 0,
+                        onTap: () => setState(() => _selectedProfileTabIndex = 0),
+                      ),
+                      const SizedBox(width: 8),
+                      ...linkedChildren.asMap().entries.map((e) {
+                        final idx = e.key + 1;
+                        final child = e.value;
+                        final name = child.displayName.trim().isEmpty ? 'Kind' : child.displayName.trim();
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: _profileTabChip(
+                            context,
+                            label: name,
+                            selected: _selectedProfileTabIndex == idx,
+                            onTap: () => setState(() => _selectedProfileTabIndex = idx),
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
             Expanded(
               child: RefreshIndicator(
                 color: AppColors.primary,
                 onRefresh: _reload,
                 child: ListView(
                   physics: const AlwaysScrollableScrollPhysics(),
-                  padding: EdgeInsets.fromLTRB(
-                    16,
-                    16,
-                    16,
-                    16 + MediaQuery.paddingOf(context).bottom,
-                  ),
-          children: _loading
-              ? [
-                  const SizedBox(
-                    height: 300,
-                    child: Center(
-                      child: CircularProgressIndicator(color: AppColors.primary),
-                    ),
-                  ),
-                ]
-              : (_error != null)
-                  ? [
-                      const SizedBox(height: 120),
-                      Text(
-                        'Fout: $_error',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: AppColors.error),
-                      ),
-                      const SizedBox(height: 12),
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.primary,
-                          foregroundColor: AppColors.background,
-                        ),
-                        onPressed: _reload,
-                        child: const Text('Opnieuw proberen'),
-                      ),
-                    ]
-                  : [
+                  padding: padding,
+                  children: (linkedChildren.isNotEmpty && _selectedProfileTabIndex > 0)
+                      ? _buildKindTabContent(
+                          linkedChildren[_selectedProfileTabIndex - 1],
+                          ctx,
+                        )
+                      : _buildMijnGegevensList(context, displayName, email, roleLabels, ctx),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildMijnGegevensList(
+    BuildContext context,
+    String displayName,
+    String email,
+    List<String> roleLabels,
+    AppUserContext ctx,
+  ) {
+    if (_loading) {
+      return [
+        const SizedBox(
+          height: 300,
+          child: Center(
+            child: CircularProgressIndicator(color: AppColors.primary),
+          ),
+        ),
+      ];
+    }
+    if (_error != null) {
+      return [
+        const SizedBox(height: 120),
+        Text(
+          'Fout: $_error',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: AppColors.error),
+        ),
+        const SizedBox(height: 12),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.primary,
+            foregroundColor: AppColors.background,
+          ),
+          onPressed: _reload,
+          child: const Text('Opnieuw proberen'),
+        ),
+      ];
+    }
+    return [
                     GlassCard(
                       child: ListTile(
                         title: const Text(
@@ -1199,11 +1325,31 @@ class _ProfielTabState extends State<ProfielTab> {
                       label: const Text('Uitloggen'),
                       onPressed: _signOut,
                     ),
-                  ],
-                ),
-              ),
+                  ];
+  }
+
+  Widget _profileTabChip(
+    BuildContext context, {
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: selected ? AppColors.primary.withValues(alpha: 0.25) : Colors.transparent,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? AppColors.primary : AppColors.textSecondary,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              fontSize: 14,
             ),
-          ],
+          ),
         ),
       ),
     );

@@ -62,13 +62,22 @@ class TeamMembership {
   final String teamName;
   /// Nevobo-teamcode (HS1, DS1, …) indien bekend; gebruikt voor Standen/Wedstrijden.
   final String? nevoboCode;
+  /// Bij guardian-rol: displaynaam van het gekoppelde kind (voor label "Team (kind)").
+  final String? linkedChildDisplayName;
 
   const TeamMembership({
     required this.teamId,
     required this.role,
     required this.teamName,
     this.nevoboCode,
+    this.linkedChildDisplayName,
   });
+
+  /// Teamnaam voor weergave: "Team" of "Team (kindnaam)" bij gekoppeld kind.
+  String get displayLabel =>
+      linkedChildDisplayName != null && linkedChildDisplayName!.trim().isNotEmpty
+          ? '$teamName (${linkedChildDisplayName!.trim()})'
+          : teamName;
 
   bool get canManageTeam {
     final r = role.trim().toLowerCase();

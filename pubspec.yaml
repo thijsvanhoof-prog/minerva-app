@@ -1,7 +1,7 @@
 name: minerva_app
 description: Minerva verenigingsapp
 publish_to: "none"
-version: 4.1.0+21
+version: 4.2.0+22
 
 environment:
   sdk: ">=3.10.4 <4.0.0"

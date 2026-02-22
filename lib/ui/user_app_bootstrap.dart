@@ -233,15 +233,29 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     for (final row in linkedTmRows) {
       final m = row as Map<String, dynamic>;
       final teamId = (m['team_id'] as num).toInt();
+      final profileId = (m['profile_id']?.toString() ?? '').trim();
       final roleRaw = (m['role'] as String?) ?? 'player';
       final normalized = _normalizeRole(roleRaw);
       if (normalized != 'player') continue;
       final raw = teamNamesById[teamId] ?? '';
       final teamName = raw.isEmpty ? raw : NevoboApi.displayTeamName(raw);
       final nevoboCode = nevoboCodeById[teamId];
+      final linkedChildName = profileId.isEmpty
+          ? null
+          : _ouderKindNotifier.linkedChildren
+              .where((c) => c.profileId == profileId)
+              .map((c) => c.displayName.trim())
+              .where((s) => s.isNotEmpty)
+              .firstOrNull;
       final key = '$teamId:guardian';
       if (seen.add(key)) {
-        memberships.add(TeamMembership(teamId: teamId, role: 'guardian', teamName: teamName, nevoboCode: nevoboCode));
+        memberships.add(TeamMembership(
+          teamId: teamId,
+          role: 'guardian',
+          teamName: teamName,
+          nevoboCode: nevoboCode,
+          linkedChildDisplayName: linkedChildName,
+        ));
       }
     }
 

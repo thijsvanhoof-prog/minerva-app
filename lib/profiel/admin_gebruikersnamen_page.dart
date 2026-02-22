@@ -7,7 +7,7 @@ import 'package:minerva_app/ui/display_name_overrides.dart' show unknownUserName
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 
-/// Bestuur, TC en admins: bekijk alle accounts, wijzig gebruikersnamen; admins kunnen ook accounts verwijderen.
+/// Alleen globale admins: bekijk alle accounts, wijzig gebruikersnamen en verwijder accounts.
 class AdminGebruikersnamenPage extends StatefulWidget {
   const AdminGebruikersnamenPage({super.key});
 

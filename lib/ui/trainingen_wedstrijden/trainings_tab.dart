@@ -9,8 +9,8 @@ import 'package:minerva_app/ui/app_user_context.dart'; // TeamMembership
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/trainingen_wedstrijden/add_training_page.dart';
 
-/// playing = speler, coach = trainer/coach. Aanwezig = één van beide; Afwezig = delete.
-enum AttendanceStatus { playing, coach }
+/// playing = speler, coach = trainer/coach, afgemeld = afgemeld. Aanmelden = playing/coach; Afmelden = status afgemeld.
+enum AttendanceStatus { playing, coach, afgemeld }
 
 class TrainingsTab extends StatefulWidget {
   final List<TeamMembership> manageableTeams;
@@ -34,7 +34,11 @@ class _TrainingsTabState extends State<TrainingsTab> {
   final Map<int, AttendanceStatus?> _statusBySessionId = {};
   final Map<int, List<String>> _playingBySessionId = {};
   final Map<int, List<String>> _coachBySessionId = {};
+  final Map<int, List<String>> _afgemeldBySessionId = {};
   final Set<int> _expandedSessionIds = {};
+  /// Welke team-accordions open staan (teamId); bij één team altijd uitgeklapt.
+  final Set<int> _expandedTrainingTeamIds = {};
+  bool _didInitExpandedTraining = false;
   String? _myDisplayName;
 
   bool _selectionMode = false;
@@ -136,6 +140,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
     _statusBySessionId.clear();
     _playingBySessionId.clear();
     _coachBySessionId.clear();
+    _afgemeldBySessionId.clear();
     if (_trainings.isEmpty) return;
 
     final sessionIds =
@@ -155,10 +160,13 @@ class _TrainingsTabState extends State<TrainingsTab> {
       final pid = r['person_id']?.toString() ?? '';
       if (pid.isNotEmpty) profileIds.add(pid);
     }
+    // Altijd naam van huidig profiel (zelf of kind) laden, ook als die nog nergens is aangemeld.
+    if (targetProfileId.isNotEmpty) profileIds.add(targetProfileId);
     final namesById = await _loadProfileDisplayNames(profileIds);
 
     final playingBySid = <int, List<String>>{};
     final coachBySid = <int, List<String>>{};
+    final afgemeldBySid = <int, List<String>>{};
 
     for (final r in allRows) {
       final sid = (r['session_id'] as num?)?.toInt();
@@ -176,6 +184,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
         playingBySid.putIfAbsent(sid, () => []).add(name);
       } else if (status == 'coach') {
         coachBySid.putIfAbsent(sid, () => []).add(name);
+      } else if (status == 'afgemeld') {
+        afgemeldBySid.putIfAbsent(sid, () => []).add(name);
       }
     }
 
@@ -183,6 +193,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
       e.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
     for (final e in coachBySid.values) {
+      e.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    }
+    for (final e in afgemeldBySid.values) {
       e.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
 
@@ -196,6 +209,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
       _coachBySessionId
         ..clear()
         ..addAll(coachBySid);
+      _afgemeldBySessionId
+        ..clear()
+        ..addAll(afgemeldBySid);
     });
   }
 
@@ -203,14 +219,19 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final me = _myDisplayName ?? 'Ik';
     final playing = List<String>.from(_playingBySessionId[sessionId] ?? []);
     final coaches = List<String>.from(_coachBySessionId[sessionId] ?? []);
+    final afgemeld = List<String>.from(_afgemeldBySessionId[sessionId] ?? []);
     playing.remove(me);
     coaches.remove(me);
+    afgemeld.remove(me);
     if (effective == AttendanceStatus.playing) {
       playing.add(me);
       playing.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     } else if (effective == AttendanceStatus.coach) {
       coaches.add(me);
       coaches.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    } else if (effective == AttendanceStatus.afgemeld) {
+      afgemeld.add(me);
+      afgemeld.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
     if (effective == null) {
       _statusBySessionId.remove(sessionId);
@@ -219,6 +240,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
     _playingBySessionId[sessionId] = playing;
     _coachBySessionId[sessionId] = coaches;
+    _afgemeldBySessionId[sessionId] = afgemeld;
   }
 
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> ids) async {
@@ -286,6 +308,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
         return AttendanceStatus.coach;
       case 'aanwezig':
         return AttendanceStatus.playing;
+      case 'afgemeld':
+        return AttendanceStatus.afgemeld;
       default:
         return null;
     }
@@ -317,6 +341,12 @@ class _TrainingsTabState extends State<TrainingsTab> {
     return roles.any((r) => r == 'trainer' || r == 'coach');
   }
 
+  /// Team-ids waar deze gebruiker trainer/coach is; alleen die trainingen mogen worden verwijderd.
+  Set<int> get _manageableTeamIds =>
+      widget.manageableTeams.map((m) => m.teamId).toSet();
+
+  bool _canDeleteTrainingForTeam(int teamId) => _manageableTeamIds.contains(teamId);
+
   /// Trainingen die nog niet afgelopen zijn (niet geannuleerd, start in de toekomst).
   /// Gebruikt voor zowel de "Voor alle"-kaart als de lijst; verleden wordt niet getoond.
   List<Map<String, dynamic>> get _visibleTrainings {
@@ -328,6 +358,113 @@ class _TrainingsTabState extends State<TrainingsTab> {
       final dt = start is DateTime ? start : DateTime.tryParse(start.toString());
       return dt != null && dt.toLocal().isAfter(now);
     }).toList();
+  }
+
+  /// Trainingen gegroepeerd per team_id; teamIds in vaste volgorde (gesorteerd).
+  Map<int, List<Map<String, dynamic>>> _groupVisibleTrainingsByTeam() {
+    final visible = _visibleTrainings;
+    final byTeam = <int, List<Map<String, dynamic>>>{};
+    for (final t in visible) {
+      final teamId = (t['team_id'] as num?)?.toInt() ?? 0;
+      byTeam.putIfAbsent(teamId, () => []).add(t);
+    }
+    return byTeam;
+  }
+
+  /// Displaylabel voor team (inclusief "(kindnaam)" bij gekoppeld kind).
+  String _teamDisplayLabel(int teamId) {
+    try {
+      final ctx = AppUserContext.of(context);
+      final m = ctx.memberships.where((m) => m.teamId == teamId).firstOrNull;
+      return m?.displayLabel ?? m?.teamName ?? 'Team $teamId';
+    } catch (_) {
+      return 'Team $teamId';
+    }
+  }
+
+  /// Eén team-accordionkaart in dezelfde stijl als de wedstrijden-tab (GlassCard, donkerblauwe header, uitklapicoon).
+  Widget _buildTeamTrainingAccordion({
+    required int teamId,
+    required int teamIndex,
+    required List<int> teamIds,
+    required Map<int, List<Map<String, dynamic>>> byTeam,
+  }) {
+    final useAccordion = teamIds.length > 1;
+    final expanded = !useAccordion || _expandedTrainingTeamIds.contains(teamId);
+
+    final sessions = byTeam[teamId];
+    final hasSessions = sessions != null && sessions.isNotEmpty;
+
+    return GlassCard(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: useAccordion
+                ? () {
+                    setState(() {
+                      if (_expandedTrainingTeamIds.contains(teamId)) {
+                        _expandedTrainingTeamIds.remove(teamId);
+                      } else {
+                        _expandedTrainingTeamIds.add(teamId);
+                      }
+                    });
+                  }
+                : null,
+            borderRadius: BorderRadius.circular(AppColors.cardRadius),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: AppColors.darkBlue,
+                      borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                    ),
+                    child: Text(
+                      _teamDisplayLabel(teamId),
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w900,
+                          ),
+                    ),
+                  ),
+                  const Spacer(),
+                  if (useAccordion)
+                    Icon(
+                      expanded ? Icons.expand_less : Icons.expand_more,
+                      color: AppColors.textSecondary,
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (expanded) ...[
+            const SizedBox(height: 12),
+            if (!hasSessions)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(0, 4, 0, 8),
+                child: Text(
+                  'Er zijn voor dit team nog geen trainingen.',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 14,
+                  ),
+                ),
+              )
+            else
+              ...sessions.map(
+                (session) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _buildTrainingCard(session),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
   }
 
   /// Bepaal of gebruiker als trainer/coach wordt aangemeld voor dit team (anders speler).
@@ -343,14 +480,15 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
   }
 
-  String _attendanceSummary(List<String> playing, List<String> coaches) {
+  String _attendanceSummary(List<String> playing, List<String> coaches, List<String> afgemeld) {
     final parts = <String>[];
     if (coaches.isNotEmpty) parts.add('Trainer/coach: ${coaches.length}');
     if (playing.isNotEmpty) parts.add('Speler(s): ${playing.length}');
+    if (afgemeld.isNotEmpty) parts.add('Afgemeld: ${afgemeld.length}');
     return parts.join(' • ');
   }
 
-  List<Widget> _attendanceNameLists(List<String> playing, List<String> coaches) {
+  List<Widget> _attendanceNameLists(List<String> playing, List<String> coaches, List<String> afgemeld) {
     final out = <Widget>[];
     if (coaches.isNotEmpty) {
       out.add(Text('Trainer/coach: ${coaches.join(', ')}', style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)));
@@ -358,8 +496,268 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
     if (playing.isNotEmpty) {
       out.add(Text('Speler(s): ${playing.join(', ')}', style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)));
+      out.add(const SizedBox(height: 4));
+    }
+    if (afgemeld.isNotEmpty) {
+      out.add(Text('Afgemeld: ${afgemeld.join(', ')}', style: TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.9), fontSize: 13)));
     }
     return out;
+  }
+
+  Widget _buildTrainingCard(Map<String, dynamic> session) {
+    final sessionId = (session['session_id'] as num).toInt();
+    final teamId = (session['team_id'] as num?)?.toInt() ?? 0;
+    final isCancelled = (session['is_cancelled'] == true);
+    final title = (session['title'] ?? 'Training').toString();
+    final location = (session['location'] ?? '').toString();
+    final start = session['start_datetime'] ?? session['start_timestamp'];
+    final end = session['end_timestamp'];
+    final currentStatus = _statusBySessionId[sessionId];
+    final isPresent = currentStatus == AttendanceStatus.playing || currentStatus == AttendanceStatus.coach;
+    final playing = _playingBySessionId[sessionId] ?? [];
+    final coaches = _coachBySessionId[sessionId] ?? [];
+    final afgemeld = _afgemeldBySessionId[sessionId] ?? [];
+    final expanded = _expandedSessionIds.contains(sessionId);
+    final hasCounts = playing.isNotEmpty || coaches.isNotEmpty || afgemeld.isNotEmpty;
+
+    return GlassCard(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              if (_selectionMode && _canDeleteTrainingForTeam(teamId))
+                Checkbox(
+                  value: _selectedSessionIds.contains(sessionId),
+                  activeColor: AppColors.primary,
+                  onChanged: (v) => _toggleSelected(sessionId, v ?? false),
+                ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            title,
+                            style: TextStyle(
+                              color: AppColors.onBackground,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              decoration: isCancelled
+                                  ? TextDecoration.lineThrough
+                                  : TextDecoration.none,
+                            ),
+                          ),
+                        ),
+                        if (isCancelled)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: AppColors.error.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: AppColors.error.withValues(alpha: 0.35),
+                              ),
+                            ),
+                            child: const Text(
+                              'Geannuleerd',
+                              style: TextStyle(
+                                color: AppColors.error,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    if (location.isNotEmpty)
+                      Text(
+                        location,
+                        style: TextStyle(
+                          color: AppColors.textSecondary,
+                          decoration: isCancelled
+                              ? TextDecoration.lineThrough
+                              : TextDecoration.none,
+                        ),
+                      ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _formatRange(start, end),
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        decoration: isCancelled
+                            ? TextDecoration.lineThrough
+                            : TextDecoration.none,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (isCancelled) ...[
+            const Text(
+              'Deze training is geannuleerd (bijv. vakantie/feestdag).',
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 8),
+          ],
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              isPresent
+                  ? FilledButton.icon(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _updateAttendance(
+                                sessionId,
+                                _isTrainerOrCoachForTeam(teamId)
+                                    ? AttendanceStatus.coach
+                                    : AttendanceStatus.playing,
+                              ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.success,
+                        foregroundColor: Colors.white,
+                      ),
+                      icon: const Icon(Icons.check_circle, size: 18),
+                      label: const Text('Aanmelden'),
+                    )
+                  : OutlinedButton.icon(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _updateAttendance(
+                                sessionId,
+                                _isTrainerOrCoachForTeam(teamId)
+                                    ? AttendanceStatus.coach
+                                    : AttendanceStatus.playing,
+                              ),
+                      icon: const Icon(Icons.person_add, size: 18),
+                      label: const Text('Aanmelden'),
+                    ),
+              isPresent
+                  ? OutlinedButton.icon(
+                      onPressed: isCancelled
+                          ? null
+                          : () async {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Afmelden bevestigen'),
+                                  content: const Text(
+                                    'Weet je zeker dat je je wilt afmelden voor deze training?',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.of(ctx).pop(false),
+                                      child: const Text('Annuleren'),
+                                    ),
+                                    ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: AppColors.primary,
+                                        foregroundColor: AppColors.background,
+                                      ),
+                                      onPressed: () =>
+                                          Navigator.of(ctx).pop(true),
+                                      child: const Text('Afmelden'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (confirm == true && mounted) {
+                                _updateAttendance(sessionId, AttendanceStatus.afgemeld);
+                              }
+                            },
+                      icon: const Icon(Icons.person_off, size: 18),
+                      label: const Text('Afmelden'),
+                    )
+                  : FilledButton.icon(
+                      onPressed: isCancelled
+                          ? null
+                          : () async {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Afmelden bevestigen'),
+                                  content: const Text(
+                                    'Weet je zeker dat je je wilt afmelden voor deze training?',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.of(ctx).pop(false),
+                                      child: const Text('Annuleren'),
+                                    ),
+                                    ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: AppColors.primary,
+                                        foregroundColor: AppColors.background,
+                                      ),
+                                      onPressed: () =>
+                                          Navigator.of(ctx).pop(true),
+                                      child: const Text('Afmelden'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (confirm == true && mounted) {
+                                _updateAttendance(sessionId, AttendanceStatus.afgemeld);
+                              }
+                            },
+                      style: FilledButton.styleFrom(
+                        backgroundColor: currentStatus == AttendanceStatus.afgemeld
+                            ? AppColors.textSecondary.withValues(alpha: 0.25)
+                            : AppColors.textSecondary.withValues(alpha: 0.25),
+                        foregroundColor: AppColors.onBackground,
+                      ),
+                      icon: const Icon(Icons.person_off, size: 18),
+                      label: const Text('Afmelden'),
+                    ),
+            ],
+          ),
+          if (hasCounts) ...[
+            const SizedBox(height: 8),
+            GestureDetector(
+              onTap: () {
+                setState(() {
+                  if (expanded) {
+                    _expandedSessionIds.remove(sessionId);
+                  } else {
+                    _expandedSessionIds.add(sessionId);
+                  }
+                });
+              },
+              child: Row(
+                children: [
+                  Icon(
+                    expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: AppColors.textSecondary,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _attendanceSummary(playing, coaches, afgemeld),
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (expanded) ...[
+              const SizedBox(height: 6),
+              ..._attendanceNameLists(playing, coaches, afgemeld),
+            ],
+          ],
+        ],
+      ),
+    );
   }
 
   void _toggleSelectionMode() {
@@ -382,7 +780,19 @@ class _TrainingsTabState extends State<TrainingsTab> {
   Future<void> _bulkDeleteSelected() async {
     if (_selectedSessionIds.isEmpty) return;
 
-    final count = _selectedSessionIds.length;
+    // Alleen trainingen van teams waar deze gebruiker trainer/coach is mogen worden verwijderd.
+    final toDelete = _selectedSessionIds.where((sessionId) {
+      final t = _trainings.cast<Map<String, dynamic>>().where(
+            (t) => (t['session_id'] as num?)?.toInt() == sessionId,
+          ).firstOrNull;
+      if (t == null) return false;
+      final teamId = (t['team_id'] as num?)?.toInt() ?? 0;
+      return _manageableTeamIds.contains(teamId);
+    }).toList();
+
+    if (toDelete.isEmpty) return;
+
+    final count = toDelete.length;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -405,7 +815,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
     await _client.from('sessions').delete().inFilter(
           'session_id',
-          _selectedSessionIds.toList(),
+          toDelete,
         );
 
     if (!mounted) return;
@@ -432,37 +842,30 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final user = _client.auth.currentUser;
     if (user == null) return;
     if (!mounted) return;
+    final effective = status;
+    if (effective == null) return;
 
     final ctx = AppUserContext.of(context);
     final targetProfileId = ctx.attendanceProfileId;
 
-    final effective = status;
-
     final prevStatus = _statusBySessionId[sessionId];
     final prevPlaying = List<String>.from(_playingBySessionId[sessionId] ?? []);
     final prevCoaches = List<String>.from(_coachBySessionId[sessionId] ?? []);
+    final prevAfgemeld = List<String>.from(_afgemeldBySessionId[sessionId] ?? []);
 
     _applyOptimisticAttendanceUpdate(sessionId, effective);
     if (!mounted) return;
     setState(() {});
 
     try {
-      if (effective == null) {
-        await _client
-            .from('attendance')
-            .delete()
-            .eq('session_id', sessionId)
-            .eq('person_id', targetProfileId);
-      } else {
-        await _client.from('attendance').upsert(
-          {
-            'session_id': sessionId,
-            'person_id': targetProfileId,
-            'status': effective.name,
-          },
-          onConflict: 'session_id,person_id',
-        );
-      }
+      await _client.from('attendance').upsert(
+        {
+          'session_id': sessionId,
+          'person_id': targetProfileId,
+          'status': effective.name,
+        },
+        onConflict: 'session_id,person_id',
+      );
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -473,11 +876,12 @@ class _TrainingsTabState extends State<TrainingsTab> {
         }
         _playingBySessionId[sessionId] = prevPlaying;
         _coachBySessionId[sessionId] = prevCoaches;
+        _afgemeldBySessionId[sessionId] = prevAfgemeld;
       });
     }
   }
 
-  /// Aanwezig voor alle binnenkomende trainingen; per training coach of playing op basis van team.
+  /// Aanmelden voor alle binnenkomende trainingen; per training coach of playing op basis van team.
   Future<void> _setMyStatusForAllTrainingsAanwezig() async {
     final user = _client.auth.currentUser;
     if (user == null) return;
@@ -636,37 +1040,30 @@ class _TrainingsTabState extends State<TrainingsTab> {
             }
 
             final visible = _visibleTrainings;
-            if (visible.isEmpty) {
-              return ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
-                children: const [
-                  SizedBox(height: 40),
-                  Text(
-                    'Geen trainingen gevonden.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: AppColors.textSecondary),
-                  ),
-                ],
-              );
-            }
-
             final upcoming = visible;
             final hasUpcomingCard = upcoming.isNotEmpty;
             final hasHeader = _canCreateTrainings;
+            final byTeam = _groupVisibleTrainingsByTeam();
+            // Alle teams waaraan je gekoppeld bent (eigen + kinderen), niet alleen teams met trainingen.
+            final teamIds = _allowedTeamIds;
 
-            return ListView.separated(
+            if (teamIds.length > 1 && !_didInitExpandedTraining) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && !_didInitExpandedTraining && _allowedTeamIds.isNotEmpty) {
+                  setState(() {
+                    _expandedTrainingTeamIds.add(_allowedTeamIds.first);
+                    _didInitExpandedTraining = true;
+                  });
+                }
+              });
+            }
+
+            return ListView(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(12),
-              itemCount: (hasUpcomingCard ? 1 : 0) + (hasHeader ? 1 : 0) + visible.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                if (hasUpcomingCard && index == 0) {
-                  final allPresent = upcoming.every((t) {
-                    final sid = (t['session_id'] as num?)?.toInt();
-                    return sid != null && _statusBySessionId[sid] != null;
-                  });
-                  return GlassCard(
+              children: [
+                if (hasUpcomingCard) ...[
+                  GlassCard(
                     padding: const EdgeInsets.all(14),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -704,7 +1101,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
                           spacing: 8,
                           runSpacing: 8,
                           children: [
-                            allPresent
+                            upcoming.every((t) {
+                              final sid = (t['session_id'] as num?)?.toInt();
+                              return sid != null && _statusBySessionId[sid] != null;
+                            })
                                 ? FilledButton.icon(
                                     onPressed:
                                         _setMyStatusForAllTrainingsAanwezig,
@@ -727,12 +1127,11 @@ class _TrainingsTabState extends State<TrainingsTab> {
                         ),
                       ],
                     ),
-                  );
-                }
-
-                if (hasHeader &&
-                    index == (hasUpcomingCard ? 1 : 0)) {
-                  return GlassCard(
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                if (hasHeader) ...[
+                  GlassCard(
                     padding: const EdgeInsets.all(12),
                     child: Row(
                       children: [
@@ -767,225 +1166,19 @@ class _TrainingsTabState extends State<TrainingsTab> {
                         ],
                       ],
                     ),
-                  );
-                }
-
-                final trainingIndex =
-                    index - (hasUpcomingCard ? 1 : 0) - (hasHeader ? 1 : 0);
-                final session = visible[trainingIndex];
-                final sessionId = (session['session_id'] as num).toInt();
-                final teamId = (session['team_id'] as num?)?.toInt() ?? 0;
-                final isCancelled = (session['is_cancelled'] == true);
-
-                final title = (session['title'] ?? 'Training').toString();
-                final location = (session['location'] ?? '').toString();
-
-                final start = session['start_datetime'] ?? session['start_timestamp'];
-                final end = session['end_timestamp'];
-
-                final currentStatus = _statusBySessionId[sessionId];
-                final isPresent = currentStatus != null;
-                final playing = _playingBySessionId[sessionId] ?? [];
-                final coaches = _coachBySessionId[sessionId] ?? [];
-                final expanded = _expandedSessionIds.contains(sessionId);
-                final hasCounts = playing.isNotEmpty || coaches.isNotEmpty;
-
-                return GlassCard(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          if (_selectionMode)
-                            Checkbox(
-                              value: _selectedSessionIds.contains(sessionId),
-                              activeColor: AppColors.primary,
-                              onChanged: (v) => _toggleSelected(sessionId, v ?? false),
-                            ),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        title,
-                                        style: TextStyle(
-                                          color: AppColors.onBackground,
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.w700,
-                                          decoration: isCancelled
-                                              ? TextDecoration.lineThrough
-                                              : TextDecoration.none,
-                                        ),
-                                      ),
-                                    ),
-                                    if (isCancelled)
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                        decoration: BoxDecoration(
-                                          color: AppColors.error.withValues(alpha: 0.14),
-                                          borderRadius: BorderRadius.circular(999),
-                                          border: Border.all(
-                                            color: AppColors.error.withValues(alpha: 0.35),
-                                          ),
-                                        ),
-                                        child: const Text(
-                                          'Geannuleerd',
-                                          style: TextStyle(
-                                            color: AppColors.error,
-                                            fontWeight: FontWeight.w900,
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                                const SizedBox(height: 4),
-                                if (location.isNotEmpty)
-                                  Text(
-                                    location,
-                                    style: TextStyle(
-                                      color: AppColors.textSecondary,
-                                      decoration: isCancelled
-                                          ? TextDecoration.lineThrough
-                                          : TextDecoration.none,
-                                    ),
-                                  ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  _formatRange(start, end),
-                                  style: TextStyle(
-                                    color: AppColors.textSecondary,
-                                    decoration: isCancelled
-                                        ? TextDecoration.lineThrough
-                                        : TextDecoration.none,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      if (isCancelled) ...[
-                        const Text(
-                          'Deze training is geannuleerd (bijv. vakantie/feestdag).',
-                          style: TextStyle(color: AppColors.textSecondary),
-                        ),
-                        const SizedBox(height: 8),
-                      ],
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          isPresent
-                              ? FilledButton.icon(
-                                  onPressed: isCancelled
-                                      ? null
-                                      : () => _updateAttendance(
-                                            sessionId,
-                                            _isTrainerOrCoachForTeam(teamId)
-                                                ? AttendanceStatus.coach
-                                                : AttendanceStatus.playing,
-                                          ),
-                                  style: FilledButton.styleFrom(
-                                    backgroundColor: AppColors.success,
-                                    foregroundColor: Colors.white,
-                                  ),
-                                  icon: const Icon(Icons.check_circle, size: 18),
-                                  label: const Text('Aanwezig'),
-                                )
-                              : OutlinedButton(
-                                  onPressed: isCancelled
-                                      ? null
-                                      : () => _updateAttendance(
-                                            sessionId,
-                                            _isTrainerOrCoachForTeam(teamId)
-                                                ? AttendanceStatus.coach
-                                                : AttendanceStatus.playing,
-                                          ),
-                                  child: const Text('Aanwezig'),
-                                ),
-                          isPresent
-                              ? OutlinedButton(
-                                  onPressed: isCancelled ? null : () async {
-                                    final confirm = await showDialog<bool>(
-                                      context: context,
-                                      builder: (ctx) => AlertDialog(
-                                        title: const Text('Afmelden bevestigen'),
-                                        content: const Text(
-                                          'Weet je zeker dat je je wilt afmelden voor deze training?',
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () =>
-                                                Navigator.of(ctx).pop(false),
-                                            child: const Text('Annuleren'),
-                                          ),
-                                          ElevatedButton(
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor: AppColors.primary,
-                                              foregroundColor:
-                                                  AppColors.background,
-                                            ),
-                                            onPressed: () =>
-                                                Navigator.of(ctx).pop(true),
-                                            child: const Text('Afmelden'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                    if (confirm == true && mounted) {
-                                      _updateAttendance(sessionId, null);
-                                    }
-                                  },
-                                  child: const Text('Afwezig'),
-                                )
-                              : FilledButton.icon(
-                                  onPressed: isCancelled ? null : () => _updateAttendance(sessionId, null),
-                                  style: FilledButton.styleFrom(
-                                    backgroundColor: AppColors.textSecondary.withValues(alpha: 0.25),
-                                    foregroundColor: AppColors.onBackground,
-                                  ),
-                                  icon: const Icon(Icons.person_off, size: 18),
-                                  label: const Text('Afwezig'),
-                                ),
-                        ],
-                      ),
-                      if (hasCounts) ...[
-                        const SizedBox(height: 8),
-                        GestureDetector(
-                          onTap: () {
-                            setState(() {
-                              if (expanded) {
-                                _expandedSessionIds.remove(sessionId);
-                              } else {
-                                _expandedSessionIds.add(sessionId);
-                              }
-                            });
-                          },
-                          child: Row(
-                            children: [
-                              Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 18, color: AppColors.textSecondary),
-                              const SizedBox(width: 4),
-                              Text(
-                                _attendanceSummary(playing, coaches),
-                                style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (expanded) ...[
-                          const SizedBox(height: 6),
-                          ..._attendanceNameLists(playing, coaches),
-                        ],
-                      ],
-                    ],
                   ),
-                );
-              },
+                  const SizedBox(height: 8),
+                ],
+                for (var i = 0; i < teamIds.length; i++) ...[
+                  _buildTeamTrainingAccordion(
+                    teamId: teamIds[i],
+                    teamIndex: i,
+                    teamIds: teamIds,
+                    byTeam: byTeam,
+                  ),
+                  const SizedBox(height: 10),
+                ],
+              ],
             );
           },
         ),
