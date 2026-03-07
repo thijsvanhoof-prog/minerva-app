@@ -1,5 +1,5 @@
 -- RPC: team_ids van de ingelogde gebruiker (SECURITY DEFINER = ongeacht RLS op team_members).
--- Gebruikt o.a. in Taken → Teamtaken zodat alle aan jouw teams gekoppelde taken zichtbaar zijn.
+-- Global admin: retourneert alle team_ids. Anders: alleen teams waar de gebruiker lid van is.
 -- Voer uit in Supabase SQL Editor.
 
 create or replace function public.get_my_team_ids()
@@ -9,9 +9,13 @@ stable
 security definer
 set search_path = public
 as $$
-  select distinct tm.team_id
-  from public.team_members tm
-  where tm.profile_id = auth.uid()
+  select distinct x.team_id
+  from (
+    select t.team_id from public.teams t where public.is_global_admin()
+    union
+    select tm.team_id from public.team_members tm
+    where not coalesce(public.is_global_admin(), false) and tm.profile_id = auth.uid()
+  ) x
   order by 1;
 $$;
 

@@ -50,8 +50,9 @@ drop policy if exists "home_agenda_signup_options_select" on public.home_agenda_
 create policy "home_agenda_signup_options_select"
 on public.home_agenda_signup_options for select to authenticated using (true);
 
+-- Beheer: global admin, bestuur en communicatie (vereist can_manage_home_agenda(), bijv. uit home_agenda_rls_fix.sql)
 drop policy if exists "home_agenda_signup_options_admin" on public.home_agenda_signup_options;
 create policy "home_agenda_signup_options_admin"
 on public.home_agenda_signup_options for all to authenticated
-using (public.is_global_admin())
-with check (public.is_global_admin());
+using (public.can_manage_home_agenda())
+with check (public.can_manage_home_agenda());

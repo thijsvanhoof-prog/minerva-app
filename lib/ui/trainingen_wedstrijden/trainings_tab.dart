@@ -9,8 +9,8 @@ import 'package:minerva_app/ui/app_user_context.dart'; // TeamMembership
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/trainingen_wedstrijden/add_training_page.dart';
 
-/// playing = speler, coach = trainer/coach, afgemeld = afgemeld. Aanmelden = playing/coach; Afmelden = status afgemeld.
-enum AttendanceStatus { playing, coach, afgemeld }
+/// playing = speler, coach = trainer/coach, nietSpelend = aanwezig maar niet spelend, afgemeld = afgemeld.
+enum AttendanceStatus { playing, coach, nietSpelend, afgemeld }
 
 class TrainingsTab extends StatefulWidget {
   final List<TeamMembership> manageableTeams;
@@ -34,7 +34,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
   final Map<int, AttendanceStatus?> _statusBySessionId = {};
   final Map<int, List<String>> _playingBySessionId = {};
   final Map<int, List<String>> _coachBySessionId = {};
+  final Map<int, List<String>> _nietSpelendBySessionId = {};
   final Map<int, List<String>> _afgemeldBySessionId = {};
+  final Map<int, List<String>> _nietGereageerdBySessionId = {};
   final Set<int> _expandedSessionIds = {};
   /// Welke team-accordions open staan (teamId); bij één team altijd uitgeklapt.
   final Set<int> _expandedTrainingTeamIds = {};
@@ -54,8 +56,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final ctx = AppUserContext.of(context);
-    final next = ctx.memberships.map((m) => m.teamId).toSet().toList()..sort();
+    // Gebruik de doorgegeven teams (Spelers- of Trainers-tab), niet alle memberships.
+    final next = widget.manageableTeams.map((m) => m.teamId).toSet().toList()..sort();
     if (_sameIntList(_allowedTeamIds, next)) return;
     _allowedTeamIds = next;
     setState(() {
@@ -105,6 +107,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
       _statusBySessionId.clear();
       _playingBySessionId.clear();
       _coachBySessionId.clear();
+      _nietSpelendBySessionId.clear();
+      _afgemeldBySessionId.clear();
+      _nietGereageerdBySessionId.clear();
       return;
     }
 
@@ -140,7 +145,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
     _statusBySessionId.clear();
     _playingBySessionId.clear();
     _coachBySessionId.clear();
+    _nietSpelendBySessionId.clear();
     _afgemeldBySessionId.clear();
+    _nietGereageerdBySessionId.clear();
     if (_trainings.isEmpty) return;
 
     final sessionIds =
@@ -166,6 +173,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
     final playingBySid = <int, List<String>>{};
     final coachBySid = <int, List<String>>{};
+    final nietSpelendBySid = <int, List<String>>{};
     final afgemeldBySid = <int, List<String>>{};
 
     for (final r in allRows) {
@@ -184,6 +192,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
         playingBySid.putIfAbsent(sid, () => []).add(name);
       } else if (status == 'coach') {
         coachBySid.putIfAbsent(sid, () => []).add(name);
+      } else if (status == 'niet_spelend' || status == 'nietspelend') {
+        nietSpelendBySid.putIfAbsent(sid, () => []).add(name);
       } else if (status == 'afgemeld') {
         afgemeldBySid.putIfAbsent(sid, () => []).add(name);
       }
@@ -195,12 +205,73 @@ class _TrainingsTabState extends State<TrainingsTab> {
     for (final e in coachBySid.values) {
       e.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
+    for (final e in nietSpelendBySid.values) {
+      e.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    }
     for (final e in afgemeldBySid.values) {
       e.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
 
+    // Leden die niet hebben gereageerd: teamleden zonder attendance-row voor deze sessie.
+    final respondedBySid = <int, Set<String>>{};
+    for (final r in allRows) {
+      final sid = (r['session_id'] as num?)?.toInt();
+      if (sid == null) continue;
+      final pid = r['person_id']?.toString() ?? '';
+      if (pid.isEmpty) continue;
+      respondedBySid.putIfAbsent(sid, () => {}).add(pid);
+    }
+
+    Map<int, List<String>> teamMemberIdsByTid = {};
+    try {
+      final tmRes = await _client
+          .from('team_members')
+          .select('team_id, profile_id')
+          .inFilter('team_id', teamIds);
+      final tmRows = (tmRes as List<dynamic>).cast<Map<String, dynamic>>();
+      for (final row in tmRows) {
+        final tid = (row['team_id'] as num?)?.toInt();
+        final pid = row['profile_id']?.toString() ?? '';
+        if (tid == null || pid.isEmpty) continue;
+        teamMemberIdsByTid.putIfAbsent(tid, () => []).add(pid);
+      }
+    } catch (_) {
+      teamMemberIdsByTid = {};
+    }
+
+    final nietGereageerdBySid = <int, List<String>>{};
+    final idsToLoad = <String>{};
+    for (final s in _trainings) {
+      final sid = (s['session_id'] as num?)?.toInt();
+      final tid = (s['team_id'] as num?)?.toInt();
+      if (sid == null || tid == null) continue;
+      final members = teamMemberIdsByTid[tid] ?? [];
+      final responded = respondedBySid[sid] ?? {};
+      final niet = members.where((p) => !responded.contains(p)).toList();
+      if (niet.isNotEmpty) {
+        idsToLoad.addAll(niet);
+        nietGereageerdBySid[sid] = niet;
+      }
+    }
+
+    Map<String, String> allNamesById = Map.from(namesById);
+    if (idsToLoad.isNotEmpty) {
+      final extra = await _loadProfileDisplayNames(idsToLoad);
+      allNamesById = {...allNamesById, ...extra};
+    }
+
+    for (final sid in nietGereageerdBySid.keys) {
+      final ids = nietGereageerdBySid[sid]!;
+      final names = ids
+          .map((p) => allNamesById[p] ?? unknownUserName)
+          .where((n) => n.trim().isNotEmpty)
+          .toList()
+        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      nietGereageerdBySid[sid] = names;
+    }
+
     if (!mounted) return;
-    final myName = namesById[targetProfileId] ?? unknownUserName;
+    final myName = allNamesById[targetProfileId] ?? unknownUserName;
     setState(() {
       _myDisplayName = myName;
       _playingBySessionId
@@ -209,9 +280,15 @@ class _TrainingsTabState extends State<TrainingsTab> {
       _coachBySessionId
         ..clear()
         ..addAll(coachBySid);
+      _nietSpelendBySessionId
+        ..clear()
+        ..addAll(nietSpelendBySid);
       _afgemeldBySessionId
         ..clear()
         ..addAll(afgemeldBySid);
+      _nietGereageerdBySessionId
+        ..clear()
+        ..addAll(nietGereageerdBySid);
     });
   }
 
@@ -219,9 +296,11 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final me = _myDisplayName ?? 'Ik';
     final playing = List<String>.from(_playingBySessionId[sessionId] ?? []);
     final coaches = List<String>.from(_coachBySessionId[sessionId] ?? []);
+    final nietSpelend = List<String>.from(_nietSpelendBySessionId[sessionId] ?? []);
     final afgemeld = List<String>.from(_afgemeldBySessionId[sessionId] ?? []);
     playing.remove(me);
     coaches.remove(me);
+    nietSpelend.remove(me);
     afgemeld.remove(me);
     if (effective == AttendanceStatus.playing) {
       playing.add(me);
@@ -229,6 +308,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
     } else if (effective == AttendanceStatus.coach) {
       coaches.add(me);
       coaches.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    } else if (effective == AttendanceStatus.nietSpelend) {
+      nietSpelend.add(me);
+      nietSpelend.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     } else if (effective == AttendanceStatus.afgemeld) {
       afgemeld.add(me);
       afgemeld.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
@@ -237,9 +319,14 @@ class _TrainingsTabState extends State<TrainingsTab> {
       _statusBySessionId.remove(sessionId);
     } else {
       _statusBySessionId[sessionId] = effective;
+      // Wie reageert verdwijnt uit "niet gereageerd"
+      final ng = List<String>.from(_nietGereageerdBySessionId[sessionId] ?? []);
+      ng.remove(me);
+      _nietGereageerdBySessionId[sessionId] = ng;
     }
     _playingBySessionId[sessionId] = playing;
     _coachBySessionId[sessionId] = coaches;
+    _nietSpelendBySessionId[sessionId] = nietSpelend;
     _afgemeldBySessionId[sessionId] = afgemeld;
   }
 
@@ -308,6 +395,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
         return AttendanceStatus.coach;
       case 'aanwezig':
         return AttendanceStatus.playing;
+      case 'niet_spelend':
+      case 'nietspelend':
+        return AttendanceStatus.nietSpelend;
       case 'afgemeld':
         return AttendanceStatus.afgemeld;
       default:
@@ -334,12 +424,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
     return '$date $st – $et';
   }
 
-  bool get _canCreateTrainings {
-    final roles = widget.manageableTeams
-        .map((m) => m.role.toLowerCase())
-        .toList();
-    return roles.any((r) => r == 'trainer' || r == 'coach');
-  }
+  /// Mag trainingen aanmaken: trainer, coach of admin (canManageTeam).
+  bool get _canCreateTrainings =>
+      widget.manageableTeams.any((m) => m.canManageTeam);
 
   /// Team-ids waar deze gebruiker trainer/coach is; alleen die trainingen mogen worden verwijderd.
   Set<int> get _manageableTeamIds =>
@@ -417,32 +504,38 @@ class _TrainingsTabState extends State<TrainingsTab> {
               padding: const EdgeInsets.symmetric(vertical: 2),
               child: Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: AppColors.darkBlue,
-                      borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                    ),
-                    child: Text(
-                      _teamDisplayLabel(teamId),
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w900,
-                          ),
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: AppColors.darkBlue,
+                        borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                      ),
+                      child: Text(
+                        _teamDisplayLabel(teamId),
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.w900,
+                            ),
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 2,
+                      ),
                     ),
                   ),
-                  const Spacer(),
-                  if (useAccordion)
+                  if (useAccordion) ...[
+                    const SizedBox(width: 8),
                     Icon(
                       expanded ? Icons.expand_less : Icons.expand_more,
                       color: AppColors.textSecondary,
                     ),
+                  ],
                 ],
               ),
             ),
           ),
           if (expanded) ...[
             const SizedBox(height: 12),
+            if (hasSessions) _buildTeamTrainingsAanwezigRow(teamId, sessions),
             if (!hasSessions)
               Padding(
                 padding: const EdgeInsets.fromLTRB(0, 4, 0, 8),
@@ -480,28 +573,23 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
   }
 
-  String _attendanceSummary(List<String> playing, List<String> coaches, List<String> afgemeld) {
-    final parts = <String>[];
-    if (coaches.isNotEmpty) parts.add('Trainer/coach: ${coaches.length}');
-    if (playing.isNotEmpty) parts.add('Speler(s): ${playing.length}');
-    if (afgemeld.isNotEmpty) parts.add('Afgemeld: ${afgemeld.length}');
-    return parts.join(' • ');
-  }
-
-  List<Widget> _attendanceNameLists(List<String> playing, List<String> coaches, List<String> afgemeld) {
-    final out = <Widget>[];
-    if (coaches.isNotEmpty) {
-      out.add(Text('Trainer/coach: ${coaches.join(', ')}', style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)));
-      out.add(const SizedBox(height: 4));
-    }
-    if (playing.isNotEmpty) {
-      out.add(Text('Speler(s): ${playing.join(', ')}', style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)));
-      out.add(const SizedBox(height: 4));
-    }
-    if (afgemeld.isNotEmpty) {
-      out.add(Text('Afgemeld: ${afgemeld.join(', ')}', style: TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.9), fontSize: 13)));
-    }
-    return out;
+  /// Spelend = playing + coaches + nietSpelend (iedereen aanwezig).
+  Widget _buildAttendanceCategory(String label, int count, List<String> names, bool expanded, TextStyle labelStyle) {
+    if (count == 0) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('$label: $count', style: labelStyle),
+        if (expanded && names.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(left: 12, top: 2),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: names.map((n) => Text('- $n', style: labelStyle.copyWith(fontSize: 12))).toList(),
+            ),
+          ),
+      ],
+    );
   }
 
   Widget _buildTrainingCard(Map<String, dynamic> session) {
@@ -514,11 +602,15 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final end = session['end_timestamp'];
     final currentStatus = _statusBySessionId[sessionId];
     final isPresent = currentStatus == AttendanceStatus.playing || currentStatus == AttendanceStatus.coach;
+    final isNotPlaying = currentStatus == AttendanceStatus.nietSpelend;
+    final isAfgemeld = currentStatus == AttendanceStatus.afgemeld;
     final playing = _playingBySessionId[sessionId] ?? [];
     final coaches = _coachBySessionId[sessionId] ?? [];
+    final nietSpelend = _nietSpelendBySessionId[sessionId] ?? [];
     final afgemeld = _afgemeldBySessionId[sessionId] ?? [];
+    final nietGereageerd = _nietGereageerdBySessionId[sessionId] ?? [];
     final expanded = _expandedSessionIds.contains(sessionId);
-    final hasCounts = playing.isNotEmpty || coaches.isNotEmpty || afgemeld.isNotEmpty;
+    final hasCounts = playing.isNotEmpty || coaches.isNotEmpty || nietSpelend.isNotEmpty || afgemeld.isNotEmpty || nietGereageerd.isNotEmpty;
 
     return GlassCard(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -606,12 +698,12 @@ class _TrainingsTabState extends State<TrainingsTab> {
             ),
             const SizedBox(height: 8),
           ],
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
+              const SizedBox(width: 4),
               isPresent
-                  ? FilledButton.icon(
+                  ? FilledButton(
                       onPressed: isCancelled
                           ? null
                           : () => _updateAttendance(
@@ -623,11 +715,13 @@ class _TrainingsTabState extends State<TrainingsTab> {
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.success,
                         foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
                       ),
-                      icon: const Icon(Icons.check_circle, size: 18),
-                      label: const Text('Aanmelden'),
+                      child: const Text('Aanmelden'),
                     )
-                  : OutlinedButton.icon(
+                  : OutlinedButton(
                       onPressed: isCancelled
                           ? null
                           : () => _updateAttendance(
@@ -636,47 +730,42 @@ class _TrainingsTabState extends State<TrainingsTab> {
                                     ? AttendanceStatus.coach
                                     : AttendanceStatus.playing,
                               ),
-                      icon: const Icon(Icons.person_add, size: 18),
-                      label: const Text('Aanmelden'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Aanmelden'),
                     ),
-              isPresent
-                  ? OutlinedButton.icon(
+              const SizedBox(width: 6),
+              isNotPlaying
+                  ? FilledButton(
                       onPressed: isCancelled
                           ? null
-                          : () async {
-                              final confirm = await showDialog<bool>(
-                                context: context,
-                                builder: (ctx) => AlertDialog(
-                                  title: const Text('Afmelden bevestigen'),
-                                  content: const Text(
-                                    'Weet je zeker dat je je wilt afmelden voor deze training?',
-                                  ),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () =>
-                                          Navigator.of(ctx).pop(false),
-                                      child: const Text('Annuleren'),
-                                    ),
-                                    ElevatedButton(
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: AppColors.primary,
-                                        foregroundColor: AppColors.background,
-                                      ),
-                                      onPressed: () =>
-                                          Navigator.of(ctx).pop(true),
-                                      child: const Text('Afmelden'),
-                                    ),
-                                  ],
-                                ),
-                              );
-                              if (confirm == true && mounted) {
-                                _updateAttendance(sessionId, AttendanceStatus.afgemeld);
-                              }
-                            },
-                      icon: const Icon(Icons.person_off, size: 18),
-                      label: const Text('Afmelden'),
+                          : () => _updateAttendance(sessionId, AttendanceStatus.nietSpelend),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.amber.shade600,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Niet spelend'),
                     )
-                  : FilledButton.icon(
+                  : OutlinedButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _updateAttendance(sessionId, AttendanceStatus.nietSpelend),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Niet spelend'),
+                    ),
+              const SizedBox(width: 6),
+              isAfgemeld
+                  ? FilledButton(
                       onPressed: isCancelled
                           ? null
                           : () async {
@@ -710,14 +799,55 @@ class _TrainingsTabState extends State<TrainingsTab> {
                               }
                             },
                       style: FilledButton.styleFrom(
-                        backgroundColor: currentStatus == AttendanceStatus.afgemeld
-                            ? AppColors.textSecondary.withValues(alpha: 0.25)
-                            : AppColors.textSecondary.withValues(alpha: 0.25),
-                        foregroundColor: AppColors.onBackground,
+                        backgroundColor: AppColors.error,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
                       ),
-                      icon: const Icon(Icons.person_off, size: 18),
-                      label: const Text('Afmelden'),
+                      child: const Text('Afmelden'),
+                    )
+                  : OutlinedButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () async {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Afmelden bevestigen'),
+                                  content: const Text(
+                                    'Weet je zeker dat je je wilt afmelden voor deze training?',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.of(ctx).pop(false),
+                                      child: const Text('Annuleren'),
+                                    ),
+                                    ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: AppColors.primary,
+                                        foregroundColor: AppColors.background,
+                                      ),
+                                      onPressed: () =>
+                                          Navigator.of(ctx).pop(true),
+                                      child: const Text('Afmelden'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (confirm == true && mounted) {
+                                _updateAttendance(sessionId, AttendanceStatus.afgemeld);
+                              }
+                            },
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Afmelden'),
                     ),
+              const SizedBox(width: 6),
             ],
           ),
           if (hasCounts) ...[
@@ -732,28 +862,46 @@ class _TrainingsTabState extends State<TrainingsTab> {
                   }
                 });
               },
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(
-                    expanded ? Icons.expand_less : Icons.expand_more,
-                    size: 18,
-                    color: AppColors.textSecondary,
+                  Row(
+                    children: [
+                      Icon(
+                        expanded ? Icons.expand_less : Icons.expand_more,
+                        size: 18,
+                        color: AppColors.textSecondary,
+                      ),
+                      const SizedBox(width: 4),
+                    ],
                   ),
-                  const SizedBox(width: 4),
-                  Text(
-                    _attendanceSummary(playing, coaches, afgemeld),
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 13,
-                    ),
+                  const SizedBox(height: 4),
+                  _buildAttendanceCategory(
+                    'Spelend',
+                    playing.length + coaches.length + nietSpelend.length,
+                    [...playing, ...coaches, ...nietSpelend],
+                    expanded,
+                    const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  ),
+                  if (playing.isNotEmpty || coaches.isNotEmpty || nietSpelend.isNotEmpty) const SizedBox(height: 4),
+                  _buildAttendanceCategory(
+                    'Afgemeld',
+                    afgemeld.length,
+                    afgemeld,
+                    expanded,
+                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.9), fontSize: 13),
+                  ),
+                  if (afgemeld.isNotEmpty) const SizedBox(height: 4),
+                  _buildAttendanceCategory(
+                    'Niet gereageerd',
+                    nietGereageerd.length,
+                    nietGereageerd,
+                    expanded,
+                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.7), fontSize: 13),
                   ),
                 ],
               ),
             ),
-            if (expanded) ...[
-              const SizedBox(height: 6),
-              ..._attendanceNameLists(playing, coaches, afgemeld),
-            ],
           ],
         ],
       ),
@@ -851,6 +999,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final prevStatus = _statusBySessionId[sessionId];
     final prevPlaying = List<String>.from(_playingBySessionId[sessionId] ?? []);
     final prevCoaches = List<String>.from(_coachBySessionId[sessionId] ?? []);
+    final prevNietSpelend = List<String>.from(_nietSpelendBySessionId[sessionId] ?? []);
     final prevAfgemeld = List<String>.from(_afgemeldBySessionId[sessionId] ?? []);
 
     _applyOptimisticAttendanceUpdate(sessionId, effective);
@@ -858,11 +1007,17 @@ class _TrainingsTabState extends State<TrainingsTab> {
     setState(() {});
 
     try {
+      final apiStatus = switch (effective) {
+        AttendanceStatus.playing => 'playing',
+        AttendanceStatus.coach => 'coach',
+        AttendanceStatus.nietSpelend => 'niet_spelend',
+        AttendanceStatus.afgemeld => 'afgemeld',
+      };
       await _client.from('attendance').upsert(
         {
           'session_id': sessionId,
           'person_id': targetProfileId,
-          'status': effective.name,
+          'status': apiStatus,
         },
         onConflict: 'session_id,person_id',
       );
@@ -876,16 +1031,19 @@ class _TrainingsTabState extends State<TrainingsTab> {
         }
         _playingBySessionId[sessionId] = prevPlaying;
         _coachBySessionId[sessionId] = prevCoaches;
+        _nietSpelendBySessionId[sessionId] = prevNietSpelend;
         _afgemeldBySessionId[sessionId] = prevAfgemeld;
       });
     }
   }
 
-  /// Aanmelden voor alle binnenkomende trainingen; per training coach of playing op basis van team.
-  Future<void> _setMyStatusForAllTrainingsAanwezig() async {
+  /// Aanmelden voor alle binnenkomende trainingen van één team; per training coach of playing op basis van team.
+  Future<void> _setMyStatusForAllTrainingsAanwezigForTeam(int teamId) async {
     final user = _client.auth.currentUser;
     if (user == null) return;
-    final upcoming = _visibleTrainings;
+    final upcoming = _visibleTrainings
+        .where((t) => (t['team_id'] as num?)?.toInt() == teamId)
+        .toList();
     if (upcoming.isEmpty) return;
 
     final ctx = AppUserContext.of(context);
@@ -901,7 +1059,6 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
     for (final t in upcoming) {
       final sid = (t['session_id'] as num?)?.toInt();
-      final teamId = (t['team_id'] as num?)?.toInt() ?? 0;
       if (sid == null) continue;
       final status = _isTrainerOrCoachForTeam(teamId)
           ? AttendanceStatus.coach
@@ -914,7 +1071,6 @@ class _TrainingsTabState extends State<TrainingsTab> {
     try {
       for (final t in upcoming) {
         final sid = (t['session_id'] as num?)?.toInt();
-        final teamId = (t['team_id'] as num?)?.toInt() ?? 0;
         if (sid == null) continue;
         final status = _isTrainerOrCoachForTeam(teamId)
             ? AttendanceStatus.coach
@@ -950,6 +1106,40 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
   }
 
+  /// Rij "Aanmelden voor alle trainingen van dit team" (staat in de team-accordion).
+  Widget _buildTeamTrainingsAanwezigRow(int teamId, List<Map<String, dynamic>> upcoming) {
+    final allPresent = upcoming.every((t) {
+      final sid = (t['session_id'] as num?)?.toInt();
+      return sid != null && _statusBySessionId[sid] != null;
+    });
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        children: [
+          Text(
+            '${upcoming.length} training(en)',
+            style: const TextStyle(color: AppColors.textSecondary),
+          ),
+          const SizedBox(width: 12),
+          allPresent
+              ? FilledButton.icon(
+                  onPressed: () => _setMyStatusForAllTrainingsAanwezigForTeam(teamId),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.success,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.check_circle, size: 18),
+                  label: const Text('Aanwezig'),
+                )
+              : OutlinedButton(
+                  onPressed: () => _setMyStatusForAllTrainingsAanwezigForTeam(teamId),
+                  child: const Text('Aanwezig'),
+                ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
@@ -981,6 +1171,40 @@ class _TrainingsTabState extends State<TrainingsTab> {
                 style: TextStyle(
                   color: AppColors.textSecondary.withValues(alpha: 0.9),
                   fontSize: 12.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Geen teams in deze tab (bijv. Spelers-tab maar je staat nergens als speler).
+    if (widget.manageableTeams.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.group_off, size: 48, color: AppColors.textSecondary.withValues(alpha: 0.7)),
+              const SizedBox(height: 16),
+              Text(
+                'Je staat bij geen team als speler',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Staat je bij een team alleen als trainer/coach? Dan zie je dat team onder de tab Trainers.\n\n'
+                'Om hier teams te zien: vraag de Technische Commissie (Commissie → TC) om je als speler aan een team toe te voegen.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 14,
                 ),
               ),
             ],
@@ -1039,9 +1263,6 @@ class _TrainingsTabState extends State<TrainingsTab> {
               );
             }
 
-            final visible = _visibleTrainings;
-            final upcoming = visible;
-            final hasUpcomingCard = upcoming.isNotEmpty;
             final hasHeader = _canCreateTrainings;
             final byTeam = _groupVisibleTrainingsByTeam();
             // Alle teams waaraan je gekoppeld bent (eigen + kinderen), niet alleen teams met trainingen.
@@ -1062,74 +1283,6 @@ class _TrainingsTabState extends State<TrainingsTab> {
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(12),
               children: [
-                if (hasUpcomingCard) ...[
-                  GlassCard(
-                    padding: const EdgeInsets.all(14),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 10,
-                          ),
-                          decoration: BoxDecoration(
-                            color: AppColors.darkBlue,
-                            borderRadius:
-                                BorderRadius.circular(AppColors.cardRadius),
-                          ),
-                          child: Text(
-                            'Voor alle trainingen',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(
-                                  color: AppColors.primary,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          '${upcoming.length} training(en)',
-                          style: const TextStyle(
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            upcoming.every((t) {
-                              final sid = (t['session_id'] as num?)?.toInt();
-                              return sid != null && _statusBySessionId[sid] != null;
-                            })
-                                ? FilledButton.icon(
-                                    onPressed:
-                                        _setMyStatusForAllTrainingsAanwezig,
-                                    style: FilledButton.styleFrom(
-                                      backgroundColor: AppColors.success,
-                                      foregroundColor: Colors.white,
-                                    ),
-                                    icon: const Icon(
-                                      Icons.check_circle,
-                                      size: 18,
-                                    ),
-                                    label: const Text('Aanwezig'),
-                                  )
-                                : OutlinedButton(
-                                    onPressed:
-                                        _setMyStatusForAllTrainingsAanwezig,
-                                    child: const Text('Aanwezig'),
-                                  ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
                 if (hasHeader) ...[
                   GlassCard(
                     padding: const EdgeInsets.all(12),

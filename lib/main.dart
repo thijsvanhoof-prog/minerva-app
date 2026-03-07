@@ -107,14 +107,16 @@ Future<void> main() async {
         anonKey: supabaseKey,
       );
 
-      // Firebase (FCM) – vereist GoogleService-Info.plist (iOS) en google-services.json (Android).
-      try {
-        await NotificationService.initialize();
-      } catch (e) {
-        debugPrint('Notification init failed (push uit): $e');
-      }
-
       runApp(const MinervaApp());
+
+      // FCM na eerste frame initialiseren (iOS: voorkomt problemen met debug-verbinding bij opstart).
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        try {
+          await NotificationService.initialize();
+        } catch (e) {
+          debugPrint('Notification init failed (push uit): $e');
+        }
+      });
     } catch (e, stackTrace) {
       debugPrint('Startup error: $e');
       debugPrint('$stackTrace');

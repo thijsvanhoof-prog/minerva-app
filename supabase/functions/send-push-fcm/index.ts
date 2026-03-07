@@ -25,8 +25,14 @@ type Body = {
   body?: string;
   /** Stuur naar deze users (moeten notify_enabled hebben) */
   user_ids?: string[];
-  /** Stuur naar alle users met notify_enabled = true */
+  /** Stuur naar alle users met notify_enabled = true (o.a. Home: nieuws, agenda) */
   broadcast?: boolean;
+  /** Stuur alleen naar users gekoppeld aan dit team (team_id in DB) */
+  team_id?: number;
+  /** Stuur naar users gekoppeld aan elk van deze teams */
+  team_ids?: number[];
+  /** Stuur naar users gekoppeld aan het team met deze Nevobo-code (bijv. JC1) */
+  nevobo_team_code?: string;
   /** Server-side dedupe sleutel (optioneel) */
   dedupe_key?: string;
   /** Cooldown in seconden voor dedupe_key (optioneel) */
@@ -87,6 +93,39 @@ serve(async (req) => {
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
 
+  // Team-specifiek: resolve team_id / team_ids / nevobo_team_code naar user_ids (leden + ouders van leden).
+  let targetUserIds: string[] | undefined = body.user_ids ?? undefined;
+  if (!body.broadcast && targetUserIds == null) {
+    const collected = new Set<string>();
+    const pushUuid = (row: unknown): void => {
+      const u = typeof row === "string" ? row : (row as Record<string, unknown>)?.user_id ?? (row as Record<string, unknown>)?.get_user_ids_for_team_notifications ?? (row as Record<string, unknown>)?.get_user_ids_for_team_notifications_by_nevobo_code;
+      if (typeof u === "string" && u) collected.add(u);
+    };
+    if (body.team_id != null && Number.isFinite(body.team_id)) {
+      const { data: ids } = await supabase.rpc("get_user_ids_for_team_notifications", {
+        p_team_id: body.team_id,
+      });
+      for (const row of ids ?? []) pushUuid(row);
+    }
+    if (Array.isArray(body.team_ids) && body.team_ids.length > 0) {
+      for (const tid of body.team_ids) {
+        if (!Number.isFinite(tid)) continue;
+        const { data: ids } = await supabase.rpc("get_user_ids_for_team_notifications", {
+          p_team_id: tid,
+        });
+        for (const row of ids ?? []) pushUuid(row);
+      }
+    }
+    const code = (body.nevobo_team_code ?? "").toString().trim();
+    if (code.length > 0) {
+      const { data: ids } = await supabase.rpc("get_user_ids_for_team_notifications_by_nevobo_code", {
+        p_nevobo_code: code,
+      });
+      for (const row of ids ?? []) pushUuid(row);
+    }
+    if (collected.size > 0) targetUserIds = [...collected];
+  }
+
   // Server-side anti-spam: lock op dedupe_key + cooldown.
   if (dedupeKey.length > 0 && cooldownSeconds > 0) {
     try {
@@ -119,8 +158,8 @@ serve(async (req) => {
   const tokenQuery = supabase.from("push_tokens").select("user_id, token");
   const { data: rawTokens } = body.broadcast
     ? await tokenQuery
-    : body.user_ids?.length
-    ? await tokenQuery.in("user_id", body.user_ids)
+    : targetUserIds?.length
+    ? await tokenQuery.in("user_id", targetUserIds)
     : { data: [] as Array<{ user_id: string; token: string }> };
 
   const tokenRows = (rawTokens ?? []) as Array<{ user_id: string; token: string }>;

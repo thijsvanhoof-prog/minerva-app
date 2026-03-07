@@ -433,10 +433,14 @@ class _AddTrainingPageState extends State<AddTrainingPage> {
       }
 
       await _client.from('sessions').insert(inserts);
-      await NotificationService.sendBroadcastUpdate(
-        title: 'Nieuwe training toegevoegd',
-        body: '$title (${inserts.length}x)',
-      );
+      final teamId = _selectedTeamId;
+      if (teamId != null) {
+        await NotificationService.sendTeamUpdate(
+          title: 'Nieuwe training toegevoegd',
+          body: '$title (${inserts.length}x)',
+          teamId: teamId,
+        );
+      }
 
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {

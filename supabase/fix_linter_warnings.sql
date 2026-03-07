@@ -104,18 +104,21 @@ create policy "home_highlights_update_roles"
 create policy "home_highlights_delete_roles"
   on public.home_highlights for delete to authenticated using (public.can_manage_highlights());
 
--- home_news: alleen global admin mag schrijven
+-- home_news: global admin, bestuur en communicatie mogen schrijven (vereist can_manage_home_news(), bijv. uit home_news_rls_fix.sql)
 drop policy if exists "home_news_insert_auth" on public.home_news;
 drop policy if exists "home_news_update_auth" on public.home_news;
 drop policy if exists "home_news_delete_auth" on public.home_news;
+drop policy if exists "home_news_insert_admin" on public.home_news;
+drop policy if exists "home_news_update_admin" on public.home_news;
+drop policy if exists "home_news_delete_admin" on public.home_news;
 
 create policy "home_news_insert_admin"
-  on public.home_news for insert to authenticated with check (coalesce(public.is_global_admin(), false));
+  on public.home_news for insert to authenticated with check (public.can_manage_home_news());
 create policy "home_news_update_admin"
   on public.home_news for update to authenticated
-  using (coalesce(public.is_global_admin(), false)) with check (coalesce(public.is_global_admin(), false));
+  using (public.can_manage_home_news()) with check (public.can_manage_home_news());
 create policy "home_news_delete_admin"
-  on public.home_news for delete to authenticated using (coalesce(public.is_global_admin(), false));
+  on public.home_news for delete to authenticated using (public.can_manage_home_news());
 
 -- match_cancellations: permissive "manage" vervangen door bestuur-only
 drop policy if exists "match_cancellations_manage" on public.match_cancellations;

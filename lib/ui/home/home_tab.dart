@@ -20,6 +20,7 @@ import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_standen_tab.dart';
 
 /// Home-tab van VV Minerva. Stap voor stap herbouwd.
 ///
@@ -39,10 +40,11 @@ class HomeTab extends StatefulWidget {
   State<HomeTab> createState() => _HomeTabState();
 }
 
-class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
+class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   final SupabaseClient _client = Supabase.instance.client;
 
   late TabController _tabController;
+  late TabController _wedstrijdenSubTabController;
 
   bool _loadingHighlights = true;
   String? _highlightsError;
@@ -157,6 +159,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       if (!mounted) return;
       setState(() {});
     });
+    _wedstrijdenSubTabController = TabController(length: 2, vsync: this);
+    _wedstrijdenSubTabController.addListener(() {
+      if (!mounted) return;
+      setState(() {});
+    });
   }
 
   int _contentIndexForSelectedTab(int selectedIndex) {
@@ -192,6 +199,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (oldWidget.showOnlyHighlightsAndNews !=
         widget.showOnlyHighlightsAndNews) {
       _tabController.dispose();
+      _wedstrijdenSubTabController.dispose();
       _initTabController();
     }
   }
@@ -199,6 +207,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   @override
   void dispose() {
     _tabController.dispose();
+    _wedstrijdenSubTabController.dispose();
     super.dispose();
   }
 
@@ -429,6 +438,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       Map<int, Set<String>> rsvpProfileIdsByAgendaId = {};
       if (user != null && agendaIdsWithRsvp.isNotEmpty) {
         try {
+          if (!mounted) return;
           final ctx = AppUserContext.of(context);
           final profileIdsToLoad = [
             ctx.loggedInProfileId,
@@ -492,86 +502,131 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     }
 
     try {
-      final nowUtc = DateTime.now().toUtc();
-      final res = await _client
-          .from('nevobo_home_matches')
-          .select(
-            'match_key, team_code, starts_at, summary, location, fluiten_task_id, tellen_task_id',
-          )
-          .gte(
-            'starts_at',
-            nowUtc.subtract(const Duration(hours: 2)).toIso8601String(),
-          )
-          .order('starts_at', ascending: true)
-          .limit(120);
-      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final nowLocal = DateTime.now();
+      final endInclusive = nowLocal.add(const Duration(days: 14));
+      final cutoff = nowLocal.subtract(const Duration(hours: 2));
 
-      final parsed = <_HomeUpcomingMatch>[];
-      final taskIds = <int>{};
-      for (final row in rows) {
-        final key = (row['match_key'] ?? '').toString();
-        final startsAt = DateTime.tryParse((row['starts_at'] ?? '').toString());
-        if (key.isEmpty || startsAt == null) continue;
-        final fluitenId = (row['fluiten_task_id'] as num?)?.toInt();
-        final tellenId = (row['tellen_task_id'] as num?)?.toInt();
-        if (fluitenId != null) taskIds.add(fluitenId);
-        if (tellenId != null) taskIds.add(tellenId);
-        parsed.add(
-          _HomeUpcomingMatch(
-            matchKey: key,
-            teamCode: (row['team_code'] ?? '').toString(),
-            startsAt: startsAt,
-            summary: (row['summary'] ?? '').toString(),
-            location: (row['location'] ?? '').toString(),
-            fluitenTaskId: fluitenId,
-            tellenTaskId: tellenId,
-            fluitenNames: const [],
-            tellenNames: const [],
-          ),
+      // Alle wedstrijden uit de Nevobo API voor alle clubteams (volledige kalender).
+      final allFromApi = <_HomeUpcomingMatch>[];
+      final seenKeys = <String>{};
+
+      List<({NevoboTeam team, int? teamId})> withIds = [];
+      try {
+        withIds = await NevoboApi.loadTeamsFromSupabaseWithIds(
+          client: _client,
+          excludeTrainingOnly: false,
         );
+      } catch (_) {}
+
+      for (final entry in withIds) {
+        if (!mounted) break;
+        try {
+          final matches = await NevoboApi.fetchMatchesForTeam(team: entry.team);
+          for (final m in matches) {
+            final start = m.start;
+            if (start == null) continue;
+            final startLocal = start.toLocal();
+            if (startLocal.isBefore(cutoff) || startLocal.isAfter(endInclusive)) continue;
+            final summary = m.summary.trim();
+            final dedupeKey = '${start.toUtc().toIso8601String()}|$summary';
+            if (seenKeys.contains(dedupeKey)) continue;
+            final side = _parseMinervaSideFromSummary(summary);
+            if (side == null) continue;
+            seenKeys.add(dedupeKey);
+            final matchKey = '${side.teamCode}|${start.toUtc().toIso8601String()}|$summary';
+            allFromApi.add(
+              _HomeUpcomingMatch(
+                matchKey: matchKey,
+                teamCode: side.teamCode,
+                startsAt: start,
+                summary: summary,
+                location: (m.location ?? '').trim(),
+                fluitenTaskId: null,
+                tellenTaskId: null,
+                fluitenNames: const [],
+                tellenNames: const [],
+                isHome: side.isHome,
+              ),
+            );
+          }
+        } catch (_) {}
+      }
+
+      allFromApi.sort((a, b) => a.startsAt.compareTo(b.startsAt));
+
+      // Enrich met fluiten/tellen uit nevobo_home_matches waar beschikbaar.
+      Map<String, ({int? fluitenId, int? tellenId})> dbByKey = {};
+      try {
+        final nowUtc = DateTime.now().toUtc();
+        final res = await _client
+            .from('nevobo_home_matches')
+            .select(
+              'match_key, team_code, starts_at, summary, fluiten_task_id, tellen_task_id',
+            )
+            .gte(
+              'starts_at',
+              nowUtc.subtract(const Duration(hours: 2)).toIso8601String(),
+            )
+            .limit(500);
+        final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        for (final row in rows) {
+          final key = (row['match_key'] ?? '').toString();
+          if (key.isEmpty) continue;
+          final fluitenId = (row['fluiten_task_id'] as num?)?.toInt();
+          final tellenId = (row['tellen_task_id'] as num?)?.toInt();
+          dbByKey[key] = (fluitenId: fluitenId, tellenId: tellenId);
+        }
+      } catch (_) {}
+
+      final taskIds = <int>{};
+      for (final m in allFromApi) {
+        final fromDb = dbByKey[m.matchKey];
+        if (fromDb != null) {
+          if (fromDb.fluitenId != null) taskIds.add(fromDb.fluitenId!);
+          if (fromDb.tellenId != null) taskIds.add(fromDb.tellenId!);
+        }
       }
 
       final namesByTaskId = <int, List<String>>{};
       if (taskIds.isNotEmpty) {
-        final sRes = await _client
-            .from('club_task_signups')
-            .select('task_id, profile_id')
-            .inFilter('task_id', taskIds.toList());
-        final sRows = (sRes as List<dynamic>).cast<Map<String, dynamic>>();
-        final profileIds = <String>{};
-        for (final row in sRows) {
-          final pid = row['profile_id']?.toString() ?? '';
-          if (pid.isNotEmpty) profileIds.add(pid);
-        }
-        final namesByProfileId = await _loadProfileDisplayNames(profileIds);
-        for (final row in sRows) {
-          final taskId = (row['task_id'] as num?)?.toInt();
-          final pid = row['profile_id']?.toString() ?? '';
-          if (taskId == null || pid.isEmpty) continue;
-          final name = (namesByProfileId[pid] ?? unknownUserName).trim();
-          namesByTaskId.putIfAbsent(taskId, () => []).add(name);
-        }
-        for (final e in namesByTaskId.entries) {
-          e.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-        }
+        try {
+          final sRes = await _client
+              .from('club_task_signups')
+              .select('task_id, profile_id')
+              .inFilter('task_id', taskIds.toList());
+          final sRows = (sRes as List<dynamic>).cast<Map<String, dynamic>>();
+          final profileIds = <String>{};
+          for (final row in sRows) {
+            final pid = row['profile_id']?.toString() ?? '';
+            if (pid.isNotEmpty) profileIds.add(pid);
+          }
+          final namesByProfileId = await _loadProfileDisplayNames(profileIds);
+          for (final row in sRows) {
+            final taskId = (row['task_id'] as num?)?.toInt();
+            final pid = row['profile_id']?.toString() ?? '';
+            if (taskId == null || pid.isEmpty) continue;
+            final name = (namesByProfileId[pid] ?? unknownUserName).trim();
+            namesByTaskId.putIfAbsent(taskId, () => []).add(name);
+          }
+          for (final e in namesByTaskId.entries) {
+            e.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+          }
+        } catch (_) {}
       }
 
-      final withNames = parsed
-          .map(
-            (m) => m.copyWith(
-              fluitenNames: m.fluitenTaskId == null
-                  ? const []
-                  : (namesByTaskId[m.fluitenTaskId!] ?? const []),
-              tellenNames: m.tellenTaskId == null
-                  ? const []
-                  : (namesByTaskId[m.tellenTaskId!] ?? const []),
-            ),
-          )
-          .toList();
+      final enriched = allFromApi.map((m) {
+        final fromDb = dbByKey[m.matchKey];
+        final fluitenId = fromDb?.fluitenId;
+        final tellenId = fromDb?.tellenId;
+        return m.copyWith(
+          fluitenNames: fluitenId == null ? const [] : (namesByTaskId[fluitenId] ?? const []),
+          tellenNames: tellenId == null ? const [] : (namesByTaskId[tellenId] ?? const []),
+        );
+      }).toList();
 
       // Bij Minerva vs Minerva alleen het item van het thuisteam tonen.
       final filteredInternal = <_HomeUpcomingMatch>[];
-      for (final m in withNames) {
+      for (final m in enriched) {
         if (!_isInternalMinervaMatch(m.summary)) {
           filteredInternal.add(m);
           continue;
@@ -587,9 +642,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         filteredInternal.add(m);
       }
 
-      // Toon alleen wedstrijden in de aankomende 2 weken.
-      final nowLocal = DateTime.now();
-      final endInclusive = nowLocal.add(const Duration(days: 14));
+      // Beperk tot aankomende 14 dagen (API kan iets meer teruggeven).
       final limited = <_HomeUpcomingMatch>[];
       for (final m in filteredInternal) {
         final d = m.startsAt.toLocal();
@@ -1391,6 +1444,23 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     return left.contains('minerva') && right.contains('minerva');
   }
 
+  /// Parse summary "Thuis - Uit" → (Minerva teamCode, isHome) of null als geen Minerva.
+  ({String teamCode, bool isHome})? _parseMinervaSideFromSummary(String summary) {
+    final parts = summary.split(RegExp(r'\s+-\s+'));
+    if (parts.length < 2) return null;
+    final first = parts[0].trim();
+    final second = parts.sublist(1).join(' - ').trim();
+    if (first.toLowerCase().contains('minerva')) {
+      final code = _extractCodeFromSummarySide(first);
+      if (code != null && code.isNotEmpty) return (teamCode: _normalizeTeamCode(code), isHome: true);
+    }
+    if (second.toLowerCase().contains('minerva')) {
+      final code = _extractCodeFromSummarySide(second);
+      if (code != null && code.isNotEmpty) return (teamCode: _normalizeTeamCode(code), isHome: false);
+    }
+    return null;
+  }
+
   String _matchTitle(_HomeUpcomingMatch m) {
     final summary = m.summary.trim();
     if (summary.isNotEmpty) return NevoboApi.displayTeamName(summary);
@@ -1446,8 +1516,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       );
     }
     if (!anyExactMatch) {
-      spans
-        ..clear();
+      spans.clear();
       var highlighted = false;
       for (var i = 0; i < parts.length; i++) {
         if (i > 0) spans.add(TextSpan(text: sep, style: base));
@@ -4105,112 +4174,177 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               child: IndexedStack(
                 index: _contentIndexForSelectedTab(_tabController.index),
                 children: [
-                  // Aankomende wedstrijden
-                  RefreshIndicator(
-                    color: AppColors.primary,
-                    onRefresh: _refreshHome,
-                    child: ListView(
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      padding: EdgeInsets.fromLTRB(
-                        16,
-                        0,
-                        16,
-                        24 + MediaQuery.paddingOf(context).bottom,
-                      ),
-                      children: [
-                        _HomeTabHeader(
-                          title: 'Aankomende wedstrijden',
-                          trailing: _loadingUpcomingMatches
-                              ? const SizedBox(
-                                  height: 18,
-                                  width: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: AppColors.primary,
-                                  ),
-                                )
-                              : null,
-                        ),
-                        const SizedBox(height: 12),
-                        const Text(
-                          'Overzicht van de komende 14 dagen.',
-                          style: TextStyle(color: AppColors.textSecondary),
-                        ),
-                        const SizedBox(height: 10),
-                        if (_upcomingMatchesError != null)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: Text(
-                              'Kon aankomende wedstrijden nu niet laden. Probeer straks opnieuw.',
-                              style: const TextStyle(
-                                color: AppColors.textSecondary,
-                              ),
-                            ),
+                  // Wedstrijden: sub-tabs Aankomende wedstrijden | Standen
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                        child: GlassCard(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
                           ),
-                        if (_upcomingMatches.isEmpty)
-                          const Text(
-                            'Geen aankomende wedstrijden in de komende 14 dagen.',
-                            style: TextStyle(color: AppColors.textSecondary),
-                          )
-                        else
-                          ...(() {
-                            String? currentDayKey;
-                            final out = <Widget>[];
-                            for (final m in _upcomingMatches) {
-                              final dt = m.startsAt.toLocal();
-                              final dayKey = '${dt.year}-${dt.month}-${dt.day}';
-                              if (currentDayKey != dayKey) {
-                                currentDayKey = dayKey;
-                                out.add(
-                                  Padding(
-                                    padding: const EdgeInsets.only(
-                                      top: 4,
-                                      bottom: 8,
-                                    ),
-                                    child: Text(
-                                      _formatMatchdayLabel(m.startsAt),
-                                      style: const TextStyle(
-                                        color: AppColors.darkBlue,
-                                        fontWeight: FontWeight.w800,
-                                        fontSize: 18,
+                          showBorder: false,
+                          showShadow: false,
+                          child: TabBar(
+                            controller: _wedstrijdenSubTabController,
+                            isScrollable: true,
+                            tabAlignment: TabAlignment.center,
+                            dividerColor: Colors.transparent,
+                            indicator: BoxDecoration(
+                              color: AppColors.primary.withValues(alpha: 0.35),
+                              borderRadius:
+                                  BorderRadius.circular(AppColors.cardRadius),
+                            ),
+                            indicatorSize: TabBarIndicatorSize.tab,
+                            labelColor: AppColors.onBackground,
+                            unselectedLabelColor: AppColors.textSecondary,
+                            tabs: const [
+                              Tab(text: 'Aankomende wedstrijden'),
+                              Tab(text: 'Standen'),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: IndexedStack(
+                          index: _wedstrijdenSubTabController.index,
+                          children: [
+                            RefreshIndicator(
+                              color: AppColors.primary,
+                              onRefresh: _refreshHome,
+                              child: ListView(
+                                physics:
+                                    const AlwaysScrollableScrollPhysics(),
+                                padding: EdgeInsets.fromLTRB(
+                                  16,
+                                  0,
+                                  16,
+                                  24 +
+                                      MediaQuery.paddingOf(context).bottom,
+                                ),
+                                children: [
+                                  _HomeTabHeader(
+                                    title: 'Aankomende wedstrijden',
+                                    trailing:
+                                        _loadingUpcomingMatches
+                                            ? const SizedBox(
+                                                height: 18,
+                                                width: 18,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                  strokeWidth: 2,
+                                                  color: AppColors.primary,
+                                                ),
+                                              )
+                                            : null,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  const Text(
+                                    'Overzicht van de komende 14 dagen.',
+                                    style: TextStyle(
+                                        color: AppColors.textSecondary),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  if (_upcomingMatchesError != null)
+                                    Padding(
+                                      padding: const EdgeInsets.only(
+                                          bottom: 12),
+                                      child: Text(
+                                        'Kon aankomende wedstrijden nu niet laden. Probeer straks opnieuw.',
+                                        style: const TextStyle(
+                                          color: AppColors.textSecondary,
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                );
-                              }
-                              out.add(
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 12),
-                                  child: _CardBox(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        _buildHomeMatchTitleText(
-                                          m,
-                                          style: Theme.of(
-                                            context,
-                                          ).textTheme.titleMedium?.copyWith(
-                                            color: AppColors.onBackground,
-                                            fontWeight: FontWeight.w800,
+                                  if (_upcomingMatches.isEmpty)
+                                    const Text(
+                                      'Geen aankomende wedstrijden in de komende 14 dagen.',
+                                      style: TextStyle(
+                                          color: AppColors.textSecondary),
+                                    )
+                                  else
+                                    ...(() {
+                                      String? currentDayKey;
+                                      final out = <Widget>[];
+                                      for (final m in _upcomingMatches) {
+                                        final dt =
+                                            m.startsAt.toLocal();
+                                        final dayKey =
+                                            '${dt.year}-${dt.month}-${dt.day}';
+                                        if (currentDayKey != dayKey) {
+                                          currentDayKey = dayKey;
+                                          out.add(
+                                            Padding(
+                                              padding: const EdgeInsets
+                                                  .only(
+                                                top: 4,
+                                                bottom: 8,
+                                              ),
+                                              child: Text(
+                                                _formatMatchdayLabel(
+                                                    m.startsAt),
+                                                style: const TextStyle(
+                                                  color:
+                                                      AppColors.darkBlue,
+                                                  fontWeight:
+                                                      FontWeight.w800,
+                                                  fontSize: 18,
+                                                ),
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                        out.add(
+                                          Padding(
+                                            padding: const EdgeInsets
+                                                .only(bottom: 12),
+                                            child: _CardBox(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment
+                                                        .start,
+                                                children: [
+                                                  _buildHomeMatchTitleText(
+                                                    m,
+                                                    style: Theme.of(
+                                                      context,
+                                                    ).textTheme
+                                                        .titleMedium
+                                                        ?.copyWith(
+                                                          color: AppColors
+                                                              .onBackground,
+                                                          fontWeight:
+                                                              FontWeight
+                                                                  .w800,
+                                                        ),
+                                                  ),
+                                                  const SizedBox(
+                                                      height: 4),
+                                                  Text(
+                                                    '${_formatTime(dt)} • ${m.isHome ? 'Thuis' : 'Uit'} • ${m.location.trim().isEmpty ? 'Locatie onbekend' : m.location.trim()}',
+                                                    style: const TextStyle(
+                                                      color: AppColors
+                                                          .textSecondary,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
                                           ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          '${_formatTime(dt)} • ${m.location.trim().isEmpty ? 'Locatie onbekend' : m.location.trim()}',
-                                          style: const TextStyle(
-                                            color: AppColors.textSecondary,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              );
-                            }
-                            return out;
-                          })(),
-                      ],
-                    ),
+                                        );
+                                      }
+                                      return out;
+                                    })(),
+                                ],
+                              ),
+                            ),
+                            const NevoboStandenTab(),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
 
                   // Agenda (niet tonen wanneer alleen Uitgelicht + Nieuws)
@@ -4378,7 +4512,7 @@ class _HomeTabHeader extends StatelessWidget {
             ),
           ),
           const Spacer(),
-          if (trailing != null) trailing!,
+          if (trailing case final Widget w) w,
         ],
       ),
     );
@@ -4592,6 +4726,8 @@ class _HomeUpcomingMatch {
   final int? tellenTaskId;
   final List<String> fluitenNames;
   final List<String> tellenNames;
+  /// Thuiswedstrijd (uit DB) of uitwedstrijd (uit Nevobo API).
+  final bool isHome;
 
   const _HomeUpcomingMatch({
     required this.matchKey,
@@ -4603,11 +4739,13 @@ class _HomeUpcomingMatch {
     required this.tellenTaskId,
     required this.fluitenNames,
     required this.tellenNames,
+    this.isHome = true,
   });
 
   _HomeUpcomingMatch copyWith({
     List<String>? fluitenNames,
     List<String>? tellenNames,
+    bool? isHome,
   }) {
     return _HomeUpcomingMatch(
       matchKey: matchKey,
@@ -4619,6 +4757,7 @@ class _HomeUpcomingMatch {
       tellenTaskId: tellenTaskId,
       fluitenNames: fluitenNames ?? this.fluitenNames,
       tellenNames: tellenNames ?? this.tellenNames,
+      isHome: isHome ?? this.isHome,
     );
   }
 }

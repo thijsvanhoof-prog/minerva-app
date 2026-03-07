@@ -577,7 +577,7 @@ class _TcTabState extends State<TcTab> {
                   const SizedBox(height: 14),
                   if (!onlySupporter) ...[
                     DropdownButtonFormField<int>(
-                      value: selectedTeamId,
+                      initialValue: selectedTeamId,
                       isExpanded: true,
                       items: _teams
                           .map(
@@ -604,7 +604,7 @@ class _TcTabState extends State<TcTab> {
                     ),
                     const SizedBox(height: 10),
                     DropdownButtonFormField<String>(
-                      value: selectedRole,
+                      initialValue: selectedRole,
                       isExpanded: true,
                       items: const [
                         DropdownMenuItem(value: 'player', child: Text('Speler')),

@@ -13,7 +13,8 @@
 --
 -- Run in Supabase SQL Editor.
 
--- Helper: mag commissies beheren (bestuur of global admin)
+-- Helper: mag commissies beheren (bestuur of global admin).
+-- SECURITY DEFINER: leest committee_members zonder opnieuw RLS te triggeren → geen recursie.
 create or replace function public.is_bestuur_or_admin()
 returns boolean
 language sql
@@ -27,7 +28,10 @@ as $$
       select 1
       from public.committee_members cm
       where cm.profile_id = auth.uid()
-        and lower(cm.committee_name) = 'bestuur'
+        and (
+          lower(trim(cm.committee_name)) = 'bestuur'
+          or lower(trim(cm.committee_name)) like '%bestuur%'
+        )
     );
 $$;
 

@@ -8,7 +8,6 @@ import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/trainings_tab.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_wedstrijden_tab.dart';
-import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_standen_tab.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 class TrainingenWedstrijdenTab extends StatefulWidget {
@@ -25,16 +24,21 @@ class TrainingenWedstrijdenTab extends StatefulWidget {
 }
 
 class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tabController;
-  /// Alle teams met team_id (voor Standen en om wedstrijden te filteren op “mijn” teams).
+    with TickerProviderStateMixin {
+  late TabController _mainTabController;
+  late TabController _subTabController;
+  /// Alle teams met team_id (om wedstrijden te filteren op “mijn” teams).
   late final Future<List<({NevoboTeam team, int? teamId})>> _teamsWithIdsFuture;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
-    _tabController.addListener(() {
+    _mainTabController = TabController(length: 2, vsync: this);
+    _subTabController = TabController(length: 2, vsync: this);
+    _mainTabController.addListener(() {
+      if (mounted) setState(() {});
+    });
+    _subTabController.addListener(() {
       if (mounted) setState(() {});
     });
     _teamsWithIdsFuture = NevoboApi.loadTeamsFromSupabaseWithIds(
@@ -45,33 +49,69 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
 
   @override
   void dispose() {
-    _tabController.dispose();
+    _mainTabController.dispose();
+    _subTabController.dispose();
     super.dispose();
+  }
+
+  /// Spelers-tab: alle teams waar je géén beheerder bent (dus role = player, speler, lid, trainingslid, guardian, supporter).
+  /// canManageTeam is true alleen voor trainer/coach/admin.
+  static List<TeamMembership> _playerTeams(List<TeamMembership> memberships) {
+    return memberships
+        .where((m) => !m.canManageTeam)
+        .toList()
+      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
+  }
+
+  /// Alleen teams waar je als trainer/coach/admin staat.
+  static List<TeamMembership> _trainerTeams(List<TeamMembership> memberships) {
+    return memberships.where((m) => m.canManageTeam).toList()
+      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
+  }
+
+  List<String> _teamCodesForMemberships(
+    List<({NevoboTeam team, int? teamId})> withIds,
+    List<TeamMembership> memberships,
+    AppUserContext userContext,
+  ) {
+    final teamIds = memberships.map((m) => m.teamId).toSet();
+    final codes = withIds
+        .where((e) => e.teamId != null && teamIds.contains(e.teamId))
+        .map((e) => e.team.code)
+        .toSet()
+        .toList()
+      ..sort(NevoboApi.compareTeamCodes);
+    if (codes.isEmpty && memberships.isNotEmpty) {
+      codes.addAll(_fallbackLinkedCodes(memberships));
+      codes.sort(NevoboApi.compareTeamCodes);
+    }
+    return codes;
+  }
+
+  List<String> _fallbackLinkedCodes(List<TeamMembership> memberships) {
+    return memberships
+        .map((m) => m.nevoboCode?.trim().toUpperCase() ?? NevoboApi.extractCodeFromTeamName(m.teamName))
+        .whereType<String>()
+        .where((c) => c.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort(NevoboApi.compareTeamCodes);
   }
 
   @override
   Widget build(BuildContext context) {
     final userContext = AppUserContext.of(context);
-    final manageableTeamsSorted = [...widget.manageableTeams]
-      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
+    final allMemberships = widget.manageableTeams;
+    final playerTeams = _playerTeams(allMemberships);
+    final trainerTeams = _trainerTeams(allMemberships);
+    final hasTrainerRole = trainerTeams.isNotEmpty;
 
     return FutureBuilder<List<({NevoboTeam team, int? teamId})>>(
       future: _teamsWithIdsFuture,
       builder: (context, snapshot) {
         final withIds = snapshot.data ?? const [];
-        // Tab Wedstrijden: alleen teams tonen waar de gebruiker bij hoort.
-        final myTeamIds = userContext.memberships.map((m) => m.teamId).toSet();
-        final wedstrijdenCodes = withIds
-            .where((e) => e.teamId != null && myTeamIds.contains(e.teamId))
-            .map((e) => e.team.code)
-            .toSet()
-            .toList()
-          ..sort(NevoboApi.compareTeamCodes);
-        // Als er geen match is via team_id (bijv. oude data), fallback op codes uit memberships.
-        if (wedstrijdenCodes.isEmpty && userContext.memberships.isNotEmpty) {
-          wedstrijdenCodes.addAll(_fallbackLinkedCodes(userContext));
-          wedstrijdenCodes.sort(NevoboApi.compareTeamCodes);
-        }
+        final playerTeamCodes = _teamCodesForMemberships(withIds, playerTeams, userContext);
+        final trainerTeamCodes = _teamCodesForMemberships(withIds, trainerTeams, userContext);
 
         return Scaffold(
           backgroundColor: Colors.transparent,
@@ -89,6 +129,7 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                         ),
                   ),
                 ),
+                // Hoofdtabs: Trainingen | Wedstrijden
                 Padding(
                   padding: AppColors.tabContentPadding,
                   child: GlassCard(
@@ -96,7 +137,7 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                     showBorder: false,
                     showShadow: false,
                     child: TabBar(
-                      controller: _tabController,
+                      controller: _mainTabController,
                       isScrollable: true,
                       tabAlignment: TabAlignment.center,
                       dividerColor: Colors.transparent,
@@ -108,18 +149,54 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                       tabs: const [
                         Tab(text: 'Trainingen'),
                         Tab(text: 'Wedstrijden'),
-                        Tab(text: 'Standen'),
                       ],
                     ),
                   ),
                 ),
+                // Sub-tabs: Spelers | Trainers (alleen bij Trainingen, niet bij Wedstrijden)
+                if (hasTrainerRole && _mainTabController.index == 0)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: GlassCard(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      showBorder: false,
+                      showShadow: false,
+                      child: TabBar(
+                        controller: _subTabController,
+                        isScrollable: true,
+                        tabAlignment: TabAlignment.center,
+                        dividerColor: Colors.transparent,
+                        indicator: BoxDecoration(
+                          color: AppColors.primary.withValues(alpha: 0.35),
+                          borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                        ),
+                        indicatorSize: TabBarIndicatorSize.tab,
+                        labelColor: AppColors.onBackground,
+                        unselectedLabelColor: AppColors.textSecondary,
+                        tabs: const [
+                          Tab(text: 'Spelers'),
+                          Tab(text: 'Trainers'),
+                        ],
+                      ),
+                    ),
+                  ),
                 Expanded(
                   child: IndexedStack(
-                    index: _tabController.index,
+                    index: _mainTabController.index,
                     children: [
-                      TrainingsTab(manageableTeams: manageableTeamsSorted),
-                      NevoboWedstrijdenTab(teamCodes: wedstrijdenCodes),
-                      const NevoboStandenTab(),
+                      // Trainingen
+                      _buildTrainingenContent(
+                        hasTrainerRole: hasTrainerRole,
+                        playerTeams: playerTeams,
+                        trainerTeams: trainerTeams,
+                        isAdmin: userContext.hasFullAdminRights,
+                      ),
+                      // Wedstrijden
+                      _buildWedstrijdenContent(
+                        playerTeamCodes: playerTeamCodes,
+                        trainerTeamCodes: trainerTeamCodes,
+                        withIds: withIds,
+                      ),
                     ],
                   ),
                 ),
@@ -131,14 +208,89 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
     );
   }
 
-  /// Fallback als Supabase nog geen teams teruggeeft (bijv. RPC niet gedraaid).
-  List<String> _fallbackLinkedCodes(AppUserContext userContext) {
-    return userContext.memberships
-        .map((m) => m.nevoboCode?.trim().toUpperCase() ?? NevoboApi.extractCodeFromTeamName(m.teamName))
-        .whereType<String>()
-        .where((c) => c.isNotEmpty)
-        .toSet()
-        .toList()
+  Widget _buildTrainingenContent({
+    required bool hasTrainerRole,
+    required List<TeamMembership> playerTeams,
+    required List<TeamMembership> trainerTeams,
+    required bool isAdmin,
+  }) {
+    if (!hasTrainerRole) {
+      return TrainingsTab(manageableTeams: playerTeams);
+    }
+    // Admin ziet in Spelers-tab ook alle teams (zelfde als Trainers).
+    final spelersTeams = isAdmin ? trainerTeams : playerTeams;
+    return IndexedStack(
+      index: _subTabController.index,
+      children: [
+        TrainingsTab(manageableTeams: spelersTeams),
+        TrainingsTab(manageableTeams: trainerTeams),
+      ],
+    );
+  }
+
+  Widget _buildWedstrijdenContent({
+    required List<String> playerTeamCodes,
+    required List<String> trainerTeamCodes,
+    required List<({NevoboTeam team, int? teamId})> withIds,
+  }) {
+    final allTeamCodes = <String>{
+      ...playerTeamCodes,
+      ...trainerTeamCodes,
+    }.toList()
       ..sort(NevoboApi.compareTeamCodes);
+    if (allTeamCodes.isEmpty) {
+      return _SpelersEmptyContent();
+    }
+    final teamIdByCode = <String, int>{};
+    for (final e in withIds) {
+      if (e.teamId != null) {
+        teamIdByCode[e.team.code.trim().toUpperCase()] = e.teamId!;
+      }
+    }
+    return NevoboWedstrijdenTab(
+      teamCodes: allTeamCodes,
+      teamIdByCode: teamIdByCode,
+    );
+  }
+}
+
+/// Lege staat wanneer je bij geen team als speler staat (Spelers-tab).
+class _SpelersEmptyContent extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.group_off,
+              size: 48,
+              color: AppColors.textSecondary.withValues(alpha: 0.7),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Je staat bij geen team als speler',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: AppColors.onBackground,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Staat je bij een team alleen als trainer/coach? Dan zie je dat team onder de tab Trainers.\n\n'
+              'Om hier teams te zien: vraag de Technische Commissie (Commissie → TC) om je als speler aan een team toe te voegen.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 14,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

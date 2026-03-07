@@ -81,6 +81,10 @@ class _ProfielTabState extends State<ProfielTab> {
     });
 
     try {
+      // Vernieuw globale context (o.a. displayName in header) zodat wijzigingen direct zichtbaar zijn.
+      if (mounted) await AppUserContext.of(context).reloadUserContext?.call();
+      if (!mounted) return;
+
       final user = _client.auth.currentUser;
       if (user == null) {
         _safeSetState(() {
@@ -229,11 +233,10 @@ class _ProfielTabState extends State<ProfielTab> {
           const [];
       notifier.setChildren(list);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_shortError(e))),
-        );
-      }
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_shortError(e))),
+      );
     } finally {
       _safeSetState(() => _unlinkingChildId = null);
     }
@@ -292,6 +295,9 @@ class _ProfielTabState extends State<ProfielTab> {
 
       if (!mounted) return;
       showTopMessage(context, 'Gebruikersnaam is bijgewerkt.');
+      // Vernieuw de globale context (displayName in header/sidebar) direct.
+      await AppUserContext.of(context).reloadUserContext?.call();
+      if (!mounted) return;
       await _reload();
     } on AuthException catch (e) {
       if (!mounted) return;

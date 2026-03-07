@@ -287,16 +287,18 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
     required int sessionId,
     required bool cancelled,
     required String trainingLabel,
+    int? teamId,
   }) async {
     try {
       await _client
           .from('sessions')
           .update({'is_cancelled': cancelled})
           .eq('session_id', sessionId);
-      if (cancelled) {
-        await NotificationService.sendBroadcastUpdate(
+      if (cancelled && teamId != null) {
+        await NotificationService.sendTeamUpdate(
           title: 'Training geannuleerd',
           body: trainingLabel,
+          teamId: teamId,
         );
       }
       if (!mounted) return;
@@ -482,6 +484,7 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
                               sessionId: id,
                               cancelled: !cancelled,
                               trainingLabel: '$teamLabel - $title',
+                              teamId: teamId,
                             ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: cancelled ? AppColors.card : AppColors.error,
@@ -705,9 +708,10 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
         onConflict: 'match_key',
       );
       if (cancelled) {
-        await NotificationService.sendBroadcastUpdate(
+        await NotificationService.sendTeamUpdateByNevoboCode(
           title: 'Wedstrijd geannuleerd',
           body: NevoboApi.displayTeamName(match.summary),
+          teamCode: team.code,
         );
       }
 

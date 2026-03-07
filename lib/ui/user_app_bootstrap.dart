@@ -213,11 +213,13 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
 
     // 4) Bouw memberships
     final memberships = <TeamMembership>[];
+    final membershipTeamIds = <int>{};
 
     // Own roles (player/trainer)
     for (final row in ownTmRows) {
       final m = row as Map<String, dynamic>;
       final teamId = (m['team_id'] as num).toInt();
+      membershipTeamIds.add(teamId);
       final roleRaw = (m['role'] as String?) ?? 'player';
       final role = _normalizeRole(roleRaw);
       final raw = teamNamesById[teamId] ?? '';
@@ -249,6 +251,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
               .firstOrNull;
       final key = '$teamId:guardian';
       if (seen.add(key)) {
+        membershipTeamIds.add(teamId);
         memberships.add(TeamMembership(
           teamId: teamId,
           role: 'guardian',
@@ -257,6 +260,63 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
           linkedChildDisplayName: linkedChildName,
         ));
       }
+    }
+
+    // Global admin: voeg alle overige teams toe als role 'admin' (toegang tot alles).
+    if (isGlobalAdmin) {
+      try {
+        final allTeamsRes = await _client.rpc(
+          'get_all_teams_for_app',
+          params: {'p_include_training_only': true},
+        );
+        final allTeamsRows = (allTeamsRes as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+        final allTeamIds = allTeamsRows
+            .map((r) => (r['team_id'] as num?)?.toInt())
+            .whereType<int>()
+            .where((tid) => !membershipTeamIds.contains(tid))
+            .toSet()
+            .toList()
+          ..sort();
+        if (allTeamIds.isNotEmpty) {
+          Map<int, String> allNames = {};
+          final byId = <int, String>{};
+          for (final r in allTeamsRows) {
+            final tid = (r['team_id'] as num?)?.toInt();
+            if (tid == null) continue;
+            final name = (r['team_name'] as String?)?.toString().trim() ?? '';
+            if (name.isNotEmpty) byId[tid] = name;
+          }
+          allNames = byId;
+          final nevoboById = <int, String>{};
+          try {
+            final rpc = await _client.rpc(
+              'get_team_names_for_app',
+              params: {'p_team_ids': allTeamIds},
+            );
+            final nameRows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+            for (final r in nameRows) {
+              final tid = (r['team_id'] as num?)?.toInt();
+              if (tid == null) continue;
+              final code = (r['nevobo_code'] as String?)?.trim();
+              if (code != null && code.isNotEmpty) nevoboById[tid] = code;
+              if ((allNames[tid] ?? '').trim().isEmpty && (r['team_name'] as String?)?.trim().isNotEmpty == true) {
+                allNames = {...allNames, tid: (r['team_name'] as String).trim()};
+              }
+            }
+          } catch (_) {}
+          for (final tid in allTeamIds) {
+            final name = allNames[tid]?.trim().isNotEmpty == true
+                ? NevoboApi.displayTeamName(allNames[tid]!)
+                : 'Team $tid';
+            memberships.add(TeamMembership(
+              teamId: tid,
+              role: 'admin',
+              teamName: name,
+              nevoboCode: nevoboById[tid],
+            ));
+          }
+        }
+      } catch (_) {}
     }
 
     // 5) Commissies altijd voor de ingelogde user (ouder/verzorger behoudt eigen commissies).
@@ -289,6 +349,9 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
 
     displayName = applyDisplayNameOverrides(displayName);
 
+    // Algemeen admin: toon altijd "Admin" als weergavenaam.
+    if (isGlobalAdmin) displayName = 'Admin';
+
     // If this user only has the ouder/verzorger role (no own team memberships),
     // show a clearer label: "Naam (ouder/verzorger 'Gekoppeld account')".
     if (ownTmRows.isEmpty && _ouderKindNotifier.linkedChildren.isNotEmpty) {
@@ -318,6 +381,8 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     });
   }
 
+  /// Normaliseert DB-rol naar waarde die TeamMembership gebruikt.
+  /// Speler-tab toont teams waar role in [player, speler, trainingslid, supporter, guardian] is.
   String _normalizeRole(String value) {
     final r = value.trim().toLowerCase();
     switch (r) {
@@ -326,8 +391,11 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
         return 'trainer';
       case 'trainingslid':
         return 'trainingslid';
+      case 'supporter':
+        return 'supporter';
       case 'speler':
       case 'player':
+      case 'lid': // soms gebruikt in UI/DB
       default:
         return 'player';
     }

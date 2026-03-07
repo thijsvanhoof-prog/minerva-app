@@ -1514,8 +1514,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     final fluitenId = byKind['fluiten'];
     final tellenId = byKind['tellen'];
     final ids = <int>[
-      if (fluitenId != null) fluitenId,
-      if (tellenId != null) tellenId,
+      ...([fluitenId, tellenId].whereType<int>()),
     ];
 
     final assigned = <int>{};
@@ -1562,8 +1561,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       final flId = (row['fluiten_task_id'] as num?)?.toInt();
       final teId = (row['tellen_task_id'] as num?)?.toInt();
       final taskIds = <int>[
-        if (flId != null) flId,
-        if (teId != null) teId,
+        ...([flId, teId].whereType<int>()),
       ];
       final teamIdByTaskId = taskIds.isNotEmpty
           ? await _loadTeamAssignmentsForTaskIds(taskIds)
@@ -2062,9 +2060,10 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       await _refreshStatusForKey(key);
       if (!mounted) return;
       if (created > 0) {
-        await NotificationService.sendBroadcastUpdate(
+        await NotificationService.sendTeamUpdate(
           title: 'Nieuwe taken voor wedstrijd',
           body: NevoboApi.displayTeamName(match.summary),
+          teamId: teamId,
         );
       }
       showTopMessageWithMessenger(messenger, 'Gekoppeld. ($created aangemaakt)');
@@ -2157,9 +2156,9 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       if (row != null) {
         final fluitenId = (row['fluiten_task_id'] as num?)?.toInt();
         final tellenId = (row['tellen_task_id'] as num?)?.toInt();
-        return {
-          if (fluitenId != null) 'fluiten': fluitenId,
-          if (tellenId != null) 'tellen': tellenId,
+        return <String, int>{
+          ...? (fluitenId != null ? {'fluiten': fluitenId} : null),
+          ...? (tellenId != null ? {'tellen': tellenId} : null),
         };
       }
     } catch (_) {
@@ -3533,6 +3532,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
       int created = 0;
       int skipped = 0;
       int missingTeamId = 0;
+      final createdTeamIds = <int>{};
 
       for (final team in teams) {
         final teamId = teamIdByCode[team.code];
@@ -3585,14 +3585,16 @@ class _MyTasksTabState extends State<MyTasksTab> {
 
           existingKeys.add(key);
           created++;
+          createdTeamIds.add(teamId);
         }
       }
 
       if (!mounted) return;
-      if (created > 0) {
-        await NotificationService.sendBroadcastUpdate(
+      if (created > 0 && createdTeamIds.isNotEmpty) {
+        await NotificationService.sendTeamUpdatesForTeams(
           title: 'Nieuwe wedstrijdtaken toegevoegd',
           body: '$created taak/taken',
+          teamIds: createdTeamIds.toList(),
         );
       }
       showTopMessageWithMessenger(
@@ -4185,10 +4187,13 @@ class _CreateTaskPageState extends State<_CreateTaskPage> {
             .toList();
         await _client.from('club_task_team_assignments').insert(assignments);
       }
-      await NotificationService.sendBroadcastUpdate(
-        title: 'Nieuwe taak toegevoegd',
-        body: title,
-      );
+      if (_selectedTeamIds.isNotEmpty) {
+        await NotificationService.sendTeamUpdatesForTeams(
+          title: 'Nieuwe taak toegevoegd',
+          body: title,
+          teamIds: _selectedTeamIds,
+        );
+      }
 
       if (!mounted) return;
       Navigator.of(context).pop(true);

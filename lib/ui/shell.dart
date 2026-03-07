@@ -1,6 +1,4 @@
 // lib/ui/shell.dart
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -121,7 +119,9 @@ class _ShellState extends State<Shell> {
   }) {
     final _ = userContext;
 
-    final hasFullAccess = hasTeam || hasCommittees;
+    // Admin heeft altijd volledige toegang; anders: team of commissie nodig.
+    final hasFullAccess =
+        userContext.hasFullAdminRights || hasTeam || hasCommittees;
     // Toeschouwer: geen rol → alleen Uitgelicht, Agenda, Nieuws, Standen, Contact, Profiel
     if (!hasFullAccess) {
       return [
@@ -170,7 +170,7 @@ class _ShellState extends State<Shell> {
         ),
       ),
       _NavItem(
-        page: TrainingenWedstrijdenTab(manageableTeams: manageableTeams),
+        page: TrainingenWedstrijdenTab(manageableTeams: userContext.memberships),
         destination: NavigationDestination(
           icon: _navIcon(Icons.emoji_events_outlined, selected: false),
           selectedIcon: _navIcon(Icons.emoji_events, selected: true),

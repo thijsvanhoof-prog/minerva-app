@@ -81,7 +81,7 @@ class TeamMembership {
 
   bool get canManageTeam {
     final r = role.trim().toLowerCase();
-    return r == 'trainer' || r == 'coach';
+    return r == 'trainer' || r == 'coach' || r == 'admin';
   }
 
   bool get isGuardian => role.trim().toLowerCase() == 'guardian';
@@ -170,9 +170,9 @@ class AppUserContext extends InheritedWidget {
   bool get isInVrijwilligers => isInCommittee('vrijwilligers');
 
   /// Central place for feature permissions (can be reused across the app).
-  /// Bestuur: alles inzien (view), alleen admins mogen aanpassen (manage).
+  /// Nieuws/agenda beheren: admin, bestuur en communicatie (sluit aan bij RLS).
   bool get canManageAgenda =>
-      hasFullAdminRights || isInCommunicatie;
+      hasFullAdminRights || isInBestuur || isInCommunicatie;
   bool get canViewAgendaRsvps =>
       hasFullAdminRights ||
       isInBestuur ||
@@ -185,9 +185,9 @@ class AppUserContext extends InheritedWidget {
       hasFullAdminRights || isInBestuur || isInCommunicatie;
 
   bool get canManageNews =>
-      hasFullAdminRights || isInCommunicatie;
+      hasFullAdminRights || isInBestuur || isInCommunicatie;
   bool get canManageHighlights =>
-      hasFullAdminRights || isInCommunicatie;
+      hasFullAdminRights || isInBestuur || isInCommunicatie;
   bool get canManageTeams => hasFullAdminRights || isInTechnischeCommissie;
   bool get canManageMatches => hasFullAdminRights || isInWedstrijdzaken;
 

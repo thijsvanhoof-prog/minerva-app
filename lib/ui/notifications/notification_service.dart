@@ -229,6 +229,123 @@ class NotificationService {
     }
   }
 
+  /// Verstuur een push alleen naar users gekoppeld aan dit team (leden + ouders van leden).
+  /// Best-effort: fouten mogen de primaire actie niet blokkeren.
+  static Future<void> sendTeamUpdate({
+    required String title,
+    required String body,
+    required int teamId,
+    String? dedupeKey,
+    int? cooldownSeconds,
+  }) async {
+    final t = title.trim();
+    final b = body.trim();
+    if (t.isEmpty || b.isEmpty) return;
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final accessToken = session?.accessToken;
+      final anonKey = dotenv.env['SUPABASE_ANON_KEY']?.trim() ?? '';
+      final headers = <String, String>{
+        if (accessToken != null && accessToken.isNotEmpty)
+          'Authorization': 'Bearer $accessToken',
+        if (anonKey.isNotEmpty) 'apikey': anonKey,
+      };
+      await Supabase.instance.client.functions.invoke(
+        'send-push-fcm',
+        headers: headers.isEmpty ? null : headers,
+        body: {
+          'title': t,
+          'body': b,
+          'team_id': teamId,
+          if (dedupeKey != null && dedupeKey.trim().isNotEmpty)
+            'dedupe_key': dedupeKey.trim(),
+          if (cooldownSeconds != null && cooldownSeconds > 0)
+            'cooldown_seconds': cooldownSeconds,
+        },
+      );
+    } catch (e) {
+      debugPrint('NotificationService: team-push mislukt: $e');
+    }
+  }
+
+  /// Verstuur een push alleen naar users gekoppeld aan het team met deze Nevobo-code (bijv. JC1).
+  static Future<void> sendTeamUpdateByNevoboCode({
+    required String title,
+    required String body,
+    required String teamCode,
+    String? dedupeKey,
+    int? cooldownSeconds,
+  }) async {
+    final t = title.trim();
+    final b = body.trim();
+    if (t.isEmpty || b.isEmpty) return;
+    final code = teamCode.trim();
+    if (code.isEmpty) return;
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final accessToken = session?.accessToken;
+      final anonKey = dotenv.env['SUPABASE_ANON_KEY']?.trim() ?? '';
+      final headers = <String, String>{
+        if (accessToken != null && accessToken.isNotEmpty)
+          'Authorization': 'Bearer $accessToken',
+        if (anonKey.isNotEmpty) 'apikey': anonKey,
+      };
+      await Supabase.instance.client.functions.invoke(
+        'send-push-fcm',
+        headers: headers.isEmpty ? null : headers,
+        body: {
+          'title': t,
+          'body': b,
+          'nevobo_team_code': code,
+          if (dedupeKey != null && dedupeKey.trim().isNotEmpty)
+            'dedupe_key': dedupeKey.trim(),
+          if (cooldownSeconds != null && cooldownSeconds > 0)
+            'cooldown_seconds': cooldownSeconds,
+        },
+      );
+    } catch (e) {
+      debugPrint('NotificationService: team-push (nevobo) mislukt: $e');
+    }
+  }
+
+  /// Verstuur een push naar users gekoppeld aan elk van deze teams (unie van alle teamleden + ouders).
+  static Future<void> sendTeamUpdatesForTeams({
+    required String title,
+    required String body,
+    required List<int> teamIds,
+    String? dedupeKey,
+    int? cooldownSeconds,
+  }) async {
+    final t = title.trim();
+    final b = body.trim();
+    if (t.isEmpty || b.isEmpty || teamIds.isEmpty) return;
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final accessToken = session?.accessToken;
+      final anonKey = dotenv.env['SUPABASE_ANON_KEY']?.trim() ?? '';
+      final headers = <String, String>{
+        if (accessToken != null && accessToken.isNotEmpty)
+          'Authorization': 'Bearer $accessToken',
+        if (anonKey.isNotEmpty) 'apikey': anonKey,
+      };
+      await Supabase.instance.client.functions.invoke(
+        'send-push-fcm',
+        headers: headers.isEmpty ? null : headers,
+        body: {
+          'title': t,
+          'body': b,
+          'team_ids': teamIds,
+          if (dedupeKey != null && dedupeKey.trim().isNotEmpty)
+            'dedupe_key': dedupeKey.trim(),
+          if (cooldownSeconds != null && cooldownSeconds > 0)
+            'cooldown_seconds': cooldownSeconds,
+        },
+      );
+    } catch (e) {
+      debugPrint('NotificationService: team-push (meerdere teams) mislukt: $e');
+    }
+  }
+
   /// Verstuur een push met cooldown per sleutel om spam te voorkomen.
   static Future<void> sendBroadcastUpdateWithCooldown({
     required String title,
