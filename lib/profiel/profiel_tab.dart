@@ -39,11 +39,24 @@ class _ProfielTabState extends State<ProfielTab> {
   /// Fase B: 0 = Mijn gegevens, 1..n = tab voor gekoppeld kind.
   int _selectedProfileTabIndex = 0;
 
+  bool _hasLoadedOnce = false;
+
   @override
   void initState() {
     super.initState();
-    _reload();
     _linkedParentsFuture = _loadLinkedParentsFuture();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // AppUserContext is pas beschikbaar na initState; laad na eerste frame.
+    if (!_hasLoadedOnce) {
+      _hasLoadedOnce = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _reload();
+      });
+    }
   }
 
   Future<List<Map<String, dynamic>>> _loadLinkedParentsFuture() async {
