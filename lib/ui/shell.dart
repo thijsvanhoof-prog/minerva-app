@@ -1,4 +1,5 @@
 // lib/ui/shell.dart
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -238,16 +239,26 @@ class _ShellState extends State<Shell> {
     final pages = navItems.map((i) => i.page).toList();
     final destinations = navItems.map((i) => i.destination).toList();
 
+    // Android 15+: statusBarColor/navigationBarColor/navigationBarDividerColor zijn beëindigd.
+    // Op Android alleen brightness; op iOS wel kleuren.
+    final overlayStyle = defaultTargetPlatform == TargetPlatform.android
+        ? const SystemUiOverlayStyle(
+            statusBarIconBrightness: Brightness.light,
+            statusBarBrightness: Brightness.dark,
+            systemNavigationBarIconBrightness: Brightness.light,
+          )
+        : SystemUiOverlayStyle(
+            statusBarColor: AppColors.darkBlue,
+            statusBarIconBrightness: Brightness.light,
+            systemNavigationBarColor: Colors.transparent,
+            systemNavigationBarDividerColor: Colors.transparent,
+            systemNavigationBarIconBrightness: Brightness.light,
+          );
+
     return ShellNavigatorScope(
       switchToContactTab: _switchToContactTab,
       child: AnnotatedRegion<SystemUiOverlayStyle>(
-        value: SystemUiOverlayStyle(
-          statusBarColor: AppColors.darkBlue,
-          statusBarIconBrightness: Brightness.light,
-          systemNavigationBarColor: Colors.transparent,
-          systemNavigationBarDividerColor: Colors.transparent,
-          systemNavigationBarIconBrightness: Brightness.light,
-        ),
+        value: overlayStyle,
         child: Scaffold(
         backgroundColor: Colors.transparent,
         extendBody: false,

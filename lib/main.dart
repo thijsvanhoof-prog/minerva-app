@@ -21,12 +21,20 @@ Future<void> main() async {
     WidgetsFlutterBinding.ensureInitialized();
 
     // Statusbalk: donkerblauwe achtergrond + witte iconen (tijd, batterij, wifi).
-    // Op iOS wordt statusBarColor genegeerd; Info.plist UIStatusBarStyleLightContent + donkerblauwe strook in shell doen de rest.
-    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-      statusBarColor: AppColors.darkBlue,
-      statusBarIconBrightness: Brightness.light,
-      statusBarBrightness: Brightness.dark,
-    ));
+    // Op Android 15+ zijn statusBarColor/navigationBarColor/navigationBarDividerColor beëindigd.
+    // Gebruik alleen brightness op Android; op iOS doet Info.plist + shell de rest.
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+      ));
+    } else {
+      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+        statusBarColor: AppColors.darkBlue,
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+      ));
+    }
 
     FlutterError.onError = (details) {
       FlutterError.presentError(details);

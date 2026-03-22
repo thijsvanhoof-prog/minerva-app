@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
@@ -123,13 +124,20 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
   @override
   Widget build(BuildContext context) {
     final topPadding = MediaQuery.paddingOf(context).top + 16;
+    // Android 15+: statusBarColor/systemNavigationBarColor zijn beëindigd.
+    final overlayStyle = Theme.of(context).platform == TargetPlatform.android
+        ? const SystemUiOverlayStyle(
+            statusBarIconBrightness: Brightness.dark,
+            systemNavigationBarIconBrightness: Brightness.dark,
+          )
+        : const SystemUiOverlayStyle(
+            statusBarColor: Colors.transparent,
+            statusBarIconBrightness: Brightness.dark,
+            systemNavigationBarColor: Colors.transparent,
+            systemNavigationBarIconBrightness: Brightness.dark,
+          );
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.dark,
-        systemNavigationBarColor: Colors.transparent,
-        systemNavigationBarIconBrightness: Brightness.dark,
-      ),
+      value: overlayStyle,
       child: Scaffold(
         backgroundColor: Colors.transparent,
         body: ListView(
