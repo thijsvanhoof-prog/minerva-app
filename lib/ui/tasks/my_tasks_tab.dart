@@ -104,6 +104,8 @@ class MyTasksTab extends StatelessWidget {
                       borderRadius: BorderRadius.circular(AppColors.cardRadius),
                     ),
                     indicatorSize: TabBarIndicatorSize.tab,
+                    labelColor: AppColors.primary,
+                    unselectedLabelColor: AppColors.textSecondary,
                     tabs: const [
                       Tab(text: 'Teamtaken'),
                       Tab(text: 'Overzicht'),
@@ -160,6 +162,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
 
   List<_LinkedMatchTasks> _matches = const [];
   Set<int> _signedUpTaskIds = const {}; // task_ids I am signed up for
+  Set<int> _assignableTaskIds = const {}; // task_ids assigned to my team(s)
   Map<int, String> _teamNameById = const {};
   Map<int, List<String>> _signupNamesByTaskId = const {}; // task_id -> names
   String? _myDisplayName; // cached for optimistic updates
@@ -192,6 +195,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         setState(() {
           _matches = const [];
           _signedUpTaskIds = const {};
+          _assignableTaskIds = const {};
           _teamNameById = const {};
           _loading = false;
         });
@@ -218,14 +222,32 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         setState(() {
           _matches = const [];
           _signedUpTaskIds = const {};
+          _assignableTaskIds = const {};
           _teamNameById = const {};
           _loading = false;
         });
         return;
       }
 
-      // Standaard: wedstrijden gekoppeld aan mijn teams.
-      // Scheidsrechters/Tellers: mogen altijd op alle wedstrijden inschrijven.
+      // Voor Teamtaken bepalen we eerst welke fluit/tel taken aan mijn teams zijn gekoppeld.
+      final assignedTeamIdsByTaskId = <int, Set<int>>{};
+      if (!allowOpenRefereeTellerSignup && myTeamIds.isNotEmpty) {
+        final aRes = await _client
+            .from('club_task_team_assignments')
+            .select('task_id, team_id')
+            .inFilter('team_id', myTeamIds)
+            .timeout(const Duration(seconds: 20));
+        final aRows = (aRes as List<dynamic>).cast<Map<String, dynamic>>();
+        for (final row in aRows) {
+          final tid = (row['task_id'] as num?)?.toInt();
+          final teamId = (row['team_id'] as num?)?.toInt();
+          if (tid == null || teamId == null) continue;
+          assignedTeamIdsByTaskId.putIfAbsent(tid, () => <int>{}).add(teamId);
+        }
+      }
+
+      // Standaard: alle (aankomende) gekoppelde wedstrijden ophalen en lokaal filteren op taak-toewijzing.
+      // Scheidsrechters/Tellers: mogen op alle wedstrijden inschrijven.
       final now = DateTime.now().toUtc();
       final mRes = await (allowOpenRefereeTellerSignup
               ? _client
@@ -239,7 +261,6 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
                   .select(
                     'match_key, team_code, starts_at, summary, location, linked_team_id, fluiten_task_id, tellen_task_id',
                   )
-                  .inFilter('linked_team_id', myTeamIds)
                   .gte('starts_at', now.subtract(const Duration(days: 1)).toIso8601String())
                   .order('starts_at', ascending: true))
           .timeout(const Duration(seconds: 20));
@@ -254,15 +275,33 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         if (matchKey.isEmpty) continue;
         final startsAt = DateTime.tryParse((row['starts_at'] ?? '').toString());
         if (startsAt == null) continue;
-        final linkedTeamId = (row['linked_team_id'] as num?)?.toInt();
-        if (linkedTeamId == null) continue;
+        final rawLinkedTeamId = (row['linked_team_id'] as num?)?.toInt();
 
         final fluitenId = (row['fluiten_task_id'] as num?)?.toInt();
         final tellenId = (row['tellen_task_id'] as num?)?.toInt();
         if (fluitenId != null) taskIds.add(fluitenId);
         if (tellenId != null) taskIds.add(tellenId);
-        linkedTeamIds.add(linkedTeamId);
         matchKeys.add(matchKey);
+
+        int? linkedTeamId = rawLinkedTeamId;
+        if (!allowOpenRefereeTellerSignup) {
+          // Koppel de wedstrijd aan het team waarvoor deze taak echt is toegewezen.
+          final teamFromFluiten = fluitenId == null
+              ? null
+              : (assignedTeamIdsByTaskId[fluitenId]?.toList() ?? <int>[]);
+          teamFromFluiten?.sort();
+          final teamFromTellen = tellenId == null
+              ? null
+              : (assignedTeamIdsByTaskId[tellenId]?.toList() ?? <int>[]);
+          teamFromTellen?.sort();
+          if (teamFromFluiten != null && teamFromFluiten.isNotEmpty) {
+            linkedTeamId = teamFromFluiten.first;
+          } else if (teamFromTellen != null && teamFromTellen.isNotEmpty) {
+            linkedTeamId = teamFromTellen.first;
+          }
+        }
+        if (linkedTeamId == null) continue;
+        linkedTeamIds.add(linkedTeamId);
 
         matches.add(
           _LinkedMatchTasks(
@@ -277,6 +316,24 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
           ),
         );
       }
+
+      // Alleen taken tonen waarop dit profiel mag inschrijven:
+      // - S/T commissie: alle gekoppelde fluit/tel taken
+      // - Overig: alleen taken die aan (een van) mijn teams zijn toegewezen
+      Set<int> assignableTaskIds;
+      if (allowOpenRefereeTellerSignup) {
+        assignableTaskIds = {...taskIds};
+      } else {
+        assignableTaskIds = assignedTeamIdsByTaskId.keys.toSet();
+      }
+
+      final visibleMatches = matches.where((m) {
+        final canFluiten = m.fluitenTaskId != null &&
+            assignableTaskIds.contains(m.fluitenTaskId);
+        final canTellen = m.tellenTaskId != null &&
+            assignableTaskIds.contains(m.tellenTaskId);
+        return canFluiten || canTellen;
+      }).toList();
 
       // My signups (only need signed/unsigned state)
       final signedUp = <int>{};
@@ -312,8 +369,9 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
 
       if (!mounted) return;
       setState(() {
-        _matches = matches;
+        _matches = visibleMatches;
         _signedUpTaskIds = signedUp;
+        _assignableTaskIds = assignableTaskIds;
         _teamNameById = teamNameById;
         _signupNamesByTaskId = signupNamesByTaskId;
         _myDisplayName = myDisplayName;
@@ -756,39 +814,43 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
                     style: const TextStyle(color: AppColors.textSecondary),
                   ),
                   const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _TaskSignupButton(
-                          label: 'Fluiten',
-                          taskId: m.fluitenTaskId,
-                          signedUp: m.fluitenTaskId != null &&
-                              _signedUpTaskIds.contains(m.fluitenTaskId),
-                          onToggle: m.fluitenTaskId == null
-                              ? null
-                              : () => _toggleSignup(m.fluitenTaskId!),
-                          subtitle: m.fluitenTaskId == null
-                              ? null
-                              : 'Aangemeld: ${_formatNames(_signupNamesByTaskId[m.fluitenTaskId!] ?? const [])}',
+                  (() {
+                    final canFluiten = m.fluitenTaskId != null &&
+                        _assignableTaskIds.contains(m.fluitenTaskId);
+                    final canTellen = m.tellenTaskId != null &&
+                        _assignableTaskIds.contains(m.tellenTaskId);
+
+                    final buttons = <Widget>[
+                      if (canFluiten)
+                        Expanded(
+                          child: _TaskSignupButton(
+                            label: 'Fluiten',
+                            taskId: m.fluitenTaskId,
+                            signedUp: m.fluitenTaskId != null &&
+                                _signedUpTaskIds.contains(m.fluitenTaskId),
+                            onToggle: () => _toggleSignup(m.fluitenTaskId!),
+                            subtitle:
+                                'Aangemeld: ${_formatNames(_signupNamesByTaskId[m.fluitenTaskId!] ?? const [])}',
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: _TaskSignupButton(
-                          label: 'Tellen',
-                          taskId: m.tellenTaskId,
-                          signedUp: m.tellenTaskId != null &&
-                              _signedUpTaskIds.contains(m.tellenTaskId),
-                          onToggle: m.tellenTaskId == null
-                              ? null
-                              : () => _toggleSignup(m.tellenTaskId!),
-                          subtitle: m.tellenTaskId == null
-                              ? null
-                              : 'Aangemeld: ${_formatNames(_signupNamesByTaskId[m.tellenTaskId!] ?? const [])}',
+                      if (canFluiten && canTellen) const SizedBox(width: 10),
+                      if (canTellen)
+                        Expanded(
+                          child: _TaskSignupButton(
+                            label: 'Tellen',
+                            taskId: m.tellenTaskId,
+                            signedUp: m.tellenTaskId != null &&
+                                _signedUpTaskIds.contains(m.tellenTaskId),
+                            onToggle: () => _toggleSignup(m.tellenTaskId!),
+                            subtitle:
+                                'Aangemeld: ${_formatNames(_signupNamesByTaskId[m.tellenTaskId!] ?? const [])}',
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
+                    ];
+
+                    if (buttons.isEmpty) return const SizedBox.shrink();
+                    return Row(children: buttons);
+                  })(),
                 ],
               ),
             ),

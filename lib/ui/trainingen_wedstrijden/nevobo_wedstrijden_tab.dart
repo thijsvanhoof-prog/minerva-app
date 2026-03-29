@@ -1275,10 +1275,23 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           children: _teams.map((team) {
             final selected = _selectedTeamCodes.contains(team.code);
             return FilterChip(
-              label: Text(NevoboApi.displayTeamCode(team.code)),
+              label: Text(
+                NevoboApi.displayTeamCode(team.code),
+                style: TextStyle(
+                  color: selected ? AppColors.primary : AppColors.background,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
               selected: selected,
               onSelected: (_) => _toggleTeamSelection(team.code),
-              selectedColor: AppColors.primary.withValues(alpha: 0.35),
+              backgroundColor: AppColors.darkBlue,
+              selectedColor: AppColors.darkBlue,
+              side: BorderSide(
+                color: selected
+                    ? AppColors.primary.withValues(alpha: 0.95)
+                    : AppColors.darkBlue,
+                width: selected ? 1.6 : 1.0,
+              ),
               checkmarkColor: AppColors.primary,
             );
           }).toList(),

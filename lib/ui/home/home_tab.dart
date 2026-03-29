@@ -1,10 +1,9 @@
-import 'dart:convert' show base64Decode, base64Encode;
+import 'dart:convert' show base64Decode;
 
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
-import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
@@ -15,7 +14,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/data/mock_home_data.dart';
 import 'package:minerva_app/models/news_item.dart';
-import 'package:minerva_app/utils/news_storage_upload.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/notifications/notification_service.dart';
@@ -45,6 +43,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
 
   late TabController _tabController;
   late TabController _wedstrijdenSubTabController;
+  late TabController _agendaSubTabController;
 
   bool _loadingHighlights = true;
   String? _highlightsError;
@@ -164,6 +163,20 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       if (!mounted) return;
       setState(() {});
     });
+    _agendaSubTabController = TabController(length: 2, vsync: this);
+    _agendaSubTabController.addListener(() {
+      if (!mounted) return;
+      final next = _agendaSubTabController.index;
+      if (_agendaMode != next) {
+        setState(() => _agendaMode = next);
+      } else {
+        setState(() {});
+      }
+      if (next == 1) {
+        // ignore: unawaited_futures
+        _loadAgendaRsvps();
+      }
+    });
   }
 
   int _contentIndexForSelectedTab(int selectedIndex) {
@@ -200,6 +213,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
         widget.showOnlyHighlightsAndNews) {
       _tabController.dispose();
       _wedstrijdenSubTabController.dispose();
+      _agendaSubTabController.dispose();
       _initTabController();
     }
   }
@@ -208,6 +222,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   void dispose() {
     _tabController.dispose();
     _wedstrijdenSubTabController.dispose();
+    _agendaSubTabController.dispose();
     super.dispose();
   }
 
@@ -1043,6 +1058,22 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   }
 
   Widget _buildAgendaRsvpsView({required bool canExportRsvps}) {
+    final ctx = AppUserContext.of(context);
+    final hidePastForCommitteeViews =
+        !ctx.hasFullAdminRights &&
+        !ctx.isInBestuur &&
+        (ctx.isInCommunicatie || ctx.isInEvenementen || ctx.isInJeugdcommissie);
+    final now = DateTime.now();
+    bool isOngoingOrUpcoming(_AgendaItem a) {
+      final until = (a.endDatetime ?? a.startDatetime)?.toLocal();
+      if (until == null) return true;
+      return !until.isBefore(now);
+    }
+    final rsvpItems = _agendaItems
+        .where((a) => a.canRsvp)
+        .where((a) => !hidePastForCommitteeViews || isOngoingOrUpcoming(a))
+        .toList();
+
     return RefreshIndicator(
       color: AppColors.primary,
       onRefresh: _loadAgendaRsvps,
@@ -1075,13 +1106,13 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
               style: const TextStyle(color: AppColors.error),
             )
           else ...[
-            if (_agendaItems.where((a) => a.canRsvp).isEmpty)
+            if (rsvpItems.isEmpty)
               const Text(
                 'Geen agenda-items met aanmeldingen.',
                 style: TextStyle(color: AppColors.textSecondary),
               )
             else
-              ..._agendaItems.where((a) => a.canRsvp).map((a) {
+              ...rsvpItems.map((a) {
                 final id = a.id ?? -1;
                 final signups = _rsvpsByAgendaId[id] ?? const [];
                 final secondaryStyle = Theme.of(
@@ -1905,76 +1936,6 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     }
   }
 
-  /// Foto uit album: op telefoon/desktop upload naar Supabase Storage; op web base64 in DB.
-  /// Vereist bucket 'news-images' in Supabase (zie storage_news_images.sql).
-  Future<String?> _pickImageFromGallery() async {
-    try {
-      final picker = ImagePicker();
-      final xFile = await picker.pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 1200,
-        imageQuality: 82,
-      );
-      if (xFile == null) return null;
-      final bytes = await xFile.readAsBytes();
-      if (bytes.isEmpty) {
-        if (mounted) {
-          showTopMessage(
-            context,
-            'Foto is leeg of kon niet worden gelezen.',
-            isError: true,
-          );
-        }
-        return null;
-      }
-      final ext = xFile.path.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
-      final path =
-          'news/${DateTime.now().millisecondsSinceEpoch}_${bytes.length % 1000000}.$ext';
-
-      if (kIsWeb) {
-        // Web: geen dart:io File; bewaar als base64 (kleine afbeeldingen).
-        final mime = ext == 'png' ? 'image/png' : 'image/jpeg';
-        final b64 = base64Encode(bytes);
-        return 'data:$mime;base64,$b64';
-      }
-
-      final url = await uploadNewsImageToStorage(
-        _client,
-        path,
-        xFile.path,
-      );
-      return url;
-    } on StorageException catch (e) {
-      if (mounted) {
-        final msg = e.message.toLowerCase();
-        if (msg.contains('bucket') ||
-            msg.contains('not found') ||
-            msg.contains('404')) {
-          showTopMessage(
-            context,
-            'Storage-bucket ontbreekt. Maak in Supabase → Storage een bucket "news-images" aan (public) en voer storage_news_images.sql uit.',
-            isError: true,
-          );
-        } else {
-          showTopMessage(
-            context,
-            'Upload mislukt: ${e.message}',
-            isError: true,
-          );
-        }
-      }
-      return null;
-    } catch (e) {
-      if (mounted) {
-        final msg = kIsWeb
-            ? 'Foto kon niet worden geladen. Kies een afbeeldingsbestand (jpg, png).'
-            : 'Foto kon niet worden geladen: $e';
-        showTopMessage(context, msg, isError: true);
-      }
-      return null;
-    }
-  }
-
   /// Bouwt een Image-widget voor een URL of data-URL (base64); alleen weergave in de app.
   Widget _buildNewsImage(
     String urlOrDataUrl, {
@@ -2085,11 +2046,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
 
     final titleController = TextEditingController();
     final descriptionController = TextEditingController();
-    final imageUrlController = TextEditingController();
     final linkUrlController = TextEditingController();
     final linkLabelController = TextEditingController();
     DateTime? visibleUntil;
-    List<String> imageUrls = [];
     List<NewsLink> links = [];
 
     final ok = await showDialog<bool>(
@@ -2121,97 +2080,6 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
               ),
               const SizedBox(height: 16),
               const Text(
-                'Foto\'s',
-                style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.onBackground,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: imageUrlController,
-                      decoration: const InputDecoration(
-                        hintText: 'URL van een afbeelding',
-                        isDense: true,
-                      ),
-                      onSubmitted: (_) {
-                        final u = imageUrlController.text.trim();
-                        if (u.isEmpty) return;
-                        setLocalState(() {
-                          imageUrls = [...imageUrls, u];
-                          imageUrlController.clear();
-                        });
-                      },
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.add_circle_outline),
-                    onPressed: () {
-                      final u = imageUrlController.text.trim();
-                      if (u.isEmpty) return;
-                      setLocalState(() {
-                        imageUrls = [...imageUrls, u];
-                        imageUrlController.clear();
-                      });
-                    },
-                    tooltip: 'URL toevoegen',
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.photo_library),
-                    onPressed: () async {
-                      final url = await _pickImageFromGallery();
-                      if (url == null) return;
-                      final update = setLocalState;
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        update(() {
-                          imageUrls = [...imageUrls, url];
-                        });
-                      });
-                    },
-                    tooltip: 'Foto uit album',
-                  ),
-                ],
-              ),
-              ...imageUrls.asMap().entries.map((entry) {
-                    final i = entry.key;
-                    final url = entry.value;
-                    final label = url.startsWith('data:')
-                        ? 'Foto ${i + 1} (uit album)'
-                        : url;
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              label,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.textSecondary,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.close, size: 20),
-                            onPressed: () {
-                              setLocalState(() {
-                                imageUrls =
-                                    imageUrls.where((e) => e != url).toList();
-                              });
-                            },
-                            tooltip: 'Verwijderen',
-                          ),
-                        ],
-                      ),
-                    );
-                  }),
-              const SizedBox(height: 16),
-              const Text(
                 'Links',
                 style: TextStyle(
                   fontWeight: FontWeight.w700,
@@ -2342,7 +2210,6 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       titleController.dispose();
       descriptionController.dispose();
-      imageUrlController.dispose();
       linkUrlController.dispose();
       linkLabelController.dispose();
     });
@@ -2359,7 +2226,6 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
         'author': authorName,
         'category': 'bestuur',
         'visible_until': visibleUntil?.toUtc().toIso8601String(),
-        'image_urls': imageUrls,
         'links': links
             .map((e) => {'url': e.url, 'label': e.label ?? ''})
             .toList(),
@@ -2371,10 +2237,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
         if (e.code == 'PGRST204' ||
             (e.message.contains("Could not find the '") &&
                 e.message.contains("column"))) {
-          final hadMedia = imageUrls.isNotEmpty || links.isNotEmpty;
+          final hadMedia = links.isNotEmpty;
           final fallback = {...payload, 'source': 'app'}
             ..remove('visible_until')
-            ..remove('image_urls')
             ..remove('links');
           try {
             await _client.from('home_news').insert(fallback);
@@ -2405,7 +2270,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       if (usedFallbackWithoutMedia) {
         showTopMessage(
           context,
-          'Nieuwsbericht opgeslagen. Foto\'s en linkjes zijn niet opgeslagen: '
+          'Nieuwsbericht opgeslagen. Linkjes zijn niet opgeslagen: '
           'voer in Supabase → SQL Editor het script home_news_photos_links.sql uit.',
           isError: true,
         );
@@ -2414,20 +2279,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       }
     } catch (e) {
       if (!mounted) return;
-      final msg = e.toString().toLowerCase();
-      final isTooLarge = msg.contains('payload') ||
-          msg.contains('too large') ||
-          msg.contains('entity too large') ||
-          msg.contains('size');
-      if (isTooLarge && imageUrls.isNotEmpty) {
-        showTopMessage(
-          context,
-          'De foto(\'s) zijn te groot om op te slaan. Kies kleinere afbeeldingen of voeg een link toe.',
-          isError: true,
-        );
-      } else {
-        showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
-      }
+      showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
     }
   }
 
@@ -2447,11 +2299,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
 
     final titleController = TextEditingController(text: existing.title);
     final descriptionController = TextEditingController(text: existing.body);
-    final imageUrlController = TextEditingController();
     final linkUrlController = TextEditingController();
     final linkLabelController = TextEditingController();
     DateTime? visibleUntil = existing.visibleUntil;
-    List<String> imageUrls = List<String>.from(existing.imageUrls);
     List<NewsLink> links = List<NewsLink>.from(existing.links);
 
     final ok = await showDialog<bool>(
@@ -2483,97 +2333,6 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
               ),
               const SizedBox(height: 16),
               const Text(
-                'Foto\'s',
-                style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.onBackground,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: imageUrlController,
-                      decoration: const InputDecoration(
-                        hintText: 'URL van een afbeelding',
-                        isDense: true,
-                      ),
-                      onSubmitted: (_) {
-                        final u = imageUrlController.text.trim();
-                        if (u.isEmpty) return;
-                        setLocalState(() {
-                          imageUrls = [...imageUrls, u];
-                          imageUrlController.clear();
-                        });
-                      },
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.add_circle_outline),
-                    onPressed: () {
-                      final u = imageUrlController.text.trim();
-                      if (u.isEmpty) return;
-                      setLocalState(() {
-                        imageUrls = [...imageUrls, u];
-                        imageUrlController.clear();
-                      });
-                    },
-                    tooltip: 'URL toevoegen',
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.photo_library),
-                    onPressed: () async {
-                      final url = await _pickImageFromGallery();
-                      if (url == null) return;
-                      final update = setLocalState;
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        update(() {
-                          imageUrls = [...imageUrls, url];
-                        });
-                      });
-                    },
-                    tooltip: 'Foto uit album',
-                  ),
-                ],
-              ),
-              ...imageUrls.asMap().entries.map((entry) {
-                    final i = entry.key;
-                    final url = entry.value;
-                    final label = url.startsWith('data:')
-                        ? 'Foto ${i + 1} (uit album)'
-                        : url;
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              label,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.textSecondary,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.close, size: 20),
-                            onPressed: () {
-                              setLocalState(() {
-                                imageUrls =
-                                    imageUrls.where((e) => e != url).toList();
-                              });
-                            },
-                            tooltip: 'Verwijderen',
-                          ),
-                        ],
-                      ),
-                    );
-                  }),
-              const SizedBox(height: 16),
-              const Text(
                 'Links',
                 style: TextStyle(
                   fontWeight: FontWeight.w700,
@@ -2704,7 +2463,6 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       titleController.dispose();
       descriptionController.dispose();
-      imageUrlController.dispose();
       linkUrlController.dispose();
       linkLabelController.dispose();
     });
@@ -2721,7 +2479,6 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
         'author': authorName,
         'category': existing.category.label.toLowerCase(),
         'visible_until': visibleUntil?.toUtc().toIso8601String(),
-        'image_urls': imageUrls,
         'links': links
             .map((e) => {'url': e.url, 'label': e.label ?? ''})
             .toList(),
@@ -2736,10 +2493,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
         if (e.code == 'PGRST204' ||
             (e.message.contains("Could not find the '") &&
                 e.message.contains("column"))) {
-          final hadMedia = imageUrls.isNotEmpty || links.isNotEmpty;
+          final hadMedia = links.isNotEmpty;
           final fallback = {...payload, 'source': 'app'}
             ..remove('visible_until')
-            ..remove('image_urls')
             ..remove('links');
           try {
             await _client
@@ -2769,7 +2525,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       if (usedFallbackWithoutMedia) {
         showTopMessage(
           context,
-          'Nieuwsbericht opgeslagen. Foto\'s en linkjes zijn niet opgeslagen: '
+          'Nieuwsbericht opgeslagen. Linkjes zijn niet opgeslagen: '
           'voer in Supabase → SQL Editor het script home_news_photos_links.sql uit.',
           isError: true,
         );
@@ -2778,20 +2534,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       }
     } catch (e) {
       if (!mounted) return;
-      final msg = e.toString().toLowerCase();
-      final isTooLarge = msg.contains('payload') ||
-          msg.contains('too large') ||
-          msg.contains('entity too large') ||
-          msg.contains('size');
-      if (isTooLarge && imageUrls.isNotEmpty) {
-        showTopMessage(
-          context,
-          'De foto(\'s) zijn te groot om op te slaan. Kies kleinere afbeeldingen of voeg een link toe.',
-          isError: true,
-        );
-      } else {
-        showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
-      }
+      showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
     }
   }
 
@@ -4145,29 +3888,15 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
             ),
             Padding(
               padding: AppColors.tabContentPadding,
-              child: GlassCard(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                showBorder: false,
-                showShadow: false,
-                child: TabBar(
-                  controller: _tabController,
-                  dividerColor: Colors.transparent,
-                  indicator: BoxDecoration(
-                    color: AppColors.darkBlue,
-                    borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                  ),
-                  indicatorSize: TabBarIndicatorSize.tab,
-                  tabs: widget.showOnlyHighlightsAndNews
-                      ? const [Tab(text: 'Nieuws'), Tab(text: 'Wedstrijden')]
-                      : const [
-                          Tab(text: 'Nieuws'),
-                          Tab(text: 'Agenda'),
-                          Tab(text: 'Wedstrijden'),
-                        ],
-                ),
+              child: _HomeTabSwitcher(
+                controller: _tabController,
+                tabs: widget.showOnlyHighlightsAndNews
+                    ? const [Tab(text: 'Nieuws'), Tab(text: 'Wedstrijden')]
+                    : const [
+                        Tab(text: 'Nieuws'),
+                        Tab(text: 'Agenda'),
+                        Tab(text: 'Wedstrijden'),
+                      ],
               ),
             ),
             Expanded(
@@ -4180,31 +3909,14 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                     children: [
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                        child: GlassCard(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
-                          ),
-                          showBorder: false,
-                          showShadow: false,
-                          child: TabBar(
-                            controller: _wedstrijdenSubTabController,
-                            isScrollable: true,
-                            tabAlignment: TabAlignment.center,
-                            dividerColor: Colors.transparent,
-                            indicator: BoxDecoration(
-                              color: AppColors.primary.withValues(alpha: 0.35),
-                              borderRadius:
-                                  BorderRadius.circular(AppColors.cardRadius),
-                            ),
-                            indicatorSize: TabBarIndicatorSize.tab,
-                            labelColor: AppColors.onBackground,
-                            unselectedLabelColor: AppColors.textSecondary,
-                            tabs: const [
-                              Tab(text: 'Aankomende wedstrijden'),
-                              Tab(text: 'Standen'),
-                            ],
-                          ),
+                        child: _HomeTabSwitcher(
+                          controller: _wedstrijdenSubTabController,
+                          isScrollable: true,
+                          tabAlignment: TabAlignment.center,
+                          tabs: const [
+                            Tab(text: 'Aankomende wedstrijden'),
+                            Tab(text: 'Standen'),
+                          ],
                         ),
                       ),
                       Expanded(
@@ -4354,32 +4066,12 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                         if (canViewAgendaRsvps)
                           Padding(
                             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                            child: GlassCard(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 6,
-                              ),
-                              child: SegmentedButton<int>(
-                                segments: const [
-                                  ButtonSegment(
-                                    value: 0,
-                                    label: Text('Agenda'),
-                                  ),
-                                  ButtonSegment(
-                                    value: 1,
-                                    label: Text('Aanmeldingen'),
-                                  ),
-                                ],
-                                selected: {_agendaMode},
-                                onSelectionChanged: (set) {
-                                  final next = set.first;
-                                  setState(() => _agendaMode = next);
-                                  if (next == 1) {
-                                    // ignore: unawaited_futures
-                                    _loadAgendaRsvps();
-                                  }
-                                },
-                              ),
+                            child: _HomeTabSwitcher(
+                              controller: _agendaSubTabController,
+                              tabs: const [
+                                Tab(text: 'Agenda'),
+                                Tab(text: 'Aanmeldingen'),
+                              ],
                             ),
                           ),
                         Expanded(
@@ -4487,6 +4179,46 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
 }
 
 /* ----------------------- SECTIE-TITEL ----------------------- */
+
+class _HomeTabSwitcher extends StatelessWidget {
+  final TabController controller;
+  final List<Widget> tabs;
+  final bool isScrollable;
+  final TabAlignment? tabAlignment;
+
+  const _HomeTabSwitcher({
+    required this.controller,
+    required this.tabs,
+    this.isScrollable = false,
+    this.tabAlignment,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassCard(
+      padding: const EdgeInsets.symmetric(
+        horizontal: 10,
+        vertical: 6,
+      ),
+      showBorder: false,
+      showShadow: false,
+      child: TabBar(
+        controller: controller,
+        isScrollable: isScrollable,
+        tabAlignment: tabAlignment,
+        dividerColor: Colors.transparent,
+        indicator: BoxDecoration(
+          color: AppColors.darkBlue,
+          borderRadius: BorderRadius.circular(AppColors.cardRadius),
+        ),
+        indicatorSize: TabBarIndicatorSize.tab,
+        labelColor: AppColors.primary,
+        unselectedLabelColor: AppColors.textSecondary,
+        tabs: tabs,
+      ),
+    );
+  }
+}
 
 class _HomeTabHeader extends StatelessWidget {
   final String title;

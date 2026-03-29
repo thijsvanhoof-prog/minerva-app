@@ -72,7 +72,6 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
   List<String> _teamCodesForMemberships(
     List<({NevoboTeam team, int? teamId})> withIds,
     List<TeamMembership> memberships,
-    AppUserContext userContext,
   ) {
     final teamIds = memberships.map((m) => m.teamId).toSet();
     final codes = withIds
@@ -101,17 +100,47 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
   @override
   Widget build(BuildContext context) {
     final userContext = AppUserContext.of(context);
+    final isAdmin = userContext.hasFullAdminRights;
     final allMemberships = widget.manageableTeams;
     final playerTeams = _playerTeams(allMemberships);
     final trainerTeams = _trainerTeams(allMemberships);
-    final hasTrainerRole = trainerTeams.isNotEmpty;
+    final hasTrainerRole = trainerTeams.isNotEmpty || isAdmin;
 
     return FutureBuilder<List<({NevoboTeam team, int? teamId})>>(
       future: _teamsWithIdsFuture,
       builder: (context, snapshot) {
         final withIds = snapshot.data ?? const [];
-        final playerTeamCodes = _teamCodesForMemberships(withIds, playerTeams, userContext);
-        final trainerTeamCodes = _teamCodesForMemberships(withIds, trainerTeams, userContext);
+        final adminAllTeams = withIds
+            .where((e) => e.teamId != null)
+            .map(
+              (e) => TeamMembership(
+                teamId: e.teamId!,
+                role: 'admin',
+                teamName: 'Minerva ${NevoboApi.displayTeamCode(e.team.code)}',
+                nevoboCode: e.team.code,
+              ),
+            )
+            .toList()
+          ..sort(
+            (a, b) => NevoboApi.compareTeamCodes(
+              a.nevoboCode ?? NevoboApi.extractCodeFromTeamName(a.teamName) ?? '',
+              b.nevoboCode ?? NevoboApi.extractCodeFromTeamName(b.teamName) ?? '',
+            ),
+          );
+        final trainingPlayerTeams = isAdmin ? adminAllTeams : playerTeams;
+        final trainingTrainerTeams = isAdmin ? adminAllTeams : trainerTeams;
+        final allTeamCodes = withIds
+            .map((e) => e.team.code.trim().toUpperCase())
+            .where((c) => c.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort(NevoboApi.compareTeamCodes);
+        final playerTeamCodes = isAdmin
+            ? allTeamCodes
+            : _teamCodesForMemberships(withIds, playerTeams);
+        final trainerTeamCodes = isAdmin
+            ? allTeamCodes
+            : _teamCodesForMemberships(withIds, trainerTeams);
 
         return Scaffold(
           backgroundColor: Colors.transparent,
@@ -146,6 +175,8 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                         borderRadius: BorderRadius.circular(AppColors.cardRadius),
                       ),
                       indicatorSize: TabBarIndicatorSize.tab,
+                      labelColor: AppColors.primary,
+                      unselectedLabelColor: AppColors.textSecondary,
                       tabs: const [
                         Tab(text: 'Trainingen'),
                         Tab(text: 'Wedstrijden'),
@@ -167,11 +198,11 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                         tabAlignment: TabAlignment.center,
                         dividerColor: Colors.transparent,
                         indicator: BoxDecoration(
-                          color: AppColors.primary.withValues(alpha: 0.35),
+                          color: AppColors.darkBlue,
                           borderRadius: BorderRadius.circular(AppColors.cardRadius),
                         ),
                         indicatorSize: TabBarIndicatorSize.tab,
-                        labelColor: AppColors.onBackground,
+                        labelColor: AppColors.primary,
                         unselectedLabelColor: AppColors.textSecondary,
                         tabs: const [
                           Tab(text: 'Spelers'),
@@ -187,9 +218,8 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                       // Trainingen
                       _buildTrainingenContent(
                         hasTrainerRole: hasTrainerRole,
-                        playerTeams: playerTeams,
-                        trainerTeams: trainerTeams,
-                        isAdmin: userContext.hasFullAdminRights,
+                        playerTeams: trainingPlayerTeams,
+                        trainerTeams: trainingTrainerTeams,
                       ),
                       // Wedstrijden
                       _buildWedstrijdenContent(
@@ -212,17 +242,14 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
     required bool hasTrainerRole,
     required List<TeamMembership> playerTeams,
     required List<TeamMembership> trainerTeams,
-    required bool isAdmin,
   }) {
     if (!hasTrainerRole) {
       return TrainingsTab(manageableTeams: playerTeams);
     }
-    // Admin ziet in Spelers-tab ook alle teams (zelfde als Trainers).
-    final spelersTeams = isAdmin ? trainerTeams : playerTeams;
     return IndexedStack(
       index: _subTabController.index,
       children: [
-        TrainingsTab(manageableTeams: spelersTeams),
+        TrainingsTab(manageableTeams: playerTeams),
         TrainingsTab(manageableTeams: trainerTeams),
       ],
     );

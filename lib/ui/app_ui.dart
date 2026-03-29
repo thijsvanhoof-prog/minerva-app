@@ -158,11 +158,12 @@ class AppUI {
         ),
       ),
 
-      tabBarTheme: const TabBarThemeData(
+      tabBarTheme: TabBarThemeData(
         labelColor: AppColors.primary,
         unselectedLabelColor: AppColors.textSecondary,
-        labelStyle: TextStyle(fontWeight: FontWeight.w800),
+        labelStyle: const TextStyle(fontWeight: FontWeight.w800),
         dividerColor: Colors.transparent,
+        splashBorderRadius: BorderRadius.circular(AppColors.cardRadius),
       ),
 
       segmentedButtonTheme: SegmentedButtonThemeData(

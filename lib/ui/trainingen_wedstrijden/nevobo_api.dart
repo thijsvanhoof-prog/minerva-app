@@ -108,7 +108,7 @@ class NevoboApi {
   }
 
   /// Custom team ordering for the app:
-  /// dames -> heren -> recreanten -> meiden A -> jongens A -> meiden B -> jongens B -> meiden C -> jongens C.
+  /// dames -> heren -> recreanten -> A-jeugd -> B-jeugd -> C-jeugd -> volleystars.
   ///
   /// Sorts within each group by team number (ascending).
   static int compareTeamCodes(String a, String b) {
@@ -158,12 +158,10 @@ class NevoboApi {
       'HS' => 1, // heren
       'MR' => 2, // recreanten/mix
       'XR' => 2, // display alias for recreanten/mix
-      'MA' => 3, // meiden A
-      'JA' => 4, // jongens A
-      'MB' => 5, // meiden B
-      'JB' => 6, // jongens B
-      'MC' => 7, // meiden C
-      'JC' => 8, // jongens C
+      'MA' || 'JA' => 3, // A-jeugd
+      'MB' || 'JB' => 4, // B-jeugd
+      'MC' || 'JC' => 5, // C-jeugd
+      'VS' || 'CM' || 'CMV' => 6, // Volleystars / CMV
       _ => 99,
     };
     return (group, number);

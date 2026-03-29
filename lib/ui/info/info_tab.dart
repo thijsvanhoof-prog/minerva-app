@@ -32,6 +32,7 @@ class _InfoTabState extends State<InfoTab> {
   }
 
   Future<void> _loadCommittees() async {
+    if (!mounted) return;
     setState(() {
       _loadingCommittees = true;
       _committeeError = null;
@@ -68,6 +69,7 @@ class _InfoTabState extends State<InfoTab> {
       }
 
       if (rows.isEmpty) {
+        if (!mounted) return;
         setState(() {
           _loadingCommittees = false;
         });
@@ -152,12 +154,29 @@ class _InfoTabState extends State<InfoTab> {
         _membersByCommittee[k] = members;
       }
 
+      const visibleOrder = <String>[
+        'bestuur',
+        'communicatie',
+        'technische-commissie',
+        'wedstrijdzaken',
+        'jeugd',
+      ];
+      final indexByKey = <String, int>{
+        for (var i = 0; i < visibleOrder.length; i++) visibleOrder[i]: i,
+      };
+      list.removeWhere((k) => !indexByKey.containsKey(k));
+      list.sort(
+        (a, b) => (indexByKey[a] ?? 999).compareTo(indexByKey[b] ?? 999),
+      );
+
+      if (!mounted) return;
       setState(() {
         _committees.addAll(list);
         _committeeDisplayName.addAll(committeeDisplayNames);
         _loadingCommittees = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _committeeError = e.toString();
         _loadingCommittees = false;
@@ -231,6 +250,18 @@ class _InfoTabState extends State<InfoTab> {
   }
 
   String _committeeLabel(String key) {
+    switch (key) {
+      case 'bestuur':
+        return 'Bestuur';
+      case 'communicatie':
+        return 'Communicatie';
+      case 'technische-commissie':
+        return 'Technische Commissie';
+      case 'wedstrijdzaken':
+        return 'Wedstrijdzaken';
+      case 'jeugd':
+        return 'Jeugdcommissie';
+    }
     final raw = _committeeDisplayName[key] ?? key;
     return raw
         .split(' ')

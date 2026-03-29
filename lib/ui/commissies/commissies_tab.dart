@@ -317,6 +317,8 @@ class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
                     borderRadius: BorderRadius.circular(AppColors.cardRadius),
                   ),
                   indicatorSize: TabBarIndicatorSize.tab,
+                  labelColor: AppColors.primary,
+                  unselectedLabelColor: AppColors.textSecondary,
                   tabs: widget.committees
                       .map((c) => Tab(text: CommissiesTab._formatTabLabel(c)))
                       .toList(),
@@ -509,6 +511,20 @@ class _CommitteeAgendaRsvpsViewState extends State<_CommitteeAgendaRsvpsView> {
   List<Map<String, dynamic>> _agendaRows = const [];
   Map<int, List<String>> _namesByAgendaId = const {};
 
+  DateTime? _parseAgendaStart(Map<String, dynamic> row) {
+    final rawStart = row['start_datetime'];
+    if (rawStart is DateTime) return rawStart.toLocal();
+    final startParsed = DateTime.tryParse((rawStart ?? '').toString());
+    if (startParsed != null) return startParsed.toLocal();
+
+    final eventDate = (row['event_date'] ?? '').toString().trim();
+    if (eventDate.isEmpty) return null;
+    final eventTime = (row['event_time'] ?? '').toString().trim();
+    final normalizedTime = eventTime.isEmpty ? '23:59:59' : eventTime;
+    final parsed = DateTime.tryParse('$eventDate $normalizedTime');
+    return parsed?.toLocal();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -533,7 +549,15 @@ class _CommitteeAgendaRsvpsViewState extends State<_CommitteeAgendaRsvpsView> {
           .from('home_agenda')
           .select('agenda_id, title, start_datetime, event_date, event_time')
           .order('start_datetime', ascending: true);
-      final agendaRows = (aRes as List<dynamic>).cast<Map<String, dynamic>>();
+      final now = DateTime.now();
+      final agendaRows = (aRes as List<dynamic>)
+          .cast<Map<String, dynamic>>()
+          .where((row) {
+            final start = _parseAgendaStart(row);
+            // Onbekende datum niet verbergen; alleen verlopen items filteren.
+            return start == null || !start.isBefore(now);
+          })
+          .toList();
 
       final sRes = await _client
           .from('home_agenda_rsvps')
@@ -607,7 +631,23 @@ class _CommitteeAgendaRsvpsViewState extends State<_CommitteeAgendaRsvpsView> {
     return RefreshIndicator(
       color: AppColors.primary,
       onRefresh: _load,
-      child: ListView.separated(
+      child: _agendaRows.isEmpty
+          ? ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: EdgeInsets.fromLTRB(
+                16,
+                12,
+                16,
+                16 + MediaQuery.paddingOf(context).bottom,
+              ),
+              children: const [
+                Text(
+                  'Geen aankomende activiteiten met aanmeldingen.',
+                  style: TextStyle(color: AppColors.textSecondary),
+                ),
+              ],
+            )
+          : ListView.separated(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: EdgeInsets.fromLTRB(16, 12, 16, 16 + MediaQuery.paddingOf(context).bottom),
         itemCount: _agendaRows.length,

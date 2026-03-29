@@ -8,6 +8,7 @@ import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart'; // TeamMembership
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/trainingen_wedstrijden/add_training_page.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 /// playing = speler, coach = trainer/coach, nietSpelend = aanwezig maar niet spelend, afgemeld = afgemeld.
 enum AttendanceStatus { playing, coach, nietSpelend, afgemeld }
@@ -57,7 +58,19 @@ class _TrainingsTabState extends State<TrainingsTab> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Gebruik de doorgegeven teams (Spelers- of Trainers-tab), niet alle memberships.
-    final next = widget.manageableTeams.map((m) => m.teamId).toSet().toList()..sort();
+    final byTeamId = <int, TeamMembership>{};
+    for (final m in widget.manageableTeams) {
+      byTeamId.putIfAbsent(m.teamId, () => m);
+    }
+    final ordered = byTeamId.entries.toList()
+      ..sort(
+        (a, b) => NevoboApi.compareTeamNames(
+          a.value.teamName,
+          b.value.teamName,
+          volleystarsLast: true,
+        ),
+      );
+    final next = ordered.map((e) => e.key).toList();
     if (_sameIntList(_allowedTeamIds, next)) return;
     _allowedTeamIds = next;
     setState(() {

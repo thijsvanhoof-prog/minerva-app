@@ -78,6 +78,8 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
                     borderRadius: BorderRadius.circular(AppColors.cardRadius),
                   ),
                   indicatorSize: TabBarIndicatorSize.tab,
+                  labelColor: AppColors.primary,
+                  unselectedLabelColor: AppColors.textSecondary,
                   tabs: const [
                     Tab(text: 'Commissies'),
                     Tab(text: 'Trainingen'),
