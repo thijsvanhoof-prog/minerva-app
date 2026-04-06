@@ -8,6 +8,8 @@ import 'package:minerva_app/profiel/ouder_kind_koppel_page.dart';
 import 'package:minerva_app/ui/notifications/notification_settings_page.dart';
 import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
+import 'package:minerva_app/ui/auth/auth_page.dart';
+import 'package:minerva_app/ui/auth/register_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
@@ -40,6 +42,19 @@ class _ProfielTabState extends State<ProfielTab> {
   int _selectedProfileTabIndex = 0;
 
   bool _hasLoadedOnce = false;
+
+  bool _isAnonymousAuthUser(User? user) {
+    if (user == null) return false;
+    final appMeta = user.appMetadata;
+    final userMeta = user.userMetadata ?? const <String, dynamic>{};
+    final provider = (appMeta['provider'] ?? '').toString().toLowerCase();
+    final guestEmail = (dotenv.env['GUEST_EMAIL'] ?? '').trim().toLowerCase();
+    final userEmail = (user.email ?? '').trim().toLowerCase();
+    final isAnonymousFlag = (appMeta['is_anonymous'] == true) ||
+        (userMeta['is_anonymous'] == true);
+    final isGuestEmail = guestEmail.isNotEmpty && userEmail == guestEmail;
+    return isAnonymousFlag || provider == 'anonymous' || isGuestEmail;
+  }
 
   @override
   void initState() {
@@ -941,6 +956,7 @@ class _ProfielTabState extends State<ProfielTab> {
   @override
   Widget build(BuildContext context) {
     final user = _client.auth.currentUser;
+    final showGuestProfile = user == null || _isAnonymousAuthUser(user);
     final email = user?.email ?? 'Onbekend';
     final ctx = AppUserContext.of(context);
     final displayName = ctx.displayName.trim().isNotEmpty ? ctx.displayName.trim() : (user?.email ?? 'Onbekend');
@@ -1005,20 +1021,90 @@ class _ProfielTabState extends State<ProfielTab> {
               const SizedBox(height: 8),
             ],
             Expanded(
-              child: RefreshIndicator(
-                color: AppColors.primary,
-                onRefresh: _reload,
-                child: ListView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  padding: padding,
-                  children: (linkedChildren.isNotEmpty && _selectedProfileTabIndex > 0)
-                      ? _buildKindTabContent(
-                          linkedChildren[_selectedProfileTabIndex - 1],
-                          ctx,
-                        )
-                      : _buildMijnGegevensList(context, displayName, email, roleLabels, ctx),
-                ),
-              ),
+              child: showGuestProfile
+                  ? ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: padding,
+                      children: [
+                        GlassCard(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Nog niet ingelogd',
+                                style: TextStyle(
+                                  color: AppColors.onBackground,
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 18,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              const Text(
+                                'Je gebruikt nu de app als toeschouwer. Log in om toegang te krijgen tot jouw teams, taken en commissies.',
+                                style: TextStyle(
+                                  color: AppColors.textSecondary,
+                                  height: 1.35,
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: ElevatedButton.icon(
+                                      onPressed: () {
+                                        Navigator.of(context).push(
+                                          MaterialPageRoute<void>(
+                                            builder: (_) => const AuthPage(),
+                                          ),
+                                        );
+                                      },
+                                      icon: const Icon(Icons.login),
+                                      label: const Text('Inloggen'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: OutlinedButton.icon(
+                                      onPressed: () {
+                                        Navigator.of(context).push(
+                                          MaterialPageRoute<void>(
+                                            builder: (_) => const RegisterPage(),
+                                          ),
+                                        );
+                                      },
+                                      icon: const Icon(Icons.person_add_alt_1),
+                                      label: const Text('Registreren'),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    )
+                  : RefreshIndicator(
+                      color: AppColors.primary,
+                      onRefresh: _reload,
+                      child: ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: padding,
+                        children: (linkedChildren.isNotEmpty &&
+                                _selectedProfileTabIndex > 0)
+                            ? _buildKindTabContent(
+                                linkedChildren[_selectedProfileTabIndex - 1],
+                                ctx,
+                              )
+                            : _buildMijnGegevensList(
+                                context,
+                                displayName,
+                                email,
+                                roleLabels,
+                                ctx,
+                              ),
+                      ),
+                    ),
             ),
           ],
         ),

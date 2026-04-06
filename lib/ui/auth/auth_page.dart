@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/primary_button.dart';
 import 'package:minerva_app/ui/auth/register_page.dart';
@@ -24,6 +25,12 @@ class _AuthPageState extends State<AuthPage> {
 
   bool _loading = false;
 
+  String get _reservedGuestEmail {
+    final configured = (dotenv.env['GUEST_EMAIL'] ?? '').trim().toLowerCase();
+    if (configured.isNotEmpty) return configured;
+    return 'gast@mail.com';
+  }
+
   @override
   void dispose() {
     _emailCtrl.dispose();
@@ -32,11 +39,20 @@ class _AuthPageState extends State<AuthPage> {
   }
 
   Future<void> _signIn() async {
+    final email = _emailCtrl.text.trim();
+    if (email.toLowerCase() == _reservedGuestEmail) {
+      showTopMessage(
+        context,
+        'Het gastaccount is alleen voor toeschouwer-modus. Log in met je eigen account.',
+        isError: true,
+      );
+      return;
+    }
     setState(() => _loading = true);
 
     try {
       await _client.auth.signInWithPassword(
-        email: _emailCtrl.text.trim(),
+        email: email,
         password: _passCtrl.text,
       );
 

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
@@ -43,6 +44,19 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
   List<TeamMembership> _memberships = const [];
   List<String> _committees = const [];
 
+  bool _isAnonymousAuthUser(User? user) {
+    if (user == null) return false;
+    final appMeta = user.appMetadata;
+    final userMeta = user.userMetadata ?? const <String, dynamic>{};
+    final provider = (appMeta['provider'] ?? '').toString().toLowerCase();
+    final guestEmail = (dotenv.env['GUEST_EMAIL'] ?? '').trim().toLowerCase();
+    final userEmail = (user.email ?? '').trim().toLowerCase();
+    final isAnonymousFlag = (appMeta['is_anonymous'] == true) ||
+        (userMeta['is_anonymous'] == true);
+    final isGuestEmail = guestEmail.isNotEmpty && userEmail == guestEmail;
+    return isAnonymousFlag || provider == 'anonymous' || isGuestEmail;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -78,7 +92,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     setState(() => _loading = true);
 
     final user = _client.auth.currentUser;
-    if (user == null) {
+    if (user == null || _isAnonymousAuthUser(user)) {
       _suppressOuderKindReload = true;
       try {
         _ouderKindNotifier.setViewingAs(null, null);

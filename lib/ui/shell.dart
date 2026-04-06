@@ -1,15 +1,13 @@
 // lib/ui/shell.dart
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
-import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 
 import 'package:minerva_app/ui/home/home_tab.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/trainingen_wedstrijden_tab.dart';
-import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_standen_tab.dart';
 import 'package:minerva_app/ui/tasks/my_tasks_tab.dart';
 import 'package:minerva_app/ui/info/info_tab.dart';
 import 'package:minerva_app/profiel/profiel_tab.dart';
@@ -125,21 +123,17 @@ class _ShellState extends State<Shell> {
         userContext.hasFullAdminRights || hasTeam || hasCommittees;
     // Toeschouwer: geen rol → alleen Uitgelicht, Agenda, Nieuws, Standen, Contact, Profiel
     if (!hasFullAccess) {
+      final isGuestViewer = userContext.profileId.trim().isEmpty;
       return [
         _NavItem(
-          page: const HomeTab(showOnlyHighlightsAndNews: false), // Uitgelicht + Agenda + Nieuws
+          page: HomeTab(
+            // Gastaccount: geen agenda-toegang.
+            showOnlyHighlightsAndNews: isGuestViewer,
+          ),
           destination: NavigationDestination(
             icon: _navIcon(Icons.home_outlined, selected: false),
             selectedIcon: _navIcon(Icons.home, selected: true),
             label: 'Home',
-          ),
-        ),
-        _NavItem(
-          page: const _StandenOnlyPage(),
-          destination: NavigationDestination(
-            icon: _navIcon(Icons.leaderboard_outlined, selected: false),
-            selectedIcon: _navIcon(Icons.leaderboard, selected: true),
-            label: 'Standen',
           ),
         ),
         _NavItem(
@@ -347,34 +341,4 @@ class _NavItem {
     required this.page,
     required this.destination,
   });
-}
-
-/// Alleen standen, voor gebruikers die niet aan een team zijn gekoppeld.
-class _StandenOnlyPage extends StatelessWidget {
-  const _StandenOnlyPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      body: SafeArea(
-        top: false,
-        bottom: false,
-        child: Column(
-          children: [
-            TabPageHeader(
-              child: Text(
-                'Standen',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.w800,
-                    ),
-              ),
-            ),
-            const Expanded(child: NevoboStandenTab()),
-          ],
-        ),
-      ),
-    );
-  }
 }

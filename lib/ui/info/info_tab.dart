@@ -53,15 +53,60 @@ class _InfoTabState extends State<InfoTab> {
       if (rows.isEmpty) {
         // Best-effort: we try a few common column names for "function" inside committee_members.
         for (final select in const [
-          'committee_name, profile_id, function',
-          'committee_name, profile_id, role',
-          'committee_name, profile_id, title',
+          'committee_name, profile_id, function, email',
+          'committee_name, profile_id, role, email',
+          'committee_name, profile_id, title, email',
+          'committee_name, profile_id, function, contact_email',
+          'committee_name, profile_id, role, contact_email',
+          'committee_name, profile_id, title, contact_email',
+          'committee_name, profile_id, email',
+          'committee_name, profile_id, contact_email',
           'committee_name, profile_id',
         ]) {
           try {
             final res = await _client.from('committee_members').select(select);
             rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
             break;
+          } catch (_) {
+            // try next
+          }
+        }
+      }
+
+      if (rows.isEmpty) {
+        // Extra fallback: sommige setups bewaren commissie-contact direct per commissie
+        // i.p.v. per profiel in committee_members.
+        for (final select in const [
+          'committee_name, contact_email',
+          'committee_name, email',
+          'name, contact_email',
+          'name, email',
+          'committee_name, mail',
+          'name, mail',
+        ]) {
+          try {
+            final res = await _client.from('committees').select(select);
+            final raw = (res as List<dynamic>).cast<Map<String, dynamic>>();
+            if (raw.isEmpty) continue;
+            rows = raw
+                .map((r) {
+                  final committeeName =
+                      (r['committee_name'] ?? r['name'] ?? '').toString().trim();
+                  final email =
+                      (r['contact_email'] ?? r['email'] ?? r['mail'])
+                          ?.toString()
+                          .trim();
+                  return <String, dynamic>{
+                    'committee_name': committeeName,
+                    'profile_id': '',
+                    'display_name': committeeName,
+                    'function': 'Commissiecontact',
+                    if (email != null && email.isNotEmpty) 'email': email,
+                  };
+                })
+                .where((r) => (r['committee_name'] as String).isNotEmpty)
+                .toList();
+            if (rows.isNotEmpty) break;
           } catch (_) {
             // try next
           }
@@ -96,12 +141,19 @@ class _InfoTabState extends State<InfoTab> {
       Map<String, String> emailByProfileId = await _loadProfileEmails(
         profileIds: profileIds.toList(),
       );
-      final hasEmailInRows = rows.any((r) => r['email'] != null && (r['email'] as String).trim().isNotEmpty);
+      final hasEmailInRows = rows.any((r) {
+        final direct = r['email']?.toString().trim() ?? '';
+        final contact = r['contact_email']?.toString().trim() ?? '';
+        final mail = r['mail']?.toString().trim() ?? '';
+        return direct.isNotEmpty || contact.isNotEmpty || mail.isNotEmpty;
+      });
       if (hasEmailInRows) {
         final fromRpc = <String, String>{};
         for (final row in rows) {
           final pid = row['profile_id']?.toString() ?? '';
-          final email = (row['email'] as String?)?.trim();
+          final email = (row['email'] ?? row['contact_email'] ?? row['mail'])
+              ?.toString()
+              .trim();
           if (pid.isNotEmpty && email != null && email.isNotEmpty) fromRpc[pid] = email;
         }
         if (fromRpc.isNotEmpty) emailByProfileId = fromRpc;
@@ -121,8 +173,11 @@ class _InfoTabState extends State<InfoTab> {
             ? applyDisplayNameOverrides(displayNameFromRow!)
             : applyDisplayNameOverrides((nameByProfileId[pid] ?? '').trim());
         final displayName = memberName.isNotEmpty ? memberName : unknownUserName;
-        final email = (row['email'] as String?)?.trim().isNotEmpty == true
-            ? (row['email'] as String).trim()
+        final rowEmail = (row['email'] ?? row['contact_email'] ?? row['mail'])
+            ?.toString()
+            .trim();
+        final email = rowEmail?.isNotEmpty == true
+            ? rowEmail
             : emailByProfileId[pid]?.trim();
         // Alleen @-adressen tonen (e-mail van Minerva)
         final emailToShow = (email != null && email.contains('@'))

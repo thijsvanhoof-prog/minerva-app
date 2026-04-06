@@ -338,7 +338,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       if (rows.isEmpty) {
         if (!mounted) return;
         setState(() {
-          _agendaItems = _mockAgenda();
+          _agendaItems = const [];
           _rsvpProfileIdsByAgendaId = const {};
           _loadingAgenda = false;
         });
@@ -500,7 +500,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _agendaItems = _mockAgenda();
+        _agendaItems = const [];
         _rsvpProfileIdsByAgendaId = const {};
         _agendaError = e.toString();
         _loadingAgenda = false;
@@ -1607,6 +1607,16 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   }
 
   Future<void> _showAgendaRsvpDialog(_AgendaItem item) async {
+    final ctx = AppUserContext.of(context);
+    if (ctx.profileId.trim().isEmpty) {
+      if (!mounted) return;
+      showTopMessage(
+        context,
+        'Log in met je eigen account om je aan te melden.',
+        isError: true,
+      );
+      return;
+    }
     final user = _client.auth.currentUser;
     if (user == null) {
       if (!mounted) return;
@@ -1614,8 +1624,6 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       return;
     }
     if (item.id == null) return;
-
-    final ctx = AppUserContext.of(context);
     final options = _agendaRsvpOptions(ctx);
     if (options.isEmpty) return;
 
@@ -4558,6 +4566,8 @@ class _AgendaItem {
   /// Gebruiker mag aanmelden als: geen restricties, of in toegestaan team/commissie.
   bool canUserSignUp(AppUserContext ctx) {
     if (!canRsvp) return false;
+    // Gast/toeschouwer zonder echt profiel mag niet aanmelden.
+    if (ctx.profileId.trim().isEmpty) return false;
     final hasTeamRestrict =
         allowedTeamIds != null && allowedTeamIds!.isNotEmpty;
     final hasCommitteeRestrict =
@@ -4821,37 +4831,6 @@ class _AgendaCard extends StatelessWidget {
     );
   }
 }
-
-List<_AgendaItem> _mockAgenda() => const [
-  _AgendaItem(
-    id: null,
-    title: 'Algemene ledenvergadering',
-    description: 'Jaarlijkse ALV met stemming over het jaarverslag.',
-    when: 'Ma 15 jan • 20:00',
-    where: 'Kantine',
-    canRsvp: false,
-    startDatetime: null,
-    endDatetime: null,
-    dateLabel: '15-01-2025',
-    timeLabel: '20:00',
-    endDateLabel: null,
-    endTimeLabel: null,
-  ),
-  _AgendaItem(
-    id: null,
-    title: 'Clubdag',
-    description: 'Sportieve dag voor jeugd en senioren.',
-    when: 'Za 10 feb • 10:00',
-    where: 'Sporthal',
-    canRsvp: true,
-    startDatetime: null,
-    endDatetime: null,
-    dateLabel: '10-02-2025',
-    timeLabel: '10:00',
-    endDateLabel: null,
-    endTimeLabel: null,
-  ),
-];
 
 /* ----------------------- NIEUWS ----------------------- */
 
