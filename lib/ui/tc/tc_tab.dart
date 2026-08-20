@@ -7,6 +7,7 @@ import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
+import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 class TcTab extends StatefulWidget {
@@ -37,6 +38,16 @@ class _TcTabState extends State<TcTab> {
   String? _lastProfileId;
   int? _expandedTeamId;
 
+  /// Welk team is op dit moment in batch-edit-modus (null = geen).
+  int? _editingTeamId;
+  /// Profile_ids die in de huidige edit-sessie gemarkeerd zijn voor verwijderen.
+  final Set<String> _pendingRemovals = <String>{};
+  /// Nieuwe leden die in de huidige edit-sessie zijn toegevoegd (nog niet opgeslagen).
+  final List<_PendingAddition> _pendingAdditions = <_PendingAddition>[];
+  /// Rolwijzigingen voor bestaande leden: profile_id -> nieuwe rol (alleen als afwijkend van origineel).
+  final Map<String, String> _pendingRoleChanges = <String, String>{};
+  bool _savingTeamEdit = false;
+
   String _normalizeAccountRole(dynamic value) {
     final raw = (value ?? '').toString().trim().toLowerCase();
     if (raw.isEmpty) return '';
@@ -46,11 +57,20 @@ class _TcTabState extends State<TcTab> {
     return raw;
   }
 
+  /// Emails die nooit in een TC-overzicht (lid, zonder team, zonder commissie) thuishoren.
+  /// Bijvoorbeeld het gedeelde gastaccount.
+  static const Set<String> _hiddenTcEmails = {
+    'gast@mail.com',
+  };
+
   bool _isVisibleInTcUnassigned(Map<String, dynamic>? profile) {
     final role = _normalizeAccountRole(
       profile?['account_role'] ?? profile?['profile_role'] ?? profile?['role_type'],
     );
-    return role != 'ouder' && role != 'supporter';
+    if (role == 'ouder' || role == 'supporter') return false;
+    final email = (profile?['email'] ?? '').toString().trim().toLowerCase();
+    if (email.isNotEmpty && _hiddenTcEmails.contains(email)) return false;
+    return true;
   }
 
   @override
@@ -343,9 +363,13 @@ class _TcTabState extends State<TcTab> {
       for (final p in profiles) {
         final id = p['id']?.toString() ?? '';
         if (id.isEmpty) continue;
+        final email = (p['email'] ?? '').toString().trim();
+        if (email.isNotEmpty &&
+            _hiddenTcEmails.contains(email.toLowerCase())) {
+          continue;
+        }
         final name =
             (p['display_name'] ?? p['full_name'] ?? p['name'] ?? '').toString().trim();
-        final email = (p['email'] ?? '').toString().trim();
         allMembers.add(
           _Member(
             profileId: id,
@@ -680,6 +704,14 @@ class _TcTabState extends State<TcTab> {
           'profile_id': member.profileId,
           'role': selectedRole,
         });
+        final teamDisplay = NevoboApi.displayTeamName(selectedTeam.label);
+        await NotificationService.sendToUser(
+          title: 'Toegevoegd aan een team',
+          body: 'Je bent toegevoegd aan $teamDisplay',
+          userId: member.profileId,
+          dedupeKey: 'team_add:${member.profileId}:$resolvedTeamId',
+          cooldownSeconds: 60,
+        );
         if (!mounted) return;
         showTopMessage(context, 'Lid gekoppeld aan team.');
       }
@@ -717,15 +749,117 @@ class _TcTabState extends State<TcTab> {
     }
   }
 
-  Future<void> _addMemberToTeam(int teamId, String teamLabel) async {
-    final alreadyInTeam = (_teamAssignments[teamId] ?? []).map((a) => a.profileId).toSet();
-    final available = _allMembers.where((m) => !alreadyInTeam.contains(m.profileId)).toList();
-    if (available.isEmpty) {
-      showTopMessage(context, 'Alle leden zitten al in dit team.', isError: true);
+  void _enterTeamEditMode(int teamId) {
+    setState(() {
+      _editingTeamId = teamId;
+      _expandedTeamId = teamId;
+      _pendingRemovals.clear();
+      _pendingAdditions.clear();
+      _pendingRoleChanges.clear();
+      _savingTeamEdit = false;
+    });
+  }
+
+  void _cancelTeamEdit() {
+    setState(() {
+      _editingTeamId = null;
+      _pendingRemovals.clear();
+      _pendingAdditions.clear();
+      _pendingRoleChanges.clear();
+      _savingTeamEdit = false;
+    });
+  }
+
+  Future<void> _saveTeamEdit(int teamId, String teamLabel) async {
+    final ctx = AppUserContext.of(context);
+    if (!_canManage(ctx)) return;
+
+    if (_pendingRemovals.isEmpty &&
+        _pendingAdditions.isEmpty &&
+        _pendingRoleChanges.isEmpty) {
+      _cancelTeamEdit();
       return;
     }
+
+    setState(() => _savingTeamEdit = true);
+    try {
+      final resolvedTeamId = await _resolveTeamIdForWrite(teamId, teamLabel);
+      if (resolvedTeamId == null) {
+        if (!mounted) return;
+        showTopMessage(
+          context,
+          'Kon team nog niet aanmaken/terugvinden. Run SQL: ensure_training_groups_for_tc + teams_tc_manage.',
+          isError: true,
+        );
+        setState(() => _savingTeamEdit = false);
+        return;
+      }
+
+      for (final pid in _pendingRemovals) {
+        await _client
+            .from('team_members')
+            .delete()
+            .eq('team_id', resolvedTeamId)
+            .eq('profile_id', pid);
+      }
+
+      for (final entry in _pendingRoleChanges.entries) {
+        if (_pendingRemovals.contains(entry.key)) continue;
+        await _client
+            .from('team_members')
+            .update({'role': entry.value})
+            .eq('team_id', resolvedTeamId)
+            .eq('profile_id', entry.key);
+      }
+
+      if (_pendingAdditions.isNotEmpty) {
+        final payload = _pendingAdditions
+            .map((a) => {
+                  'team_id': resolvedTeamId,
+                  'profile_id': a.profileId,
+                  'role': a.role,
+                })
+            .toList();
+        await _client.from('team_members').insert(payload);
+
+        final teamDisplay = NevoboApi.displayTeamName(teamLabel);
+        for (final a in _pendingAdditions) {
+          try {
+            await NotificationService.sendToUser(
+              title: 'Toegevoegd aan een team',
+              body: 'Je bent toegevoegd aan $teamDisplay',
+              userId: a.profileId,
+              dedupeKey: 'team_add:${a.profileId}:$resolvedTeamId',
+              cooldownSeconds: 60,
+            );
+          } catch (_) {}
+        }
+      }
+
+      final n = _pendingRemovals.length +
+          _pendingAdditions.length +
+          _pendingRoleChanges.entries
+              .where((e) => !_pendingRemovals.contains(e.key))
+              .length;
+      if (!mounted) return;
+      showTopMessage(context, 'Wijzigingen opgeslagen ($n).');
+      _cancelTeamEdit();
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
+      setState(() => _savingTeamEdit = false);
+    }
+  }
+
+  /// Stap 1: multi-select dialoog. Geeft een lijst gekozen leden terug, of null bij annuleren.
+  Future<List<_Member>?> _pickMembersMultiSelect({
+    required String teamLabel,
+    required List<_Member> available,
+  }) async {
     var search = '';
-    final chosen = await showDialog<_Member>(
+    final selectedIds = <String>{};
+    return showDialog<List<_Member>>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) {
@@ -738,7 +872,7 @@ class _TcTabState extends State<TcTab> {
                       (m.email?.toLowerCase().contains(q) ?? false))
                   .toList();
           return AlertDialog(
-            title: Text('Lid toevoegen aan $teamLabel'),
+            title: Text('Leden toevoegen aan $teamLabel'),
             content: Container(
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
@@ -750,7 +884,7 @@ class _TcTabState extends State<TcTab> {
               padding: const EdgeInsets.all(10),
               child: SizedBox(
                 width: double.maxFinite,
-                height: 320,
+                height: 380,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -763,7 +897,31 @@ class _TcTabState extends State<TcTab> {
                       ),
                       onChanged: (v) => setDialogState(() => search = v),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Text(
+                          '${selectedIds.length} geselecteerd',
+                          style: const TextStyle(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const Spacer(),
+                        if (selectedIds.isNotEmpty)
+                          TextButton(
+                            onPressed: () => setDialogState(selectedIds.clear),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              minimumSize: const Size(0, 28),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: const Text('Wissen'),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
                     Expanded(
                       child: list.isEmpty
                           ? const Center(
@@ -776,11 +934,34 @@ class _TcTabState extends State<TcTab> {
                               itemCount: list.length,
                               itemBuilder: (context, i) {
                                 final m = list[i];
-                                return ListTile(
+                                final isSelected = selectedIds.contains(m.profileId);
+                                return CheckboxListTile(
                                   dense: true,
-                                  title: Text(m.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                                  subtitle: m.email != null ? Text(m.email!, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)) : null,
-                                  onTap: () => Navigator.of(context).pop(m),
+                                  value: isSelected,
+                                  controlAffinity: ListTileControlAffinity.leading,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: Text(
+                                    m.name,
+                                    style: const TextStyle(fontWeight: FontWeight.w600),
+                                  ),
+                                  subtitle: m.email != null
+                                      ? Text(
+                                          m.email!,
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        )
+                                      : null,
+                                  onChanged: (v) {
+                                    setDialogState(() {
+                                      if (v == true) {
+                                        selectedIds.add(m.profileId);
+                                      } else {
+                                        selectedIds.remove(m.profileId);
+                                      }
+                                    });
+                                  },
                                 );
                               },
                             ),
@@ -794,182 +975,200 @@ class _TcTabState extends State<TcTab> {
                 onPressed: () => Navigator.of(context).pop(null),
                 child: const Text('Annuleren'),
               ),
+              ElevatedButton(
+                onPressed: selectedIds.isEmpty
+                    ? null
+                    : () {
+                        final chosen = available
+                            .where((m) => selectedIds.contains(m.profileId))
+                            .toList();
+                        Navigator.of(context).pop(chosen);
+                      },
+                child: const Text('Volgende'),
+              ),
             ],
           );
         },
       ),
     );
-    if (chosen == null) return;
-    if (!mounted) return;
-    var selectedRole = 'player';
-    final save = await showDialog<bool>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Rol kiezen'),
-          content: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
-              border: Border.all(
-                color: AppColors.primary.withValues(alpha: 0.22),
-                width: 1.1,
-              ),
-            ),
-            padding: const EdgeInsets.all(10),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(chosen.name, style: const TextStyle(fontWeight: FontWeight.w800)),
-                if (chosen.email != null) ...[
-                  const SizedBox(height: 4),
-                  Text(chosen.email!, style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
-                ],
-                const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  initialValue: selectedRole,
-                  isExpanded: true,
-                  items: const [
-                    DropdownMenuItem(value: 'player', child: Text('Speler')),
-                    DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
-                    DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
-                    DropdownMenuItem(value: 'supporter', child: Text('Supporter')),
-                  ],
-                  onChanged: (v) => setDialogState(() => selectedRole = v ?? selectedRole),
-                  decoration: const InputDecoration(labelText: 'Rol'),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Annuleren'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Toevoegen'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (save != true) return;
-    try {
-      final resolvedTeamId = await _resolveTeamIdForWrite(teamId, teamLabel);
-      if (resolvedTeamId == null) {
-        if (!mounted) return;
-        showTopMessage(
-          context,
-          'Kon team nog niet aanmaken/terugvinden. Run SQL: ensure_training_groups_for_tc + teams_tc_manage.',
-          isError: true,
-        );
-        return;
-      }
-      await _client.from('team_members').insert({
-        'team_id': resolvedTeamId,
-        'profile_id': chosen.profileId,
-        'role': selectedRole,
-      });
-      if (!mounted) return;
-      showTopMessage(context, 'Lid toegevoegd aan team.');
-      await _load();
-    } catch (e) {
-      if (!mounted) return;
-      showTopMessage(context, 'Toevoegen mislukt: $e', isError: true);
-    }
   }
 
-  Future<void> _editAssignment(int teamId, _AssignedMember member) async {
-    final raw = _teams.where((t) => t.teamId == teamId).firstOrNull?.label ?? 'team';
-    final teamLabel = NevoboApi.displayTeamName(raw);
-    var chosenRole = member.role;
-    final result = await showDialog<String>(
+  /// Stap 2: per-lid rol kiezen. Geeft `[(member, role), ...]` terug of null.
+  Future<List<(_Member, String)>?> _pickRolesForMembers({
+    required String teamLabel,
+    required List<_Member> members,
+  }) async {
+    final roles = <String, String>{
+      for (final m in members) m.profileId: 'player',
+    };
+    return showDialog<List<(_Member, String)>>(
       context: context,
       builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text('Lid in $teamLabel'),
-          content: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
-              border: Border.all(
-                color: AppColors.primary.withValues(alpha: 0.22),
-                width: 1.1,
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: Text('Rollen voor $teamLabel'),
+            content: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+                border: Border.all(
+                  color: AppColors.primary.withValues(alpha: 0.22),
+                  width: 1.1,
+                ),
+              ),
+              padding: const EdgeInsets.all(10),
+              child: SizedBox(
+                width: double.maxFinite,
+                height: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    DropdownButtonFormField<String>(
+                      initialValue: 'player',
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Stel rol in voor iedereen',
+                      ),
+                      items: const [
+                        DropdownMenuItem(value: 'player', child: Text('Speler')),
+                        DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
+                        DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
+                        DropdownMenuItem(value: 'supporter', child: Text('Supporter')),
+                      ],
+                      onChanged: (v) {
+                        if (v == null) return;
+                        setDialogState(() {
+                          for (final id in roles.keys.toList()) {
+                            roles[id] = v;
+                          }
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: members.length,
+                        itemBuilder: (context, i) {
+                          final m = members[i];
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  flex: 5,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        m.name,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 13,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      if (m.email != null)
+                                        Text(
+                                          m.email!,
+                                          style: const TextStyle(
+                                            color: AppColors.textSecondary,
+                                            fontSize: 11,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  flex: 4,
+                                  child: DropdownButtonFormField<String>(
+                                    initialValue: roles[m.profileId] ?? 'player',
+                                    isExpanded: true,
+                                    isDense: true,
+                                    items: const [
+                                      DropdownMenuItem(value: 'player', child: Text('Speler')),
+                                      DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
+                                      DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
+                                      DropdownMenuItem(value: 'supporter', child: Text('Supporter')),
+                                    ],
+                                    onChanged: (v) => setDialogState(() {
+                                      roles[m.profileId] = v ?? 'player';
+                                    }),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-            padding: const EdgeInsets.all(10),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  member.name,
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-                if (member.email != null) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    member.email!,
-                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                  ),
-                ],
-                const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  initialValue: chosenRole,
-                  isExpanded: true,
-                  items: const [
-                    DropdownMenuItem(value: 'player', child: Text('Speler')),
-                    DropdownMenuItem(value: 'trainer', child: Text('Trainer/coach')),
-                    DropdownMenuItem(value: 'trainingslid', child: Text('Trainingslid')),
-                    DropdownMenuItem(value: 'supporter', child: Text('Supporter')),
-                  ],
-                  onChanged: (v) => setDialogState(() => chosenRole = v ?? chosenRole),
-                  decoration: const InputDecoration(labelText: 'Rol'),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop('remove'),
-              child: Text('Uit team halen', style: TextStyle(color: AppColors.error)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(null),
-              child: const Text('Annuleren'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(chosenRole),
-              child: const Text('Opslaan'),
-            ),
-          ],
-        ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(null),
+                child: const Text('Annuleren'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  final result = members
+                      .map<(_Member, String)>((m) => (m, roles[m.profileId] ?? 'player'))
+                      .toList();
+                  Navigator.of(context).pop(result);
+                },
+                child: Text('Toevoegen (${members.length})'),
+              ),
+            ],
+          );
+        },
       ),
     );
-    if (result == null) return;
-    if (result == 'remove') {
-      try {
-        await _client.from('team_members').delete().eq('team_id', teamId).eq('profile_id', member.profileId);
-        if (!mounted) return;
-        showTopMessage(context, 'Lid uit team gehaald.');
-        await _load();
-      } catch (e) {
-        if (!mounted) return;
-        showTopMessage(context, 'Verwijderen mislukt: $e', isError: true);
-      }
+  }
+
+  Future<void> _queueAdditionForTeam(int teamId, String teamLabel) async {
+    final inTeam = (_teamAssignments[teamId] ?? []).map((a) => a.profileId).toSet();
+    final pendingIds = _pendingAdditions.map((a) => a.profileId).toSet();
+    final available = _allMembers.where((m) {
+      final isInTeam = inTeam.contains(m.profileId);
+      final isBeingRemoved = _pendingRemovals.contains(m.profileId);
+      final isAlreadyPending = pendingIds.contains(m.profileId);
+      return (!isInTeam || isBeingRemoved) && !isAlreadyPending;
+    }).toList();
+
+    if (available.isEmpty) {
+      showTopMessage(context, 'Geen leden meer om toe te voegen.', isError: true);
       return;
     }
-    // result is the new role
-    if (result != member.role) {
-      try {
-        await _client.from('team_members').update({'role': result}).eq('team_id', teamId).eq('profile_id', member.profileId);
-        if (!mounted) return;
-        showTopMessage(context, 'Rol bijgewerkt.');
-        await _load();
-      } catch (e) {
-        if (!mounted) return;
-        showTopMessage(context, 'Bijwerken mislukt: $e', isError: true);
+
+    final selected = await _pickMembersMultiSelect(
+      teamLabel: teamLabel,
+      available: available,
+    );
+    if (selected == null || selected.isEmpty) return;
+    if (!mounted) return;
+
+    final withRoles = await _pickRolesForMembers(
+      teamLabel: teamLabel,
+      members: selected,
+    );
+    if (withRoles == null) return;
+
+    setState(() {
+      for (final entry in withRoles) {
+        final (member, role) = entry;
+        _pendingRemovals.remove(member.profileId);
+        _pendingAdditions.add(_PendingAddition(
+          profileId: member.profileId,
+          name: member.name,
+          email: member.email,
+          role: role,
+        ));
       }
-    }
+    });
   }
 
   Future<void> _addTeam() async {
@@ -1050,6 +1249,106 @@ class _TcTabState extends State<TcTab> {
     showTopMessage(
       context,
       'Toevoegen mislukt. Check teams RLS + verplichte kolommen. Fout: $lastError',
+      isError: true,
+    );
+  }
+
+  Future<void> _deleteTeam(_TeamOption team) async {
+    final ctx = AppUserContext.of(context);
+    if (!_canManage(ctx)) return;
+
+    if (team.teamId <= 0) {
+      showTopMessage(
+        context,
+        'Dit team bestaat nog niet in Supabase of is een virtueel trainingsgroep-team. '
+            'Verwijderen is niet mogelijk.',
+        isError: true,
+      );
+      return;
+    }
+
+    final displayLabel = NevoboApi.displayTeamName(team.label);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Team verwijderen'),
+        content: Text(
+          'Weet je zeker dat je team "$displayLabel" wilt verwijderen?\n\n'
+          'Het hele team wordt uit Supabase verwijderd. Leden blijven bestaan, '
+          'maar hun koppeling met dit team kan verdwijnen als de database dat toelaat.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: TextButton.styleFrom(foregroundColor: AppColors.error),
+            child: const Text('Verwijderen'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    Object? lastError;
+    for (final idField in const ['team_id', 'id']) {
+      try {
+        await _client.from('teams').delete().eq(idField, team.teamId);
+        if (!mounted) return;
+        if (_editingTeamId == team.teamId) _cancelTeamEdit();
+        showTopMessage(context, 'Team "$displayLabel" verwijderd.');
+        await _load();
+        return;
+      } on PostgrestException catch (e) {
+        lastError = e;
+        final msg = e.message.toLowerCase();
+        if (e.code == '23503' ||
+            msg.contains('foreign key') ||
+            msg.contains('violates') ||
+            msg.contains('still referenced')) {
+          if (!mounted) return;
+          showTopMessage(
+            context,
+            'Dit team kan niet worden verwijderd omdat er nog leden of andere '
+                'gegevens aan gekoppeld zijn. Haal eerst alle leden uit het team.',
+            isError: true,
+          );
+          return;
+        }
+        if (e.code == 'PGRST204' ||
+            (msg.contains('column') && msg.contains('could not find'))) {
+          continue;
+        }
+        if (!mounted) return;
+        showTopMessage(context, 'Verwijderen mislukt: ${e.message}', isError: true);
+        return;
+      } catch (e) {
+        lastError = e;
+        final lower = e.toString().toLowerCase();
+        if (lower.contains('foreign key') ||
+            lower.contains('violates') ||
+            lower.contains('still referenced')) {
+          if (!mounted) return;
+          showTopMessage(
+            context,
+            'Dit team kan niet worden verwijderd omdat er nog leden of andere '
+                'gegevens aan gekoppeld zijn. Haal eerst alle leden uit het team.',
+            isError: true,
+          );
+          return;
+        }
+        if (!mounted) return;
+        showTopMessage(context, 'Verwijderen mislukt: $e', isError: true);
+        return;
+      }
+    }
+
+    if (!mounted) return;
+    showTopMessage(
+      context,
+      'Verwijderen mislukt. Check teams RLS. Fout: $lastError',
       isError: true,
     );
   }
@@ -1352,8 +1651,19 @@ class _TcTabState extends State<TcTab> {
                           final toShow = q.isEmpty
                               ? members
                               : (teamLabelMatches ? members : filtered);
-                          if (q.isNotEmpty && toShow.isEmpty) return const SizedBox.shrink();
-                          final expanded = _expandedTeamId == t.teamId;
+                          final isEditing = _editingTeamId == t.teamId;
+                          if (q.isNotEmpty && toShow.isEmpty && !isEditing) {
+                            return const SizedBox.shrink();
+                          }
+                          final expanded = _expandedTeamId == t.teamId || isEditing;
+                          final displayTeamLabel = NevoboApi.displayTeamName(t.label);
+                          final pendingChanges = _pendingRemovals.length +
+                              _pendingAdditions.length +
+                              _pendingRoleChanges.entries
+                                  .where((e) =>
+                                      !_pendingRemovals.contains(e.key))
+                                  .length;
+
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 12),
                             child: GlassCard(
@@ -1363,11 +1673,14 @@ class _TcTabState extends State<TcTab> {
                                 children: [
                                   InkWell(
                                     borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                                    onTap: () {
-                                      setState(() {
-                                        _expandedTeamId = expanded ? null : t.teamId;
-                                      });
-                                    },
+                                    onTap: isEditing
+                                        ? null
+                                        : () {
+                                            setState(() {
+                                              _expandedTeamId =
+                                                  expanded ? null : t.teamId;
+                                            });
+                                          },
                                     child: Padding(
                                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                                       child: Row(
@@ -1377,7 +1690,7 @@ class _TcTabState extends State<TcTab> {
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
                                                 Text(
-                                                  NevoboApi.displayTeamName(t.label),
+                                                  displayTeamLabel,
                                                   style: const TextStyle(
                                                     color: AppColors.primary,
                                                     fontWeight: FontWeight.w800,
@@ -1386,7 +1699,9 @@ class _TcTabState extends State<TcTab> {
                                                 ),
                                                 const SizedBox(height: 2),
                                                 Text(
-                                                  '${toShow.length} lid/leden',
+                                                  isEditing
+                                                      ? 'Bewerken — $pendingChanges wijziging${pendingChanges == 1 ? '' : 'en'}'
+                                                      : '${toShow.length} lid/leden',
                                                   style: TextStyle(
                                                     color: AppColors.textSecondary.withValues(alpha: 0.9),
                                                     fontSize: 12.5,
@@ -1396,17 +1711,48 @@ class _TcTabState extends State<TcTab> {
                                               ],
                                             ),
                                           ),
-                                          Icon(
-                                            expanded ? Icons.expand_less : Icons.expand_more,
-                                            color: AppColors.textSecondary,
-                                          ),
+                                          if (isEditing)
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                  horizontal: 10, vertical: 4),
+                                              decoration: BoxDecoration(
+                                                color: AppColors.primary
+                                                    .withValues(alpha: 0.15),
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                              ),
+                                              child: const Text(
+                                                'Bewerken',
+                                                style: TextStyle(
+                                                  color: AppColors.primary,
+                                                  fontWeight: FontWeight.w700,
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            )
+                                          else ...[
+                                            if (canManage)
+                                              IconButton(
+                                                onPressed: () => _deleteTeam(t),
+                                                icon: const Icon(Icons.delete_outline),
+                                                color: AppColors.error,
+                                                tooltip: 'Team verwijderen',
+                                                visualDensity: VisualDensity.compact,
+                                              ),
+                                            Icon(
+                                              expanded
+                                                  ? Icons.expand_less
+                                                  : Icons.expand_more,
+                                              color: AppColors.textSecondary,
+                                            ),
+                                          ],
                                         ],
                                       ),
                                     ),
                                   ),
                                   if (expanded) ...[
                                     const Divider(height: 1),
-                                    if (toShow.isEmpty)
+                                    if (toShow.isEmpty && _pendingAdditions.isEmpty)
                                       const Padding(
                                         padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
                                         child: Text(
@@ -1418,39 +1764,237 @@ class _TcTabState extends State<TcTab> {
                                         ),
                                       )
                                     else
-                                      ...toShow.map(
-                                        (m) => ListTile(
+                                      ...toShow.map((m) {
+                                        final markedForRemoval = isEditing &&
+                                            _pendingRemovals.contains(m.profileId);
+                                        final pendingRole =
+                                            _pendingRoleChanges[m.profileId];
+                                        final effectiveRole =
+                                            pendingRole ?? m.role;
+                                        final roleChanged = pendingRole != null &&
+                                            pendingRole != m.role;
+                                        return ListTile(
                                           dense: true,
-                                          leading: const Icon(
+                                          leading: Icon(
                                             Icons.person_outline,
-                                            color: AppColors.iconMuted,
+                                            color: markedForRemoval
+                                                ? AppColors.error
+                                                : AppColors.iconMuted,
                                             size: 22,
                                           ),
                                           title: Text(
                                             m.name,
-                                            style: const TextStyle(
+                                            style: TextStyle(
                                               color: AppColors.onBackground,
                                               fontWeight: FontWeight.w600,
                                               fontSize: 14,
+                                              decoration: markedForRemoval
+                                                  ? TextDecoration.lineThrough
+                                                  : TextDecoration.none,
+                                            ),
+                                          ),
+                                          subtitle: markedForRemoval
+                                              ? const Text(
+                                                  'Wordt verwijderd',
+                                                  style: TextStyle(
+                                                    color: AppColors.error,
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                )
+                                              : (isEditing
+                                                  ? Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        DropdownButton<String>(
+                                                          value: effectiveRole,
+                                                          isDense: true,
+                                                          underline:
+                                                              const SizedBox.shrink(),
+                                                          icon: Icon(
+                                                            Icons.arrow_drop_down,
+                                                            color: roleChanged
+                                                                ? AppColors.primary
+                                                                : AppColors
+                                                                    .textSecondary,
+                                                            size: 20,
+                                                          ),
+                                                          style: TextStyle(
+                                                            color: roleChanged
+                                                                ? AppColors.primary
+                                                                : AppColors
+                                                                    .textSecondary,
+                                                            fontSize: 12,
+                                                            fontWeight: roleChanged
+                                                                ? FontWeight.w700
+                                                                : FontWeight.w500,
+                                                          ),
+                                                          items: const [
+                                                            DropdownMenuItem(
+                                                                value: 'player',
+                                                                child: Text('Speler')),
+                                                            DropdownMenuItem(
+                                                                value: 'trainer',
+                                                                child: Text(
+                                                                    'Trainer/coach')),
+                                                            DropdownMenuItem(
+                                                                value:
+                                                                    'trainingslid',
+                                                                child: Text(
+                                                                    'Trainingslid')),
+                                                            DropdownMenuItem(
+                                                                value: 'supporter',
+                                                                child: Text(
+                                                                    'Supporter')),
+                                                          ],
+                                                          onChanged: (v) {
+                                                            if (v == null) return;
+                                                            setState(() {
+                                                              if (v == m.role) {
+                                                                _pendingRoleChanges
+                                                                    .remove(m
+                                                                        .profileId);
+                                                              } else {
+                                                                _pendingRoleChanges[
+                                                                        m.profileId] =
+                                                                    v;
+                                                              }
+                                                            });
+                                                          },
+                                                        ),
+                                                        if (roleChanged) ...[
+                                                          const SizedBox(width: 6),
+                                                          Text(
+                                                            '(was ${_roleLabel(m.role)})',
+                                                            style: const TextStyle(
+                                                              color: AppColors
+                                                                  .textSecondary,
+                                                              fontSize: 11,
+                                                              fontStyle:
+                                                                  FontStyle.italic,
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ],
+                                                    )
+                                                  : Text(
+                                                      _roleLabel(m.role),
+                                                      style: const TextStyle(
+                                                        color: AppColors
+                                                            .textSecondary,
+                                                        fontSize: 12,
+                                                      ),
+                                                    )),
+                                          trailing: isEditing
+                                              ? IconButton(
+                                                  icon: Icon(
+                                                    markedForRemoval
+                                                        ? Icons.undo
+                                                        : Icons.close,
+                                                    size: 20,
+                                                    color: markedForRemoval
+                                                        ? AppColors.primary
+                                                        : AppColors.error,
+                                                  ),
+                                                  tooltip: markedForRemoval
+                                                      ? 'Herstellen'
+                                                      : 'Verwijderen',
+                                                  onPressed: () {
+                                                    setState(() {
+                                                      if (markedForRemoval) {
+                                                        _pendingRemovals
+                                                            .remove(m.profileId);
+                                                      } else {
+                                                        _pendingRemovals
+                                                            .add(m.profileId);
+                                                      }
+                                                    });
+                                                  },
+                                                )
+                                              : null,
+                                          onTap: null,
+                                        );
+                                      }),
+                                    if (isEditing && _pendingAdditions.isNotEmpty)
+                                      ..._pendingAdditions.map(
+                                        (a) => ListTile(
+                                          dense: true,
+                                          leading: const Icon(
+                                            Icons.person_add_alt_1_outlined,
+                                            color: AppColors.primary,
+                                            size: 22,
+                                          ),
+                                          title: Text(
+                                            a.name,
+                                            style: const TextStyle(
+                                              color: AppColors.onBackground,
+                                              fontWeight: FontWeight.w700,
+                                              fontSize: 14,
+                                              fontStyle: FontStyle.italic,
                                             ),
                                           ),
                                           subtitle: Text(
-                                            _roleLabel(m.role),
+                                            'Wordt toegevoegd als ${_roleLabel(a.role)}',
                                             style: const TextStyle(
-                                              color: AppColors.textSecondary,
+                                              color: AppColors.primary,
                                               fontSize: 12,
+                                              fontWeight: FontWeight.w600,
                                             ),
                                           ),
-                                          trailing: Icon(
-                                            Icons.edit_outlined,
-                                            color: canManage ? AppColors.primary : AppColors.iconMuted,
-                                            size: 20,
+                                          trailing: IconButton(
+                                            icon: const Icon(
+                                              Icons.undo,
+                                              size: 20,
+                                              color: AppColors.primary,
+                                            ),
+                                            tooltip: 'Herstellen',
+                                            onPressed: () {
+                                              setState(() {
+                                                _pendingAdditions.removeWhere(
+                                                  (p) =>
+                                                      p.profileId == a.profileId,
+                                                );
+                                              });
+                                            },
                                           ),
-                                          onTap: canManage ? () => _editAssignment(t.teamId, m) : null,
                                         ),
                                       ),
-                                    const Divider(height: 1),
-                                    if (canManage)
+                                    if (canManage &&
+                                        !isEditing &&
+                                        _editingTeamId == null) ...[
+                                      const Divider(height: 1),
+                                      ListTile(
+                                        dense: true,
+                                        leading: const Icon(
+                                          Icons.edit_outlined,
+                                          color: AppColors.primary,
+                                          size: 22,
+                                        ),
+                                        title: const Text(
+                                          'Team bewerken',
+                                          style: TextStyle(
+                                            color: AppColors.primary,
+                                            fontWeight: FontWeight.w700,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                        subtitle: const Text(
+                                          'Leden toevoegen of verwijderen',
+                                          style: TextStyle(
+                                            color: AppColors.textSecondary,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                        trailing: const Icon(
+                                          Icons.chevron_right,
+                                          color: AppColors.primary,
+                                        ),
+                                        onTap: () =>
+                                            _enterTeamEditMode(t.teamId),
+                                      ),
+                                    ],
+                                    if (canManage && isEditing) ...[
+                                      const Divider(height: 1),
                                       ListTile(
                                         dense: true,
                                         leading: const Icon(
@@ -1459,15 +2003,75 @@ class _TcTabState extends State<TcTab> {
                                           size: 22,
                                         ),
                                         title: const Text(
-                                          'Lid toevoegen aan dit team',
+                                          'Lid toevoegen',
                                           style: TextStyle(
                                             color: AppColors.primary,
                                             fontWeight: FontWeight.w600,
                                             fontSize: 14,
                                           ),
                                         ),
-                                        onTap: () => _addMemberToTeam(t.teamId, NevoboApi.displayTeamName(t.label)),
+                                        onTap: _savingTeamEdit
+                                            ? null
+                                            : () => _queueAdditionForTeam(
+                                                t.teamId, displayTeamLabel),
                                       ),
+                                      const Divider(height: 1),
+                                      Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                            12, 10, 12, 12),
+                                        child: Row(
+                                          children: [
+                                            Expanded(
+                                              child: OutlinedButton(
+                                                onPressed: _savingTeamEdit
+                                                    ? null
+                                                    : _cancelTeamEdit,
+                                                style: OutlinedButton.styleFrom(
+                                                  foregroundColor:
+                                                      AppColors.textSecondary,
+                                                  side: BorderSide(
+                                                    color: AppColors.textSecondary
+                                                        .withValues(alpha: 0.4),
+                                                  ),
+                                                ),
+                                                child: const Text('Annuleren'),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: ElevatedButton.icon(
+                                                onPressed: _savingTeamEdit
+                                                    ? null
+                                                    : () => _saveTeamEdit(
+                                                        t.teamId,
+                                                        displayTeamLabel),
+                                                icon: _savingTeamEdit
+                                                    ? const SizedBox(
+                                                        width: 16,
+                                                        height: 16,
+                                                        child:
+                                                            CircularProgressIndicator(
+                                                          strokeWidth: 2,
+                                                          color: Colors.white,
+                                                        ),
+                                                      )
+                                                    : const Icon(
+                                                        Icons.save_outlined,
+                                                        size: 18),
+                                                label: Text(_savingTeamEdit
+                                                    ? 'Opslaan…'
+                                                    : 'Opslaan'),
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor:
+                                                      AppColors.primary,
+                                                  foregroundColor: Colors.white,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
                                   ],
                                 ],
                               ),
@@ -1506,6 +2110,19 @@ class _AssignedMember {
   final String role;
 
   const _AssignedMember({
+    required this.profileId,
+    required this.name,
+    this.email,
+    required this.role,
+  });
+}
+
+class _PendingAddition {
+  final String profileId;
+  final String name;
+  final String? email;
+  final String role;
+  const _PendingAddition({
     required this.profileId,
     required this.name,
     this.email,

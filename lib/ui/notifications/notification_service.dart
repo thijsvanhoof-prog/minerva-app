@@ -229,6 +229,68 @@ class NotificationService {
     }
   }
 
+  /// Verstuur een push naar één specifieke user (bijv. "Je bent toegevoegd aan ...").
+  /// Best-effort: fouten mogen de primaire actie niet blokkeren.
+  static Future<void> sendToUser({
+    required String title,
+    required String body,
+    required String userId,
+    String? dedupeKey,
+    int? cooldownSeconds,
+  }) async {
+    return sendToUsers(
+      title: title,
+      body: body,
+      userIds: [userId],
+      dedupeKey: dedupeKey,
+      cooldownSeconds: cooldownSeconds,
+    );
+  }
+
+  /// Verstuur een push naar een set specifieke users.
+  /// Best-effort: fouten mogen de primaire actie niet blokkeren.
+  static Future<void> sendToUsers({
+    required String title,
+    required String body,
+    required List<String> userIds,
+    String? dedupeKey,
+    int? cooldownSeconds,
+  }) async {
+    final t = title.trim();
+    final b = body.trim();
+    final ids = userIds
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .toList();
+    if (t.isEmpty || b.isEmpty || ids.isEmpty) return;
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      final accessToken = session?.accessToken;
+      final anonKey = dotenv.env['SUPABASE_ANON_KEY']?.trim() ?? '';
+      final headers = <String, String>{
+        if (accessToken != null && accessToken.isNotEmpty)
+          'Authorization': 'Bearer $accessToken',
+        if (anonKey.isNotEmpty) 'apikey': anonKey,
+      };
+      await Supabase.instance.client.functions.invoke(
+        'send-push-fcm',
+        headers: headers.isEmpty ? null : headers,
+        body: {
+          'title': t,
+          'body': b,
+          'user_ids': ids,
+          if (dedupeKey != null && dedupeKey.trim().isNotEmpty)
+            'dedupe_key': dedupeKey.trim(),
+          if (cooldownSeconds != null && cooldownSeconds > 0)
+            'cooldown_seconds': cooldownSeconds,
+        },
+      );
+    } catch (e) {
+      debugPrint('NotificationService: user-push mislukt: $e');
+    }
+  }
+
   /// Verstuur een push alleen naar users gekoppeld aan dit team (leden + ouders van leden).
   /// Best-effort: fouten mogen de primaire actie niet blokkeren.
   static Future<void> sendTeamUpdate({

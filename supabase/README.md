@@ -104,6 +104,27 @@ Bij **Commissie → Bestuur → Commissies → Lid toevoegen** kun je normaal al
 
 Vereist: `committee_members`-tabel met je bestuur-leden.
 
-## Commissie → TC: teamleden toevoegen / rol wijzigen
+## Commissie → TC: teambeheer (teams + teamleden)
 
-**"Bijwerken mislukt" / `team_members_role_check` (PostgrestException 23514)?** De constraint op `team_members.role` laat dan bijvoorbeeld `trainingslid` niet toe. Voer **`team_members_fix_role_constraint.sql`** uit in de SQL Editor. Daarna zou het toevoegen van leden aan teams en het wijzigen van hun rol weer moeten werken.
+In de app kunnen TC-leden teams toevoegen, bewerken en verwijderen (tab **Commissie → TC**). Bestuur mag meekijken maar niet beheren; globale admins mogen alles.
+
+**Setup (in deze volgorde uitvoeren in SQL Editor):**
+
+1. **`teams_schema.sql`** — basis-tabel `public.teams` (als die nog niet bestaat).
+2. **`teams_rls.sql`** — alle ingelogde gebruikers mogen teams lezen (o.a. voor Standen).
+3. **`teams_tc_manage.sql`** — TC-leden krijgen `for all` op `teams` (toevoegen, wijzigen, **verwijderen**). Globale admins behouden volledige toegang via `teams_manage_admins`.
+4. **`team_members_tc_manage.sql`** — TC-leden mogen `team_members` lezen en beheren (leden toevoegen, rol wijzigen, verwijderen).
+
+**Optioneel bij rol-fouten:** **`team_members_fix_role_constraint.sql`** als je **"Bijwerken mislukt" / `team_members_role_check` (PostgrestException 23514)** krijgt (bijv. rol `trainingslid` niet toegestaan).
+
+**Rechten in de app vs Supabase:**
+
+| Rol | Teams beheren | Teamleden beheren |
+|-----|---------------|-------------------|
+| TC-lid | Ja | Ja |
+| Globale admin | Ja | Ja |
+| Bestuur | Nee (alleen bekijken) | Nee |
+
+**Commissienamen:** SQL controleert `committee_members` op canonieke waarden `technische-commissie` of `tc`. De app normaliseert breder (bijv. "Technische Commissie"), maar houd commissienamen in de database bij voorkeur canoniek — anders kan de UI TC-rechten tonen terwijl RLS operaties blokkeert.
+
+**Team verwijderen:** kan falen als er nog gekoppelde records zijn (bijv. `team_members`, trainingen/sessions, of andere tabellen met foreign keys — afhankelijk van je productie-database). Ruim dan eerst die koppelingen op (bijv. leden uit het team halen) en probeer opnieuw.
