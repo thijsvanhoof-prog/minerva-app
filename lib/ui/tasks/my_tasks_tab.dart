@@ -34,7 +34,7 @@ class MyTasksTab extends StatelessWidget {
 
     if (!canSeeOverview) {
       if (compactView) {
-        return const _TeamTasksView();
+        return const _TeamTasksView(showTechnicalErrors: false);
       }
       return Scaffold(
         backgroundColor: Colors.transparent,
@@ -52,7 +52,7 @@ class MyTasksTab extends StatelessWidget {
                       ),
                 ),
               ),
-              const Expanded(child: _TeamTasksView()),
+              const Expanded(child: _TeamTasksView(showTechnicalErrors: false)),
             ],
           ),
         ),
@@ -60,16 +60,23 @@ class MyTasksTab extends StatelessWidget {
     }
 
     if (stOverviewMode) {
-      return const _OverviewHomeMatchesView(allowManage: false, allowSignupForAll: true);
+      return const _OverviewHomeMatchesView(
+        allowManage: false,
+        allowSignupForAll: true,
+        showTechnicalErrors: false,
+      );
     }
 
     if (compactView) {
-      return const _TeamTasksView();
+      return const _TeamTasksView(showTechnicalErrors: false);
     }
 
     // Bij forceFullView (Commissies > WZ): alleen inhoud, geen extra "Taken"-banner (staat al onder Commissie).
     if (forceFullView) {
-      return const _OverviewHomeMatchesView(allowManage: true);
+      return const _OverviewHomeMatchesView(
+        allowManage: true,
+        showTechnicalErrors: true,
+      );
     }
 
     // Overzicht-tab in Taken: alleen weergave, geen verdelen/koppelen.
@@ -116,8 +123,11 @@ class MyTasksTab extends StatelessWidget {
               Expanded(
                 child: TabBarView(
                   children: [
-                    const _TeamTasksView(),
-                    const _OverviewHomeMatchesView(allowManage: false),
+                    const _TeamTasksView(showTechnicalErrors: false),
+                    const _OverviewHomeMatchesView(
+                      allowManage: false,
+                      showTechnicalErrors: false,
+                    ),
                   ],
                 ),
               ),
@@ -130,7 +140,9 @@ class MyTasksTab extends StatelessWidget {
 }
 
 class _TeamTasksView extends StatefulWidget {
-  const _TeamTasksView();
+  const _TeamTasksView({this.showTechnicalErrors = false});
+
+  final bool showTechnicalErrors;
 
   @override
   State<_TeamTasksView> createState() => _TeamTasksViewState();
@@ -674,6 +686,28 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
     }
 
     if (_error != null) {
+      if (!widget.showTechnicalErrors) {
+        return RefreshIndicator(
+          color: AppColors.primary,
+          onRefresh: () => _load(ctx: ctx),
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            children: const [
+              GlassCard(
+                child: Padding(
+                  padding: EdgeInsets.all(14),
+                  child: Text(
+                    'Geen teamtaken beschikbaar.\n\nSwipe omlaag om te verversen.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: AppColors.textSecondary),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      }
       return RefreshIndicator(
         color: AppColors.primary,
         onRefresh: () => _load(ctx: ctx),
@@ -945,12 +979,15 @@ class _OverviewHomeMatchesView extends StatefulWidget {
   const _OverviewHomeMatchesView({
     this.allowManage = false,
     this.allowSignupForAll = false,
+    this.showTechnicalErrors = false,
   });
 
   /// Bij commissies: true (koppelen/verdelen). Bij Taken-overzicht: false (alleen weergave).
   final bool allowManage;
   /// S/T-modus: iedereen in deze view mag zich aanmelden op fluiten/tellen.
   final bool allowSignupForAll;
+  /// Alleen true voor Commissies > Wedstrijdzaken (technische foutdetails tonen).
+  final bool showTechnicalErrors;
 
   @override
   State<_OverviewHomeMatchesView> createState() => _OverviewHomeMatchesViewState();
@@ -1005,6 +1042,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
 
     try {
       if (widget.allowSignupForAll) {
+        final now = DateTime.now();
         final res = await _client
             .from('nevobo_home_matches')
             .select('match_key, team_code, starts_at, summary, location, linked_team_id, fluiten_task_id, tellen_task_id')
@@ -1018,10 +1056,12 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
           final teamCode = (row['team_code'] ?? '').toString().trim();
           final startsAt = DateTime.tryParse((row['starts_at'] ?? '').toString());
           if (key.isEmpty || teamCode.isEmpty || startsAt == null) continue;
+          final localStart = startsAt.toLocal();
+          if (localStart.isBefore(now)) continue;
           out.add(
             _HomeMatch(
               teamCode: teamCode,
-              start: startsAt.toLocal(),
+              start: localStart,
               summary: (row['summary'] ?? '').toString().trim(),
               location: (row['location'] ?? '').toString().trim(),
             ),
@@ -2277,6 +2317,39 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     }
 
     if (_error != null) {
+      if (!widget.showTechnicalErrors) {
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: GlassCard(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Geen thuiswedstrijden gevonden',
+                    style: TextStyle(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Swipe omlaag om te verversen.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: AppColors.textSecondary),
+                  ),
+                  const SizedBox(height: 14),
+                  ElevatedButton.icon(
+                    onPressed: _load,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Verversen'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -2327,13 +2400,13 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  _warnings.isNotEmpty
+                  widget.showTechnicalErrors && _warnings.isNotEmpty
                       ? 'Sommige teams konden we niet laden (bijv. verkeerde Nevobo-categorie / 404).'
                       : 'Controleer of je teams in Supabase staan (tabel `teams`) en of de Nevobo API bereikbaar is.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: AppColors.textSecondary),
                 ),
-                if (_warnings.isNotEmpty) ...[
+                if (widget.showTechnicalErrors && _warnings.isNotEmpty) ...[
                   const SizedBox(height: 10),
                   Text(
                     _warnings.take(5).join('\n'),
@@ -2367,7 +2440,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     }
 
     final children = <Widget>[];
-    if (_supabaseLinkTableMissing) {
+    if (widget.showTechnicalErrors && _supabaseLinkTableMissing) {
       children.add(
         GlassCard(
           child: Padding(
@@ -2394,7 +2467,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       );
       children.add(const SizedBox(height: 12));
     }
-    if (_warnings.isNotEmpty) {
+    if (widget.showTechnicalErrors && _warnings.isNotEmpty) {
       children.add(
         GlassCard(
           child: Padding(

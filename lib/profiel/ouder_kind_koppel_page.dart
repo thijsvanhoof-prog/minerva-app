@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart' show TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
