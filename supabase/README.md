@@ -52,8 +52,16 @@ Daarna kun je in de app nieuwsberichten toevoegen. Zonder deze tabel wordt mock-
 **Foto's en linkjes bij nieuws:** Om bij nieuwsberichten afbeeldingen (URL's) en linkjes toe te voegen, voer daarna **`home_news_photos_links.sql`** uit. Daarmee krijg je de kolommen `image_urls` en `links` op `home_news`.
 
 **Foto's uit album (telefoon/desktop):** Om bij nieuws "Foto uit album" te laten uploaden naar Supabase in plaats van alleen als link:
+
 1. Maak in **Supabase Dashboard → Storage** een nieuwe bucket: naam **`news-images`**, **Public bucket** aan → Create.
-2. Voer in **SQL Editor** het script **`storage_news_images.sql`** uit (toegang voor lezen + upload).
+2. Voer **`storage_news_images.sql`** uit (public read + brede upload als startpunt).
+3. Voer **`fix_news_images_storage_upload_ownership.sql`** uit — upload alleen naar `{auth.uid()}/news/{fileName}` (zoals de app doet).
+4. Voer **`fix_news_images_storage_update_delete_policies.sql`** uit — update/delete alleen voor contentmanagers (bestuur/communicatie).
+
+**Padconventie:** nieuwe uploads gaan naar `{userId}/news/{fileName}`. Oude bestanden onder `news/...` blijven bereikbaar via public read; migratie is niet nodig.
+
+**Let op:** `storage_news_images.sql` is legacy setup en maakt een brede upload-policy aan. Draai het niet opnieuw op een live project zonder direct daarna stap 3 uit te voeren — anders staat brede upload weer aan.
+
 Daarna worden foto's uit het album geüpload naar Storage en alleen de URL in de database opgeslagen. **Gratis plan:** 1 GB bestandsopslag (ruimte voor veel foto's); database blijft licht.
 
 ## Match availability (Sport → Wedstrijden: Speler / Trainer/coach / Speel niet / Afmelden)

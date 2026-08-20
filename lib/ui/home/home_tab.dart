@@ -1,9 +1,11 @@
-import 'dart:convert' show base64Decode;
+import 'dart:async' show Timer, TimeoutException;
+import 'dart:convert' show base64Decode, jsonDecode;
 
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
@@ -123,6 +125,46 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     if (visibleUntil == null) return true;
     // show through the end moment (inclusive)
     return !DateTime.now().isAfter(visibleUntil);
+  }
+
+  List<String> _extractUrlsFromText(String text) {
+    final re = RegExp(r'(https?:\/\/[^\s)]+|www\.[^\s)]+)', caseSensitive: false);
+    final urls = <String>{};
+    for (final m in re.allMatches(text)) {
+      final raw = m.group(0)?.trim() ?? '';
+      if (raw.isEmpty) continue;
+      final normalized = _normalizeNewsUrl(raw);
+      if (normalized != null) urls.add(normalized);
+    }
+    return urls.toList();
+  }
+
+  String? _normalizeNewsUrl(String input) {
+    final cleaned = input.trim().replaceAll(RegExp(r'[.,;!?]+$'), '');
+    if (cleaned.isEmpty) return null;
+    var candidate = cleaned;
+    if (candidate.toLowerCase().startsWith('www.')) {
+      candidate = 'https://$candidate';
+    } else if (!candidate.contains('://') &&
+        RegExp(r'^[^\s]+\.[^\s]+$').hasMatch(candidate)) {
+      candidate = 'https://$candidate';
+    }
+    final uri = Uri.tryParse(candidate);
+    if (uri == null || !uri.hasScheme || uri.host.trim().isEmpty) return null;
+    if (uri.scheme != 'http' && uri.scheme != 'https') return null;
+    return candidate;
+  }
+
+  void _addNewsLinkIfValid(
+    List<NewsLink> links, {
+    required String? url,
+    String? label,
+  }) {
+    final value = _normalizeNewsUrl((url ?? '').trim());
+    if (value == null) return;
+    final exists = links.any((l) => l.url.trim().toLowerCase() == value.toLowerCase());
+    if (exists) return;
+    links.add(NewsLink(url: value, label: (label ?? '').trim().isEmpty ? null : label!.trim()));
   }
 
   Future<DateTime?> _pickVisibleUntilDate(DateTime? current) async {
@@ -1266,23 +1308,26 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       List<Map<String, dynamic>> rows = const [];
       String idField = 'news_id';
       for (final attempt in const [
-        // Preferred: supports visible_until, image_urls, links.
-        (
-          'news_id, title, description, created_at, author, category, source, visible_until, image_urls, links',
-          'news_id',
-        ),
-        (
-          'id, title, description, created_at, author, category, source, visible_until, image_urls, links',
-          'id',
-        ),
-        (
-          'news_id, title, body, created_at, author, category, source, visible_until, image_urls, links',
-          'news_id',
-        ),
-        (
-          'id, title, body, created_at, author, category, source, visible_until, image_urls, links',
-          'id',
-        ),
+        // Best: all columns including links.
+        ('news_id, title, description, created_at, author, category, source, visible_until, image_urls, links', 'news_id'),
+        ('id, title, description, created_at, author, category, source, visible_until, image_urls, links', 'id'),
+        ('news_id, title, body, created_at, author, category, source, visible_until, image_urls, links', 'news_id'),
+        ('id, title, body, created_at, author, category, source, visible_until, image_urls, links', 'id'),
+        // Without visible_until but with links.
+        ('news_id, title, description, created_at, author, category, source, image_urls, links', 'news_id'),
+        ('id, title, description, created_at, author, category, source, image_urls, links', 'id'),
+        ('news_id, title, body, created_at, author, category, source, image_urls, links', 'news_id'),
+        ('id, title, body, created_at, author, category, source, image_urls, links', 'id'),
+        // Without image_urls but with links.
+        ('news_id, title, description, created_at, author, category, source, visible_until, links', 'news_id'),
+        ('id, title, description, created_at, author, category, source, visible_until, links', 'id'),
+        ('news_id, title, body, created_at, author, category, source, visible_until, links', 'news_id'),
+        ('id, title, body, created_at, author, category, source, visible_until, links', 'id'),
+        // With links only (no visible_until, no image_urls).
+        ('news_id, title, description, created_at, author, category, source, links', 'news_id'),
+        ('id, title, description, created_at, author, category, source, links', 'id'),
+        ('news_id, title, body, created_at, author, category, source, links', 'news_id'),
+        ('id, title, body, created_at, author, category, source, links', 'id'),
         // Fallback: without image_urls/links.
         (
           'news_id, title, description, created_at, author, category, source, visible_until',
@@ -1372,12 +1417,78 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
           for (final e in rawLinks) {
             if (e is! Map) continue;
             final m = Map<String, dynamic>.from(e);
-            final url = (m['url'] ?? '').toString().trim();
-            if (url.isEmpty) continue;
-            links.add(NewsLink(
-              url: url,
-              label: (m['label'] as String?)?.trim(),
-            ));
+            _addNewsLinkIfValid(
+              links,
+              url: (m['url'] ?? '').toString(),
+              label: (m['label'] ?? '').toString(),
+            );
+          }
+        } else if (rawLinks is Map) {
+          final m = Map<String, dynamic>.from(rawLinks);
+          _addNewsLinkIfValid(
+            links,
+            url: (m['url'] ?? '').toString(),
+            label: (m['label'] ?? '').toString(),
+          );
+        } else if (rawLinks is String) {
+          final s = rawLinks.trim();
+          if (s.isNotEmpty) {
+            if (s.startsWith('[') || s.startsWith('{')) {
+              try {
+                final decoded = jsonDecode(s);
+                if (decoded is List) {
+                  for (final e in decoded) {
+                    if (e is! Map) continue;
+                    final m = Map<String, dynamic>.from(e);
+                    _addNewsLinkIfValid(
+                      links,
+                      url: (m['url'] ?? '').toString(),
+                      label: (m['label'] ?? '').toString(),
+                    );
+                  }
+                } else if (decoded is Map) {
+                  final m = Map<String, dynamic>.from(decoded);
+                  _addNewsLinkIfValid(
+                    links,
+                    url: (m['url'] ?? '').toString(),
+                    label: (m['label'] ?? '').toString(),
+                  );
+                }
+              } catch (_) {
+                _addNewsLinkIfValid(links, url: s);
+              }
+            } else {
+              _addNewsLinkIfValid(links, url: s);
+            }
+          }
+        }
+        final rowLabel = (r['link_label'] ?? r['label'] ?? '').toString().trim();
+        final fallbackLabel = rowLabel.isNotEmpty ? rowLabel : null;
+        _addNewsLinkIfValid(
+          links,
+          url: (r['link_url'] ?? '').toString(),
+          label: fallbackLabel,
+        );
+        _addNewsLinkIfValid(
+          links,
+          url: (r['link'] ?? '').toString(),
+          label: fallbackLabel,
+        );
+        _addNewsLinkIfValid(
+          links,
+          url: (r['url'] ?? '').toString(),
+          label: fallbackLabel,
+        );
+        _addNewsLinkIfValid(
+          links,
+          url: (r['website'] ?? '').toString(),
+          label: fallbackLabel,
+        );
+        final sourceUrl = (r['source'] ?? '').toString().trim();
+        _addNewsLinkIfValid(links, url: sourceUrl, label: fallbackLabel);
+        if (links.isEmpty) {
+          for (final url in _extractUrlsFromText('$title\n$body')) {
+            links.add(NewsLink(url: url));
           }
         }
         list.add(
@@ -1937,7 +2048,11 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   }
 
   Future<void> _openUrl(String url) async {
-    final uri = Uri.tryParse(url);
+    var candidate = url.trim();
+    if (candidate.toLowerCase().startsWith('www.')) {
+      candidate = 'https://$candidate';
+    }
+    final uri = Uri.tryParse(candidate);
     if (uri == null) return;
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -2041,6 +2156,295 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     );
   }
 
+  List<Widget> _buildImagePickerSection({
+    required List<String> imageUrls,
+    required bool uploadingImage,
+    required String uploadingStatus,
+    required void Function(void Function()) setLocalState,
+    required void Function(List<String>) onImagesChanged,
+    required void Function(bool) onUploadingChanged,
+    required void Function(String) onStatusChanged,
+  }) {
+    void safeLocalState(void Function() fn) {
+      try {
+        setLocalState(fn);
+      } catch (_) {
+        // Dialog can already be closed when async callbacks finish.
+      }
+    }
+
+    return [
+      if (imageUrls.isNotEmpty)
+        ...imageUrls.asMap().entries.map((entry) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Builder(
+                builder: (context) {
+                  final screenWidth = MediaQuery.of(context).size.width;
+                  final previewWidth =
+                      (screenWidth - 80).clamp(220.0, 500.0);
+                  return SizedBox(
+                    width: previewWidth,
+                    height: 140,
+                    child: Stack(
+                      alignment: Alignment.topRight,
+                      children: [
+                        Positioned.fill(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.network(
+                              entry.value,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, _, _) => Container(
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: AppColors.textSecondary
+                                      .withValues(alpha: 0.2),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Icon(
+                                  Icons.broken_image_outlined,
+                                  size: 40,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.all(4),
+                          child: IconButton(
+                            icon: const Icon(
+                              Icons.close,
+                              color: Colors.white,
+                              size: 22,
+                            ),
+                            style: IconButton.styleFrom(
+                              backgroundColor: Colors.black54,
+                              padding: const EdgeInsets.all(4),
+                              minimumSize: const Size(28, 28),
+                            ),
+                            onPressed: () {
+                              safeLocalState(() {
+                                final updated = [...imageUrls]
+                                  ..removeAt(entry.key);
+                                onImagesChanged(updated);
+                              });
+                            },
+                            tooltip: 'Verwijderen',
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            )),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: uploadingImage
+            ? Padding(
+                padding: const EdgeInsets.all(8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      uploadingStatus.isEmpty ? 'Bezig...' : uploadingStatus,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            : TextButton.icon(
+                onPressed: () async {
+                  if (uploadingImage) return;
+                  try {
+                    final file = await _pickNewsImageFile();
+                    if (file == null) return;
+                    safeLocalState(() {
+                      onUploadingChanged(true);
+                      onStatusChanged('Foto voorbereiden...');
+                    });
+                    await WidgetsBinding.instance.endOfFrame;
+                    final url = await _uploadNewsImage(
+                      file,
+                      onStatus: (status) {
+                        safeLocalState(() => onStatusChanged(status));
+                      },
+                    );
+                    if (url != null) {
+                      safeLocalState(() {
+                        onImagesChanged([...imageUrls, url]);
+                      });
+                    }
+                  } catch (e, st) {
+                    debugPrint('[news-image] onPressed error: $e\n$st');
+                    if (mounted) {
+                      showTopMessage(
+                        context,
+                        'Afbeelding kiezen mislukt: $e',
+                        isError: true,
+                      );
+                    }
+                  } finally {
+                    safeLocalState(() {
+                      onUploadingChanged(false);
+                      onStatusChanged('');
+                    });
+                  }
+                },
+                icon: const Icon(Icons.add_photo_alternate_outlined, size: 18),
+                label: const Text('Afbeelding toevoegen'),
+              ),
+      ),
+    ];
+  }
+
+  Future<XFile?> _pickNewsImageFile() async {
+    try {
+      FocusManager.instance.primaryFocus?.unfocus();
+      final picker = ImagePicker();
+      final file = await picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1600,
+        imageQuality: 85,
+        requestFullMetadata: false,
+      );
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+      }
+      return file;
+    } catch (e) {
+      if (mounted) {
+        showTopMessage(
+          context,
+          'Afbeelding kiezen mislukt: $e',
+          isError: true,
+        );
+      }
+      return null;
+    }
+  }
+
+  Future<String?> _uploadNewsImage(
+    XFile file, {
+    void Function(String status)? onStatus,
+  }) async {
+    void report(String s) {
+      debugPrint('[news-image] $s');
+      onStatus?.call(s);
+    }
+
+    report('Controleren inlog...');
+    final session = _client.auth.currentSession;
+    if (session == null) {
+      if (mounted) {
+        showTopMessage(
+          context,
+          'Niet ingelogd: foto\'s uploaden kan alleen als je bent ingelogd.',
+          isError: true,
+        );
+      }
+      return null;
+    }
+
+    final rawExt = file.name.contains('.')
+        ? file.name.split('.').last.toLowerCase()
+        : '';
+    // image_picker op iOS/Android levert na imageQuality-compressie altijd JPEG.
+    // Forceer daarom jpeg wanneer de extensie onbekend of heic/heif is, want de
+    // storage-bucket staat alleen jpeg/png/webp/gif toe.
+    final normalizedExt = (rawExt.isEmpty || rawExt == 'heic' || rawExt == 'heif')
+        ? 'jpg'
+        : rawExt;
+    final mimeByExt = <String, String>{
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'webp': 'image/webp',
+      'gif': 'image/gif',
+    };
+    final contentType = mimeByExt[normalizedExt] ?? 'image/jpeg';
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final fileName = '$stamp.$normalizedExt';
+    final userId = session.user.id;
+    final path = '$userId/news/$fileName';
+    debugPrint(
+      '[news-image] prepared path=$path, contentType=$contentType, rawExt=$rawExt',
+    );
+    try {
+      report('Foto inlezen...');
+      final bytes = await file.readAsBytes().timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => throw TimeoutException(
+          'Foto inlezen duurde te lang.',
+        ),
+      );
+      debugPrint('[news-image] bytes read: ${bytes.lengthInBytes}');
+      if (bytes.lengthInBytes > 5 * 1024 * 1024) {
+        if (mounted) {
+          showTopMessage(
+            context,
+            'Foto is te groot (${(bytes.lengthInBytes / (1024 * 1024)).toStringAsFixed(1)} MB, max 5 MB). Kies een kleinere foto.',
+            isError: true,
+          );
+        }
+        return null;
+      }
+      report('Uploaden naar server (0s)...');
+      final uploadStart = DateTime.now();
+      final tickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        final elapsed = DateTime.now().difference(uploadStart).inSeconds;
+        report('Uploaden naar server (${elapsed}s)...');
+      });
+      try {
+        await _client.storage.from('news-images').uploadBinary(
+          path,
+          bytes,
+          fileOptions: FileOptions(contentType: contentType),
+        ).timeout(
+          const Duration(seconds: 20),
+          onTimeout: () => throw TimeoutException(
+            'Upload duurde te lang (20s). Controleer de verbinding, RLS-policies en of de bucket "news-images" bestaat.',
+          ),
+        );
+      } finally {
+        tickTimer.cancel();
+      }
+      debugPrint('[news-image] upload complete');
+      report('Link ophalen...');
+      final url = _client.storage.from('news-images').getPublicUrl(path);
+      debugPrint('[news-image] public url: $url');
+      return url;
+    } on StorageException catch (e, st) {
+      debugPrint('[news-image] StorageException: ${e.message}\n$st');
+      if (!mounted) return null;
+      showTopMessage(
+        context,
+        'Upload geweigerd door server: ${e.message}',
+        isError: true,
+      );
+      return null;
+    } on TimeoutException catch (e, st) {
+      debugPrint('[news-image] TimeoutException: ${e.message}\n$st');
+      if (!mounted) return null;
+      showTopMessage(context, e.message ?? 'Upload timeout', isError: true);
+      return null;
+    } catch (e, st) {
+      debugPrint('[news-image] error: $e\n$st');
+      if (!mounted) return null;
+      showTopMessage(context, 'Afbeelding uploaden mislukt: $e', isError: true);
+      return null;
+    }
+  }
+
   Future<void> _openAddNewsDialog() async {
     final authorName = (() {
       try {
@@ -2058,6 +2462,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     final linkLabelController = TextEditingController();
     DateTime? visibleUntil;
     List<NewsLink> links = [];
+    List<String> imageUrls = [];
+    bool uploadingImage = false;
+    String uploadingStatus = '';
 
     final ok = await showDialog<bool>(
       context: context,
@@ -2085,6 +2492,24 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                   hintText: 'Volledige tekst van het bericht',
                   alignLabelWithHint: true,
                 ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Afbeeldingen',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.onBackground,
+                ),
+              ),
+              const SizedBox(height: 6),
+              ..._buildImagePickerSection(
+                imageUrls: imageUrls,
+                uploadingImage: uploadingImage,
+                uploadingStatus: uploadingStatus,
+                setLocalState: setLocalState,
+                onImagesChanged: (urls) => imageUrls = urls,
+                onUploadingChanged: (v) => uploadingImage = v,
+                onStatusChanged: (s) => uploadingStatus = s,
               ),
               const SizedBox(height: 16),
               const Text(
@@ -2204,10 +2629,12 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
               child: const Text('Annuleren'),
             ),
             ElevatedButton(
-              onPressed: () {
-                if (titleController.text.trim().isEmpty) return;
-                Navigator.of(context).pop(true);
-              },
+              onPressed: uploadingImage
+                  ? null
+                  : () {
+                      if (titleController.text.trim().isEmpty) return;
+                      Navigator.of(context).pop(true);
+                    },
               child: const Text('Opslaan'),
             ),
           ],
@@ -2228,39 +2655,57 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     if (title.isEmpty) return;
 
     try {
+      final firstLinkUrl = links.isNotEmpty ? links.first.url.trim() : '';
+      final sourceValue = firstLinkUrl.isNotEmpty ? firstLinkUrl : 'app';
+      final descriptionWithFallbackLink = links.isEmpty
+          ? descriptionController.text.trim()
+          : '${descriptionController.text.trim()}\n\nLink: $firstLinkUrl';
       final payload = {
         'title': title,
         'description': descriptionController.text.trim(),
         'author': authorName,
         'category': 'bestuur',
         'visible_until': visibleUntil?.toUtc().toIso8601String(),
+        'image_urls': imageUrls,
         'links': links
             .map((e) => {'url': e.url, 'label': e.label ?? ''})
             .toList(),
       };
       bool usedFallbackWithoutMedia = false;
       try {
-        await _client.from('home_news').insert({...payload, 'source': 'app'});
+        await _client.from('home_news').insert({...payload, 'source': sourceValue});
       } on PostgrestException catch (e) {
         if (e.code == 'PGRST204' ||
             (e.message.contains("Could not find the '") &&
                 e.message.contains("column"))) {
-          final hadMedia = links.isNotEmpty;
-          final fallback = {...payload, 'source': 'app'}
-            ..remove('visible_until')
-            ..remove('links');
+          final hadMedia = links.isNotEmpty || imageUrls.isNotEmpty;
+          final fallbackKeepLinks = {...payload, 'source': sourceValue}
+            ..remove('visible_until');
+          final fallbackWithoutMedia = {...fallbackKeepLinks}
+            ..remove('links')
+            ..remove('image_urls');
           try {
-            await _client.from('home_news').insert(fallback);
-            if (hadMedia) usedFallbackWithoutMedia = true;
+            await _client.from('home_news').insert(fallbackKeepLinks);
           } on PostgrestException catch (e2) {
             if (e2.code == 'PGRST204' ||
                 (e2.message.contains("Could not find the '") &&
                     e2.message.contains("column"))) {
-              await _client.from('home_news').insert({
-                'title': title,
-                'description': descriptionController.text.trim(),
-              });
-              if (hadMedia) usedFallbackWithoutMedia = true;
+              try {
+                await _client.from('home_news').insert(fallbackWithoutMedia);
+                if (hadMedia) usedFallbackWithoutMedia = true;
+              } on PostgrestException catch (e3) {
+                if (e3.code == 'PGRST204' ||
+                    (e3.message.contains("Could not find the '") &&
+                        e3.message.contains("column"))) {
+                  await _client.from('home_news').insert({
+                    'title': title,
+                    'description': descriptionWithFallbackLink,
+                  });
+                  if (hadMedia) usedFallbackWithoutMedia = true;
+                } else {
+                  rethrow;
+                }
+              }
             } else {
               rethrow;
             }
@@ -2278,7 +2723,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       if (usedFallbackWithoutMedia) {
         showTopMessage(
           context,
-          'Nieuwsbericht opgeslagen. Linkjes zijn niet opgeslagen: '
+          'Nieuwsbericht opgeslagen. Afbeeldingen/linkjes zijn niet opgeslagen: '
           'voer in Supabase → SQL Editor het script home_news_photos_links.sql uit.',
           isError: true,
         );
@@ -2311,6 +2756,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     final linkLabelController = TextEditingController();
     DateTime? visibleUntil = existing.visibleUntil;
     List<NewsLink> links = List<NewsLink>.from(existing.links);
+    List<String> imageUrls = List<String>.from(existing.imageUrls);
+    bool uploadingImage = false;
+    String uploadingStatus = '';
 
     final ok = await showDialog<bool>(
       context: context,
@@ -2338,6 +2786,24 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                   hintText: 'Volledige tekst van het bericht',
                   alignLabelWithHint: true,
                 ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Afbeeldingen',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.onBackground,
+                ),
+              ),
+              const SizedBox(height: 6),
+              ..._buildImagePickerSection(
+                imageUrls: imageUrls,
+                uploadingImage: uploadingImage,
+                uploadingStatus: uploadingStatus,
+                setLocalState: setLocalState,
+                onImagesChanged: (urls) => imageUrls = urls,
+                onUploadingChanged: (v) => uploadingImage = v,
+                onStatusChanged: (s) => uploadingStatus = s,
               ),
               const SizedBox(height: 16),
               const Text(
@@ -2457,10 +2923,12 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
               child: const Text('Annuleren'),
             ),
             ElevatedButton(
-              onPressed: () {
-                if (titleController.text.trim().isEmpty) return;
-                Navigator.of(context).pop(true);
-              },
+              onPressed: uploadingImage
+                  ? null
+                  : () {
+                      if (titleController.text.trim().isEmpty) return;
+                      Navigator.of(context).pop(true);
+                    },
               child: const Text('Opslaan'),
             ),
           ],
@@ -2481,12 +2949,18 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     if (title.isEmpty) return;
 
     try {
+      final firstLinkUrl = links.isNotEmpty ? links.first.url.trim() : '';
+      final sourceValue = firstLinkUrl.isNotEmpty ? firstLinkUrl : 'app';
+      final descriptionWithFallbackLink = links.isEmpty
+          ? descriptionController.text.trim()
+          : '${descriptionController.text.trim()}\n\nLink: $firstLinkUrl';
       final payload = {
         'title': title,
         'description': descriptionController.text.trim(),
         'author': authorName,
         'category': existing.category.label.toLowerCase(),
         'visible_until': visibleUntil?.toUtc().toIso8601String(),
+        'image_urls': imageUrls,
         'links': links
             .map((e) => {'url': e.url, 'label': e.label ?? ''})
             .toList(),
@@ -2495,31 +2969,46 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       try {
         await _client
             .from('home_news')
-            .update({...payload, 'source': 'app'})
+            .update({...payload, 'source': sourceValue})
             .eq(_newsIdField, idValue);
       } on PostgrestException catch (e) {
         if (e.code == 'PGRST204' ||
             (e.message.contains("Could not find the '") &&
                 e.message.contains("column"))) {
-          final hadMedia = links.isNotEmpty;
-          final fallback = {...payload, 'source': 'app'}
-            ..remove('visible_until')
-            ..remove('links');
+          final hadMedia = links.isNotEmpty || imageUrls.isNotEmpty;
+          final fallbackKeepLinks = {...payload, 'source': sourceValue}
+            ..remove('visible_until');
+          final fallbackWithoutMedia = {...fallbackKeepLinks}
+            ..remove('links')
+            ..remove('image_urls');
           try {
             await _client
                 .from('home_news')
-                .update(fallback)
+                .update(fallbackKeepLinks)
                 .eq(_newsIdField, idValue);
-            if (hadMedia) usedFallbackWithoutMedia = true;
           } on PostgrestException catch (e2) {
             if (e2.code == 'PGRST204' ||
                 (e2.message.contains("Could not find the '") &&
                     e2.message.contains("column"))) {
-              await _client.from('home_news').update({
-                'title': title,
-                'description': descriptionController.text.trim(),
-              }).eq(_newsIdField, idValue);
-              if (hadMedia) usedFallbackWithoutMedia = true;
+              try {
+                await _client
+                    .from('home_news')
+                    .update(fallbackWithoutMedia)
+                    .eq(_newsIdField, idValue);
+                if (hadMedia) usedFallbackWithoutMedia = true;
+              } on PostgrestException catch (e3) {
+                if (e3.code == 'PGRST204' ||
+                    (e3.message.contains("Could not find the '") &&
+                        e3.message.contains("column"))) {
+                  await _client.from('home_news').update({
+                    'title': title,
+                    'description': descriptionWithFallbackLink,
+                  }).eq(_newsIdField, idValue);
+                  if (hadMedia) usedFallbackWithoutMedia = true;
+                } else {
+                  rethrow;
+                }
+              }
             } else {
               rethrow;
             }
@@ -2533,7 +3022,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       if (usedFallbackWithoutMedia) {
         showTopMessage(
           context,
-          'Nieuwsbericht opgeslagen. Linkjes zijn niet opgeslagen: '
+          'Nieuwsbericht opgeslagen. Afbeeldingen/linkjes zijn niet opgeslagen: '
           'voer in Supabase → SQL Editor het script home_news_photos_links.sql uit.',
           isError: true,
         );
@@ -4865,11 +5354,34 @@ class _NewsCard extends StatelessWidget {
     this.imageBuilder,
   });
 
+  static List<NewsLink> _fallbackLinksFromText(String text) {
+    final re = RegExp(r'(https?:\/\/[^\s)]+|www\.[^\s)]+)', caseSensitive: false);
+    final urls = <String>{};
+    for (final m in re.allMatches(text)) {
+      final raw = m.group(0)?.trim() ?? '';
+      if (raw.isEmpty) continue;
+      var cleaned = raw.replaceAll(RegExp(r'[.,;!?]+$'), '');
+      if (cleaned.toLowerCase().startsWith('www.')) {
+        cleaned = 'https://$cleaned';
+      }
+      final uri = Uri.tryParse(cleaned);
+      if (uri != null &&
+          uri.hasScheme &&
+          (uri.scheme == 'http' || uri.scheme == 'https')) {
+        urls.add(cleaned);
+      }
+    }
+    return urls.map((u) => NewsLink(url: u)).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     final showMenu = canManage;
     final canEdit = onEdit != null;
     final canDelete = onDelete != null;
+    final visibleLinks = item.links.isNotEmpty
+        ? item.links
+        : _fallbackLinksFromText('${item.title}\n${item.body}');
 
     return _CardBox(
       margin: const EdgeInsets.only(bottom: 12),
@@ -4881,7 +5393,6 @@ class _NewsCard extends StatelessWidget {
             spacing: 8,
             runSpacing: 8,
             children: [
-              _Pill(item.category.label),
               _Pill(item.author),
               Text(
                 _newsDateLabel(item.date),
@@ -4929,46 +5440,6 @@ class _NewsCard extends StatelessWidget {
                                 errorBuilder: (_, _, _) =>
                                     const SizedBox.shrink(),
                               ),
-                      ),
-                    ],
-                    if (item.links.isNotEmpty) ...[
-                      const SizedBox(height: 6),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 4,
-                        children: item.links.take(3).map((link) {
-                          return InkWell(
-                            onTap: () => onOpenUrl?.call(link.url),
-                            borderRadius: BorderRadius.circular(6),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 2,
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.link,
-                                    size: 14,
-                                    color: AppColors.primary,
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    link.displayLabel,
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: AppColors.primary,
-                                      decoration: TextDecoration.underline,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }).toList(),
                       ),
                     ],
                   ],
@@ -5042,6 +5513,43 @@ class _NewsCard extends StatelessWidget {
             overflow: onReadMore != null ? TextOverflow.ellipsis : null,
             style: const TextStyle(color: AppColors.textSecondary),
           ),
+          if (visibleLinks.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: () => onOpenUrl?.call(visibleLinks.first.url),
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    const Icon(Icons.link, size: 16, color: AppColors.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        visibleLinks.first.displayLabel,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: AppColors.primary,
+                          decoration: TextDecoration.underline,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (visibleLinks.length > 1)
+                      Text(
+                        '+${visibleLinks.length - 1}',
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           if (onReadMore != null) ...[
             const SizedBox(height: 10),
             Align(
