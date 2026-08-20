@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
+import 'package:minerva_app/ui/committees/committee_normalization.dart';
 
 class InfoTab extends StatefulWidget {
   const InfoTab({super.key});
@@ -24,6 +25,7 @@ class _InfoTabState extends State<InfoTab> {
   final List<String> _committees = [];
   final Map<String, String> _committeeDisplayName = {};
   final Map<String, List<_CommitteeMember>> _membersByCommittee = {};
+  final Map<String, _CommitteeContactSettings> _contactSettingsByCommittee = {};
 
   @override
   void initState() {
@@ -39,6 +41,7 @@ class _InfoTabState extends State<InfoTab> {
       _committees.clear();
       _committeeDisplayName.clear();
       _membersByCommittee.clear();
+      _contactSettingsByCommittee.clear();
     });
 
     try {
@@ -113,7 +116,8 @@ class _InfoTabState extends State<InfoTab> {
         }
       }
 
-      if (rows.isEmpty) {
+      final contactSettings = await _loadCommitteeContactSettings();
+      if (rows.isEmpty && contactSettings.isEmpty) {
         if (!mounted) return;
         setState(() {
           _loadingCommittees = false;
@@ -121,13 +125,13 @@ class _InfoTabState extends State<InfoTab> {
         return;
       }
 
-      final committeeKeys = <String>{};
+      final committeeKeys = <String>{...contactSettings.keys};
       final committeeDisplayNames = <String, String>{};
       final profileIds = <String>{};
       for (final row in rows) {
         final rawName = row['committee_name']?.toString().trim() ?? '';
         if (rawName.isEmpty) continue;
-        final key = _normalizeCommittee(rawName);
+        final key = _resolveInfoCommitteeKey(rawName);
         committeeKeys.add(key);
         committeeDisplayNames.putIfAbsent(key, () => rawName);
         final pid = row['profile_id']?.toString() ?? '';
@@ -163,7 +167,7 @@ class _InfoTabState extends State<InfoTab> {
       for (final row in rows) {
         final rawName = row['committee_name']?.toString().trim() ?? '';
         if (rawName.isEmpty) continue;
-        final key = _normalizeCommittee(rawName);
+        final key = _resolveInfoCommitteeKey(rawName);
 
         final pid = row['profile_id']?.toString() ?? '';
         final displayNameFromRow = (row['display_name'] ?? row['name'])
@@ -214,20 +218,31 @@ class _InfoTabState extends State<InfoTab> {
         'communicatie',
         'technische-commissie',
         'wedstrijdzaken',
-        'jeugd',
+        'jeugdcommissie',
       ];
       final indexByKey = <String, int>{
         for (var i = 0; i < visibleOrder.length; i++) visibleOrder[i]: i,
       };
-      list.removeWhere((k) => !indexByKey.containsKey(k));
-      list.sort(
-        (a, b) => (indexByKey[a] ?? 999).compareTo(indexByKey[b] ?? 999),
-      );
+      list.removeWhere((k) => !(contactSettings[k]?.showInContact ?? true));
+      list.sort((a, b) {
+        final sa = contactSettings[a]?.sortOrder;
+        final sb = contactSettings[b]?.sortOrder;
+        if (sa != null || sb != null) {
+          final va = sa ?? 999999;
+          final vb = sb ?? 999999;
+          if (va != vb) return va.compareTo(vb);
+        }
+        final ia = indexByKey[a] ?? 999;
+        final ib = indexByKey[b] ?? 999;
+        if (ia != ib) return ia.compareTo(ib);
+        return _committeeLabel(a).toLowerCase().compareTo(_committeeLabel(b).toLowerCase());
+      });
 
       if (!mounted) return;
       setState(() {
         _committees.addAll(list);
         _committeeDisplayName.addAll(committeeDisplayNames);
+        _contactSettingsByCommittee.addAll(contactSettings);
         _loadingCommittees = false;
       });
     } catch (e) {
@@ -289,19 +304,97 @@ class _InfoTabState extends State<InfoTab> {
     }
   }
 
-  String _normalizeCommittee(String value) {
+  bool _isMissingColumnError(PostgrestException e) {
+    return e.code == 'PGRST204' ||
+        e.message.contains('column') ||
+        e.message.contains('Could not find the');
+  }
+
+  List<String> _parseEmails(dynamic raw) {
+    if (raw == null) return const [];
+    if (raw is List) {
+      return raw
+          .map((e) => e.toString().trim())
+          .where((e) => e.contains('@'))
+          .toSet()
+          .toList();
+    }
+    return raw
+        .toString()
+        .split(RegExp(r'[,;\n]'))
+        .map((e) => e.trim())
+        .where((e) => e.contains('@'))
+        .toSet()
+        .toList();
+  }
+
+  bool _parseShowInContact(dynamic raw) {
+    if (raw is bool) return raw;
+    if (raw == null) return true;
+    final value = raw.toString().trim().toLowerCase();
+    if (value.isEmpty) return true;
+    return value == 'true' || value == '1' || value == 'yes' || value == 'ja';
+  }
+
+  int? _parseSortOrder(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    return int.tryParse(raw.toString().trim());
+  }
+
+  Future<Map<String, _CommitteeContactSettings>> _loadCommitteeContactSettings() async {
+    List<Map<String, dynamic>> rows = const [];
+    for (final select in const [
+      'committee_key, display_name, show_in_contact, contact_emails, sort_order',
+      'committee_key, display_name, show_in_contact, sort_order',
+      'committee_key, display_name, sort_order',
+      'committee_key, show_in_contact, contact_emails, sort_order',
+      'committee_key, show_in_contact, sort_order',
+      'committee_key, sort_order',
+      'committee_key',
+    ]) {
+      try {
+        final res = await _client.from('committee_contact_settings').select(select);
+        rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        break;
+      } on PostgrestException catch (e) {
+        if (_isMissingColumnError(e)) continue;
+      } catch (_) {
+        break;
+      }
+    }
+
+    final settings = <String, _CommitteeContactSettings>{};
+    for (final row in rows) {
+      final rawName = (row['committee_key'] ?? row['display_name'] ?? '')
+          .toString()
+          .trim();
+      if (rawName.isEmpty) continue;
+      final key = _resolveInfoCommitteeKey(rawName);
+      if (key.isEmpty) continue;
+      final emails = <String>{
+        ..._parseEmails(row['contact_emails']),
+      }.toList()
+        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      settings[key] = _CommitteeContactSettings(
+        showInContact: _parseShowInContact(row['show_in_contact']),
+        emails: emails,
+        sortOrder: _parseSortOrder(row['sort_order']),
+      );
+    }
+    return settings;
+  }
+
+  String _resolveInfoCommitteeKey(String value) {
     final c = value.trim().toLowerCase();
     if (c.isEmpty) return '';
-    // Varianten samenvoegen voor dezelfde commissie
-    if (c == 'bestuur') return 'bestuur';
-    if (c == 'tc' || c.contains('technische')) return 'technische-commissie';
-    if (c.contains('communicatie')) return 'communicatie';
-    if (c.contains('wedstrijd')) return 'wedstrijdzaken';
-    if (c.contains('jeugd')) return 'jeugd';
-    if (c.contains('algemeen') || c.contains('secretariaat')) {
+    final key = normalizeCommitteeKey(value);
+    if (key != 'bestuur' &&
+        (c.contains('algemeen') || c.contains('secretariaat'))) {
       return 'secretariaat';
     }
-    return c;
+    return key;
   }
 
   String _committeeLabel(String key) {
@@ -314,6 +407,7 @@ class _InfoTabState extends State<InfoTab> {
         return 'Technische Commissie';
       case 'wedstrijdzaken':
         return 'Wedstrijdzaken';
+      case 'jeugdcommissie':
       case 'jeugd':
         return 'Jeugdcommissie';
     }
@@ -433,6 +527,8 @@ class _InfoTabState extends State<InfoTab> {
                             ..._committees.map((c) {
                               final members =
                                   _membersByCommittee[c] ?? const [];
+                              final contactEmails =
+                                  _contactSettingsByCommittee[c]?.emails ?? const <String>[];
                               return Padding(
                                 padding: const EdgeInsets.only(top: 12),
                                 child: Column(
@@ -447,6 +543,34 @@ class _InfoTabState extends State<InfoTab> {
                                       ),
                                     ),
                                     const SizedBox(height: 6),
+                                    if (contactEmails.isNotEmpty) ...[
+                                      ...contactEmails.map(
+                                        (email) => Padding(
+                                          padding: const EdgeInsets.only(bottom: 4),
+                                          child: GestureDetector(
+                                            onTap: () => _openMail(email),
+                                            child: Row(
+                                              children: [
+                                                const Icon(
+                                                  Icons.mail_outline,
+                                                  size: 14,
+                                                  color: AppColors.primary,
+                                                ),
+                                                const SizedBox(width: 6),
+                                                Text(
+                                                  email,
+                                                  style: const TextStyle(
+                                                    color: AppColors.primary,
+                                                    fontSize: 13,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                    ],
                                     if (members.isEmpty)
                                       const Text(
                                         '—',
@@ -476,7 +600,7 @@ class _InfoTabState extends State<InfoTab> {
                                                       AppColors.textSecondary,
                                                 ),
                                               ),
-                                              if (m.email != null) ...[
+                                              if (contactEmails.isEmpty && m.email != null) ...[
                                                 const SizedBox(height: 2),
                                                 GestureDetector(
                                                   onTap: () =>
@@ -535,5 +659,17 @@ class _CommitteeMember {
     required this.name,
     required this.function,
     this.email,
+  });
+}
+
+class _CommitteeContactSettings {
+  final bool showInContact;
+  final List<String> emails;
+  final int? sortOrder;
+
+  const _CommitteeContactSettings({
+    required this.showInContact,
+    required this.emails,
+    this.sortOrder,
   });
 }

@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/committees/committee_normalization.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
@@ -959,42 +960,17 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
 
   final List<String> _committees = [];
   final Map<String, List<_CommitteeMember>> _membersByCommittee = {};
+  final Map<String, _CommitteeContactSettings> _committeeContactSettings = {};
 
   List<_ProfileOption> _allProfiles = const [];
   bool _loadingProfiles = false;
-
-  static const _manageableCommittees = [
-    'bestuur',
-    'technische-commissie',
-    'communicatie',
-    'wedstrijdzaken',
-    'evenementen',
-    'jeugdcommissie',
-    'scheidsrechters-tellers',
-    'vrijwilligers',
-  ];
+  bool _savingOrder = false;
 
   @override
   void initState() {
     super.initState();
     _loadCommittees();
     _loadAllProfilesForManagement();
-  }
-
-  String _normalizeCommittee(String value) {
-    final c = value.trim().toLowerCase();
-    if (c.isEmpty) return '';
-    if (c == 'bestuur') return 'bestuur';
-    if (c == 'tc' || c.contains('technische')) return 'technische-commissie';
-    if (c.contains('communicatie')) return 'communicatie';
-    if (c.contains('wedstrijd')) return 'wedstrijdzaken';
-    if (c.contains('evenement')) return 'evenementen';
-    if (c == 'jeugd' || c.contains('jeugdcommissie')) return 'jeugdcommissie';
-    if ((c.contains('scheidsrechter') && c.contains('teller')) || c.contains('scheidsrechters-tellers')) {
-      return 'scheidsrechters-tellers';
-    }
-    if (c.contains('vrijwilliger')) return 'vrijwilligers';
-    return c;
   }
 
   String _committeeLabel(String value) {
@@ -1016,7 +992,416 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       case 'vrijwilligers':
         return 'Vrijwilligers';
       default:
-        return value;
+        return value
+            .replaceAll('-', ' ')
+            .split(' ')
+            .where((part) => part.isNotEmpty)
+            .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
+            .join(' ');
+    }
+  }
+
+  bool _isMissingColumnError(PostgrestException e) {
+    final msg = e.message.toLowerCase();
+    return e.code == 'PGRST204' ||
+        (msg.contains('column') && msg.contains('could not find'));
+  }
+
+  List<String> _parseEmails(dynamic raw) {
+    if (raw == null) return const [];
+    final out = <String>{};
+    if (raw is List) {
+      for (final item in raw) {
+        final value = item.toString().trim();
+        if (value.contains('@')) out.add(value);
+      }
+      return out.toList();
+    }
+    final text = raw.toString();
+    for (final chunk in text.split(RegExp(r'[,;\n]'))) {
+      final value = chunk.trim();
+      if (value.contains('@')) out.add(value);
+    }
+    return out.toList();
+  }
+
+  bool _parseShowInContact(dynamic raw) {
+    if (raw is bool) return raw;
+    if (raw == null) return true;
+    final value = raw.toString().trim().toLowerCase();
+    if (value.isEmpty) return true;
+    return value == 'true' || value == '1' || value == 'yes' || value == 'ja';
+  }
+
+  int? _parseSortOrder(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    return int.tryParse(raw.toString().trim());
+  }
+
+  Future<Map<String, _CommitteeContactSettings>> _loadCommitteeContactSettings() async {
+    List<Map<String, dynamic>> rows = const [];
+    for (final select in const [
+      'committee_key, display_name, show_in_contact, contact_emails, sort_order',
+      'committee_key, display_name, show_in_contact, sort_order',
+      'committee_key, display_name, sort_order',
+      'committee_key, show_in_contact, contact_emails, sort_order',
+      'committee_key, show_in_contact, sort_order',
+      'committee_key, sort_order',
+      'committee_key',
+    ]) {
+      try {
+        final res = await _client.from('committee_contact_settings').select(select);
+        rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        break;
+      } on PostgrestException catch (e) {
+        if (_isMissingColumnError(e)) continue;
+      } catch (_) {
+        break;
+      }
+    }
+
+    final settings = <String, _CommitteeContactSettings>{};
+    for (final row in rows) {
+      final rawName = (row['committee_key'] ?? row['display_name'] ?? '')
+          .toString()
+          .trim();
+      if (rawName.isEmpty) continue;
+      final key = normalizeCommitteeKey(rawName);
+      if (key.isEmpty) continue;
+
+      final emails = <String>{
+        ..._parseEmails(row['contact_emails']),
+      }.toList()
+        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+      settings[key] = _CommitteeContactSettings(
+        showInContact: _parseShowInContact(row['show_in_contact']),
+        emails: emails,
+        sortOrder: _parseSortOrder(row['sort_order']),
+      );
+    }
+    return settings;
+  }
+
+  Future<String?> _persistCommitteeSettings(
+    String committeeKey, {
+    required bool showInContact,
+    required List<String> emails,
+    int? sortOrder,
+  }) async {
+    try {
+      await _client.from('committee_contact_settings').upsert({
+        'committee_key': committeeKey,
+        'display_name': _committeeLabel(committeeKey),
+        'show_in_contact': showInContact,
+        'contact_emails': emails,
+        'sort_order': ?sortOrder,
+      });
+      return null;
+    } on PostgrestException catch (e) {
+      return '${e.code ?? 'PGRST'}: ${e.message}';
+    } catch (e) {
+      return e.toString();
+    }
+  }
+
+  Future<void> _persistCommitteeDisplayName(String committeeKey, String label) async {
+    if (label.trim().isEmpty) return;
+    await _client.from('committee_contact_settings').upsert({
+      'committee_key': committeeKey,
+      'display_name': label.trim(),
+      'sort_order': _committeeContactSettings[committeeKey]?.sortOrder,
+    });
+  }
+
+  Future<void> _persistCommitteeOrder(List<String> orderedKeys) async {
+    for (var i = 0; i < orderedKeys.length; i++) {
+      final key = orderedKeys[i];
+      await _client.from('committee_contact_settings').upsert({
+        'committee_key': key,
+        'display_name': _committeeLabel(key),
+        'show_in_contact': _committeeContactSettings[key]?.showInContact ?? true,
+        'contact_emails': _committeeContactSettings[key]?.emails ?? const <String>[],
+        'sort_order': i,
+      });
+    }
+  }
+
+  Future<void> _reorderCommittees(int oldIndex, int newIndex) async {
+    if (_savingOrder) return;
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (oldIndex == newIndex) return;
+
+    final reordered = [..._committees];
+    final item = reordered.removeAt(oldIndex);
+    reordered.insert(newIndex, item);
+
+    setState(() {
+      _committees
+        ..clear()
+        ..addAll(reordered);
+      _savingOrder = true;
+    });
+
+    try {
+      await _persistCommitteeOrder(reordered);
+      if (!mounted) return;
+      showTopMessage(context, 'Volgorde bijgewerkt.');
+      setState(() => _savingOrder = false);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _savingOrder = false);
+      showTopMessage(context, 'Volgorde opslaan mislukt: $e', isError: true);
+      await _loadCommittees();
+    }
+  }
+
+  Future<void> _openCommitteeContactSettingsDialog(String committeeKey) async {
+    final existing = _committeeContactSettings[committeeKey];
+    var showInContact = existing?.showInContact ?? true;
+    final controller = TextEditingController(text: (existing?.emails ?? const []).join('\n'));
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Contact-instellingen: ${_committeeLabel(committeeKey)}'),
+          content: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.22),
+                width: 1.1,
+              ),
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Tonen bij Contacten'),
+                  subtitle: const Text(
+                    'Zet uit om deze commissie te verbergen in het Contact-tabblad.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  value: showInContact,
+                  onChanged: (value) => setDialogState(() => showInContact = value),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: controller,
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                    labelText: 'Te tonen e-mailadressen',
+                    hintText: 'Een e-mailadres per regel',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Annuleren'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Opslaan'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved != true) return;
+
+    final emails = controller.text
+        .split(RegExp(r'[\n,;]'))
+        .map((e) => e.trim())
+        .where((e) => e.contains('@'))
+        .toSet()
+        .toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+    try {
+      final error = await _persistCommitteeSettings(
+        committeeKey,
+        showInContact: showInContact,
+        emails: emails,
+        sortOrder: existing?.sortOrder,
+      );
+      if (!mounted) return;
+      if (error != null) {
+        showTopMessage(
+          context,
+          'Opslaan mislukt: $error',
+          isError: true,
+        );
+        return;
+      }
+      showTopMessage(context, 'Contact-instellingen opgeslagen.');
+      await _loadCommittees();
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
+    }
+  }
+
+  Future<void> _addCommittee() async {
+    final controller = TextEditingController();
+    final labelController = TextEditingController();
+    final create = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Commissie toevoegen'),
+        content: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+            border: Border.all(
+              color: AppColors.primary.withValues(alpha: 0.22),
+              width: 1.1,
+            ),
+          ),
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: controller,
+                decoration: const InputDecoration(
+                  labelText: 'Commissie sleutel',
+                  hintText: 'bijv. sponsorcommissie',
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: labelController,
+                decoration: const InputDecoration(
+                  labelText: 'Naam (optioneel)',
+                  hintText: 'bijv. Sponsorcommissie',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Toevoegen'),
+          ),
+        ],
+      ),
+    );
+    if (create != true) return;
+    if (!mounted) return;
+    final raw = controller.text.trim();
+    if (raw.isEmpty) {
+      showTopMessage(context, 'Voer een commissie-naam in.', isError: true);
+      return;
+    }
+    final key = normalizeCommitteeKey(raw);
+    final label = labelController.text.trim();
+    try {
+      final error = await _persistCommitteeSettings(
+        key,
+        showInContact: true,
+        emails: const [],
+        sortOrder: _committees.length,
+      );
+      if (error != null) {
+        if (!mounted) return;
+        showTopMessage(
+          context,
+          'Toevoegen mislukt: $error',
+          isError: true,
+        );
+        return;
+      }
+      if (label.isNotEmpty) {
+        await _persistCommitteeDisplayName(key, label);
+      }
+      if (!mounted) return;
+      showTopMessage(context, 'Commissie toegevoegd.');
+      await _loadCommittees();
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Toevoegen mislukt: $e', isError: true);
+    }
+  }
+
+  List<String> _committeeAliasesForDelete(String committeeKey) {
+    switch (committeeKey) {
+      case 'technische-commissie':
+        return const ['technische-commissie', 'tc'];
+      case 'jeugdcommissie':
+        return const ['jeugdcommissie', 'jeugd'];
+      case 'scheidsrechters-tellers':
+        return const ['scheidsrechters-tellers', 'scheidsrechters/tellers'];
+      default:
+        return [committeeKey];
+    }
+  }
+
+  Future<void> _deleteCommittee(String committeeKey) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Commissie verwijderen: ${_committeeLabel(committeeKey)}'),
+        content: const Text(
+          'Deze actie verwijdert alle leden uit deze commissie en verwijdert de '
+          'contact-instellingen. Dit kan niet ongedaan worden gemaakt.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text(
+              'Verwijderen',
+              style: TextStyle(color: AppColors.error),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      final aliases = _committeeAliasesForDelete(committeeKey);
+      await _client
+          .from('committee_members')
+          .delete()
+          .inFilter('committee_name', aliases);
+
+      for (final key in aliases) {
+        await _client
+            .from('committee_contact_settings')
+            .delete()
+            .eq('committee_key', key);
+      }
+
+      // Best effort cleanup for legacy table(s); ignore schema variations.
+      for (final key in aliases) {
+        for (final col in const ['committee_name', 'name', 'naam']) {
+          try {
+            await _client.from('committees').delete().eq(col, key);
+          } catch (_) {}
+        }
+      }
+
+      if (!mounted) return;
+      showTopMessage(context, 'Commissie verwijderd.');
+      await _loadCommittees();
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Verwijderen mislukt: $e', isError: true);
     }
   }
 
@@ -1110,6 +1495,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       _committeeError = null;
       _committees.clear();
       _membersByCommittee.clear();
+      _committeeContactSettings.clear();
     });
 
     try {
@@ -1134,16 +1520,12 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
         }
       }
 
-      if (rows.isEmpty) {
-        if (!mounted) return;
-        setState(() => _loadingCommittees = false);
-        return;
-      }
+      final contactSettings = await _loadCommitteeContactSettings();
 
-      final committeeKeys = <String>{..._manageableCommittees};
+      final committeeKeys = <String>{...contactSettings.keys};
       final profileIds = <String>{};
       for (final row in rows) {
-        final key = _normalizeCommittee(row['committee_name']?.toString() ?? '');
+        final key = normalizeCommitteeKey(row['committee_name']?.toString() ?? '');
         if (key.isEmpty) continue;
         committeeKeys.add(key);
         final pid = row['profile_id']?.toString() ?? '';
@@ -1153,7 +1535,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       final nameByProfileId = await _loadProfileNames(profileIds: profileIds.toList());
 
       for (final row in rows) {
-        final key = _normalizeCommittee(row['committee_name']?.toString() ?? '');
+        final key = normalizeCommitteeKey(row['committee_name']?.toString() ?? '');
         if (key.isEmpty) continue;
 
         final pid = row['profile_id']?.toString() ?? '';
@@ -1173,7 +1555,17 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
             );
       }
 
-      final list = committeeKeys.toList()..sort();
+      final list = committeeKeys.toList();
+      list.sort((a, b) {
+        final sa = contactSettings[a]?.sortOrder;
+        final sb = contactSettings[b]?.sortOrder;
+        if (sa != null || sb != null) {
+          final va = sa ?? 999999;
+          final vb = sb ?? 999999;
+          if (va != vb) return va.compareTo(vb);
+        }
+        return _committeeLabel(a).toLowerCase().compareTo(_committeeLabel(b).toLowerCase());
+      });
       for (final k in list) {
         final members = _membersByCommittee[k] ?? [];
         members.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
@@ -1183,6 +1575,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       if (!mounted) return;
       setState(() {
         _committees.addAll(list);
+        _committeeContactSettings.addAll(contactSettings);
         _loadingCommittees = false;
       });
     } catch (e) {
@@ -1523,8 +1916,163 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     await Future.wait([_loadCommittees(), _loadAllProfilesForManagement()]);
   }
 
+  Widget _buildCommitteeCard(
+    String c, {
+    required bool canManage,
+    int? dragIndex,
+  }) {
+    final members = _membersByCommittee[c] ?? const [];
+    return Padding(
+      key: ValueKey('committee-$c'),
+      padding: const EdgeInsets.only(bottom: 12),
+      child: GlassCard(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _committeeLabel(c),
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  if (canManage && dragIndex != null)
+                    ReorderableDragStartListener(
+                      index: dragIndex,
+                      child: const Icon(
+                        Icons.drag_handle,
+                        color: AppColors.iconMuted,
+                        size: 20,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (canManage)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 6),
+                child: Text(
+                  'Sleep commissies om de volgorde in Contact te bepalen.',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            if (members.isEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 8, 16, 16),
+                child: Text(
+                  'Geen leden in deze commissie.',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                ),
+              )
+            else
+              ...members.map((m) {
+                final suffix = (m.function != null && m.function!.isNotEmpty)
+                    ? ' · ${m.function}'
+                    : '';
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(
+                    Icons.person_outline,
+                    color: AppColors.iconMuted,
+                    size: 22,
+                  ),
+                  title: Text(
+                    '${m.name}$suffix',
+                    style: const TextStyle(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                  trailing: Icon(
+                    Icons.edit_outlined,
+                    color: canManage ? AppColors.primary : AppColors.iconMuted,
+                    size: 20,
+                  ),
+                  onTap: canManage ? () => _editOrRemoveCommitteeMember(c, m) : null,
+                );
+              }),
+            if (canManage)
+              ListTile(
+                dense: true,
+                leading: Icon(
+                  Icons.contact_mail_outlined,
+                  color: (_committeeContactSettings[c]?.showInContact ?? true)
+                      ? AppColors.primary
+                      : AppColors.iconMuted,
+                  size: 22,
+                ),
+                title: const Text(
+                  'Contact-instellingen',
+                  style: TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                subtitle: Text(
+                  (_committeeContactSettings[c]?.showInContact ?? true)
+                      ? 'Zichtbaar in Contact-tabblad'
+                      : 'Verborgen in Contact-tabblad',
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+                onTap: () => _openCommitteeContactSettingsDialog(c),
+              ),
+            if (canManage)
+              ListTile(
+                dense: true,
+                leading: const Icon(
+                  Icons.delete_outline,
+                  color: AppColors.error,
+                  size: 22,
+                ),
+                title: const Text(
+                  'Commissie verwijderen',
+                  style: TextStyle(
+                    color: AppColors.error,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                onTap: () => _deleteCommittee(c),
+              ),
+            if (canManage)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.person_add_outlined, color: AppColors.primary, size: 22),
+                title: const Text(
+                  'Lid toevoegen aan deze commissie',
+                  style: TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                onTap: _loadingProfiles ? null : () => _addMemberToCommittee(c),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final canManage = AppUserContext.of(context).canManageBestuur;
     return RefreshIndicator(
       color: AppColors.primary,
       onRefresh: _refreshCommitteesAndProfiles,
@@ -1546,11 +2094,22 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Voeg leden toe, pas functies aan of verwijder leden uit commissies.',
+                  'Voeg commissies en leden toe, beheer contact-zichtbaarheid en stel commissie-mails in.',
                   style: TextStyle(
                     color: AppColors.textSecondary.withValues(alpha: 0.9),
                   ),
                 ),
+                if (canManage) ...[
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton.icon(
+                      onPressed: _addCommittee,
+                      icon: const Icon(Icons.add_circle_outline, size: 18),
+                      label: const Text('Nieuwe commissie toevoegen'),
+                    ),
+                  ),
+                ],
                 if (_loadingProfiles) ...[
                   const SizedBox(height: 10),
                   const Text(
@@ -1576,86 +2135,28 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
               'Geen commissies gevonden.',
               style: TextStyle(color: AppColors.textSecondary),
             )
-          else
-            ..._manageableCommittees.map((c) {
-              final members = _membersByCommittee[c] ?? const [];
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: GlassCard(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                        child: Text(
-                          _committeeLabel(c),
-                          style: const TextStyle(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w800,
-                            fontSize: 16,
-                          ),
-                        ),
-                      ),
-                      if (members.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.fromLTRB(16, 8, 16, 16),
-                          child: Text(
-                            'Geen leden in deze commissie.',
-                            style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                          ),
-                        )
-                      else
-                        ...members.map((m) {
-                          final suffix = (m.function != null && m.function!.isNotEmpty)
-                              ? ' · ${m.function}'
-                              : '';
-                          return ListTile(
-                            dense: true,
-                            leading: const Icon(
-                              Icons.person_outline,
-                              color: AppColors.iconMuted,
-                              size: 22,
-                            ),
-                            title: Text(
-                              '${m.name}$suffix',
-                              style: const TextStyle(
-                                color: AppColors.onBackground,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 14,
-                              ),
-                            ),
-                            trailing: Icon(
-                              Icons.edit_outlined,
-                              color: AppUserContext.of(context).canManageBestuur
-                                  ? AppColors.primary
-                                  : AppColors.iconMuted,
-                              size: 20,
-                            ),
-                            onTap: AppUserContext.of(context).canManageBestuur
-                                ? () => _editOrRemoveCommitteeMember(c, m)
-                                : null,
-                          );
-                        }),
-                      if (AppUserContext.of(context).canManageBestuur)
-                        ListTile(
-                          dense: true,
-                          leading: const Icon(Icons.person_add_outlined, color: AppColors.primary, size: 22),
-                          title: const Text(
-                            'Lid toevoegen aan deze commissie',
-                            style: TextStyle(
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
-                            ),
-                          ),
-                          onTap: _loadingProfiles ? null : () => _addMemberToCommittee(c),
-                        ),
-                    ],
-                  ),
+          else if (canManage) ...[
+            ReorderableListView.builder(
+              shrinkWrap: true,
+              buildDefaultDragHandles: false,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _committees.length,
+              onReorder: _reorderCommittees,
+              itemBuilder: (context, index) {
+                final c = _committees[index];
+                return _buildCommitteeCard(c, canManage: canManage, dragIndex: index);
+              },
+            ),
+            if (_savingOrder)
+              const Padding(
+                padding: EdgeInsets.only(top: 4, bottom: 8),
+                child: Text(
+                  'Volgorde opslaan...',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
                 ),
-              );
-            }),
+              ),
+          ] else
+            ..._committees.map((c) => _buildCommitteeCard(c, canManage: canManage)),
         ],
       ),
     );
@@ -1683,6 +2184,18 @@ class _ProfileOption {
     required this.profileId,
     required this.name,
     this.email,
+  });
+}
+
+class _CommitteeContactSettings {
+  final bool showInContact;
+  final List<String> emails;
+  final int? sortOrder;
+
+  const _CommitteeContactSettings({
+    required this.showInContact,
+    required this.emails,
+    this.sortOrder,
   });
 }
 
