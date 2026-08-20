@@ -1,9 +1,9 @@
-import 'package:flutter/foundation.dart' show TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/primary_button.dart';
+import 'package:minerva_app/ui/auth/forgot_password_page.dart';
 import 'package:minerva_app/ui/auth/register_page.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -140,7 +140,30 @@ class _AuthPageState extends State<AuthPage> {
                   style: const TextStyle(color: AppColors.onBackground),
                   decoration: _dec('Wachtwoord'),
                 ),
-                const SizedBox(height: 16),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: _loading
+                        ? null
+                        : () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => ForgotPasswordPage(
+                                  initialEmail: _emailCtrl.text.trim(),
+                                ),
+                              ),
+                            );
+                          },
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.primary,
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      minimumSize: const Size(0, 32),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text('Wachtwoord vergeten?'),
+                  ),
+                ),
+                const SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(
