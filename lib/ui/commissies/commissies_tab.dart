@@ -372,7 +372,7 @@ class _CommitteeContent extends StatelessWidget {
       return const TcTab();
     }
 
-    // Bestuur: trainingen, wedstrijden, commissies beheren
+    // Bestuur: trainingen, wedstrijden, commissies beheren + aanmeldingen
     if (key == 'bestuur') {
       return const BestuurTab();
     }
@@ -388,8 +388,10 @@ class _CommitteeContent extends StatelessWidget {
     }
 
     // Communicatie, Jeugd en Evenementen: aanmeldingen op activiteiten.
-    if (key == 'communicatie' || key == 'jeugdcommissie' || key == 'evenementen') {
-      return const _CommitteeAgendaRsvpsView();
+    if (key == 'communicatie' ||
+        key == 'jeugdcommissie' ||
+        key == 'evenementen') {
+      return const CommitteeAgendaRsvpsView();
     }
 
     // Admin: gebruikersnamen, etc.
@@ -397,7 +399,7 @@ class _CommitteeContent extends StatelessWidget {
       return const _AdminCommitteeView();
     }
 
-    // Overige commissies (communicatie, jeugd, etc.): contact/info
+    // Overige commissies: contact/info
     return _GenericCommitteeView(committeeName: committeeName);
   }
 }
@@ -505,14 +507,14 @@ class _GenericCommitteeView extends StatelessWidget {
   }
 }
 
-class _CommitteeAgendaRsvpsView extends StatefulWidget {
-  const _CommitteeAgendaRsvpsView();
+class CommitteeAgendaRsvpsView extends StatefulWidget {
+  const CommitteeAgendaRsvpsView({super.key});
 
   @override
-  State<_CommitteeAgendaRsvpsView> createState() => _CommitteeAgendaRsvpsViewState();
+  State<CommitteeAgendaRsvpsView> createState() => _CommitteeAgendaRsvpsViewState();
 }
 
-class _CommitteeAgendaRsvpsViewState extends State<_CommitteeAgendaRsvpsView> {
+class _CommitteeAgendaRsvpsViewState extends State<CommitteeAgendaRsvpsView> {
   final SupabaseClient _client = Supabase.instance.client;
   bool _loading = true;
   String? _error;

@@ -7,6 +7,8 @@ import 'package:minerva_app/ui/committees/committee_normalization.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/commissies/commissies_tab.dart'
+    show CommitteeAgendaRsvpsView;
 import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
@@ -23,7 +25,7 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(_onTabChanged);
   }
 
@@ -85,6 +87,7 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
                     Tab(text: 'Commissies'),
                     Tab(text: 'Trainingen'),
                     Tab(text: 'Wedstrijden'),
+                    Tab(text: 'Aanmeldingen'),
                   ],
                 ),
               ),
@@ -96,6 +99,7 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
                   _BestuurCommissiesView(),
                   _BestuurTrainingenView(),
                   _BestuurWedstrijdenView(),
+                  CommitteeAgendaRsvpsView(),
                 ],
               ),
             ),
