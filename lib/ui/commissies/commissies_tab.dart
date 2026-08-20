@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/committees/committee_normalization.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show unknownUserName;
@@ -355,12 +356,19 @@ class _CommitteeContent extends StatelessWidget {
     required this.committeeName,
   });
 
+  /// Admin is geen commissie-variant; blijft expliciet apart na centrale normalisatie.
+  static String _resolveCommitteeKey(String value) {
+    final key = normalizeCommitteeKey(value);
+    if (key == 'admin') return 'admin';
+    return key;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final key = committeeKey.trim().toLowerCase();
+    final key = _resolveCommitteeKey(committeeKey);
 
     // Technische commissie: TC-taken (trainingen, wedstrijden, teams)
-    if (key == 'technische-commissie' || key == 'tc') {
+    if (key == 'technische-commissie') {
       return const TcTab();
     }
 
@@ -370,12 +378,12 @@ class _CommitteeContent extends StatelessWidget {
     }
 
     // Wedstrijdzaken: teamtaken + overzicht (altijd volledig zichtbaar)
-    if (key.contains('wedstrijd')) {
+    if (key == 'wedstrijdzaken') {
       return const MyTasksTab(forceFullView: true);
     }
 
     // Scheidsrechters/Tellers: alle wedstrijden met fluit/tel-aanmelding.
-    if (key == 'scheidsrechters-tellers' || key == 'scheidsrechters/tellers') {
+    if (key == 'scheidsrechters-tellers') {
       return const MyTasksTab(stOverviewMode: true);
     }
 

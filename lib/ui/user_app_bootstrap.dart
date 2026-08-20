@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/committees/committee_normalization.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:minerva_app/ui/notifications/notification_service.dart';
@@ -463,7 +464,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       final set = <String>{};
       for (final row in rows) {
         final raw = row['committee_name']?.toString() ?? '';
-        final normalized = _normalizeCommittee(raw);
+        final normalized = normalizeCommitteeKey(raw);
         if (normalized.isNotEmpty) set.add(normalized);
       }
       if (set.isNotEmpty) return set.toList()..sort();
@@ -477,7 +478,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       final set = <String>{};
       for (final row in rows) {
         final raw = row['committee_name']?.toString() ?? '';
-        final normalized = _normalizeCommittee(raw);
+        final normalized = normalizeCommitteeKey(raw);
         if (normalized.isNotEmpty) set.add(normalized);
       }
       return set.toList()..sort();
@@ -486,23 +487,6 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     }
   }
 
-  String _normalizeCommittee(String value) {
-    final c = value.trim().toLowerCase();
-    if (c.isEmpty) return '';
-    // Accept common variations.
-    if (c == 'bestuur') return 'bestuur';
-    if (c == 'tc' || c.contains('technische')) return 'technische-commissie';
-    if (c == 'cc' || c.contains('communicatie')) return 'communicatie';
-    if (c == 'wz' || c.contains('wedstrijd')) return 'wedstrijdzaken';
-    if (c.contains('evenement')) return 'evenementen';
-    if (c == 'jeugd' || c.contains('jeugdcommissie')) return 'jeugdcommissie';
-    if ((c.contains('scheidsrechter') && c.contains('teller')) ||
-        c.contains('scheidsrechters-tellers')) {
-      return 'scheidsrechters-tellers';
-    }
-    if (c.contains('vrijwilliger')) return 'vrijwilligers';
-    return c;
-  }
 
   @override
   Widget build(BuildContext context) {

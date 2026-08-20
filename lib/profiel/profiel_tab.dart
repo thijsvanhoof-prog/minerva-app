@@ -13,6 +13,7 @@ import 'package:minerva_app/ui/auth/register_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
+import 'package:minerva_app/ui/committees/committee_normalization.dart';
 
 class ProfielTab extends StatefulWidget {
   const ProfielTab({super.key});
@@ -179,7 +180,7 @@ class _ProfielTabState extends State<ProfielTab> {
         final set = <String>{};
         for (final row in rows) {
           final raw = row['committee_name']?.toString() ?? '';
-          final n = _normalizeCommitteeName(raw);
+          final n = normalizeCommitteeKey(raw);
           if (n.isNotEmpty) set.add(n);
         }
         committeesInProfiel = set.toList()..sort((a, b) => _formatCommitteeName(a).compareTo(_formatCommitteeName(b)));
@@ -193,7 +194,7 @@ class _ProfielTabState extends State<ProfielTab> {
           final set = <String>{};
           for (final row in cmRows) {
             final raw = row['committee_name']?.toString() ?? '';
-            final n = _normalizeCommitteeName(raw);
+            final n = normalizeCommitteeKey(raw);
             if (n.isNotEmpty) set.add(n);
           }
           committeesInProfiel = set.toList()..sort();
@@ -360,16 +361,6 @@ class _ProfielTabState extends State<ProfielTab> {
     });
   }
 
-  String _normalizeCommitteeName(String value) {
-    final c = value.trim().toLowerCase();
-    if (c.isEmpty) return '';
-    if (c == 'bestuur') return 'bestuur';
-    if (c == 'tc' || c.contains('technische')) return 'technische-commissie';
-    if (c == 'cc' || c.contains('communicatie')) return 'communicatie';
-    if (c == 'wz' || c.contains('wedstrijd')) return 'wedstrijdzaken';
-    return c;
-  }
-
   String _formatCommitteeName(String key) {
     final k = key.trim();
     if (k.isEmpty) return key;
@@ -382,6 +373,7 @@ class _ProfielTabState extends State<ProfielTab> {
         return 'Communicatie';
       case 'wedstrijdzaken':
         return 'Wedstrijdzaken';
+      case 'jeugdcommissie':
       case 'jeugd':
         return 'Jeugdcommissie';
       default:
@@ -394,7 +386,7 @@ class _ProfielTabState extends State<ProfielTab> {
     final seen = <String>{};
     final list = <String>[];
     for (final c in [...ctx.committees, ..._committeesInProfiel]) {
-      final n = _normalizeCommitteeName(c);
+      final n = normalizeCommitteeKey(c);
       if (n.isNotEmpty && seen.add(n)) list.add(c);
     }
     list.sort((a, b) => _formatCommitteeName(a).compareTo(_formatCommitteeName(b)));
