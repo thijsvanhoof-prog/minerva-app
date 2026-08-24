@@ -21,6 +21,7 @@ if [ ! -f .env ]; then
 fi
 
 flutter --version
+flutter precache --ios
 flutter pub get
 
 cd "$IOS_DIR"

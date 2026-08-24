@@ -40,6 +40,7 @@ SUPABASE_EMAIL_CHANGE_REDIRECT_URL=${SUPABASE_EMAIL_CHANGE_REDIRECT_URL:-nl.mine
 EOF
 
 flutter --version
+flutter precache --ios
 flutter pub get
 
 cd "$IOS_DIR"
