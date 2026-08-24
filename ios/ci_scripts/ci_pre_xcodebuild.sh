@@ -26,9 +26,25 @@ fi
 
 flutter --version
 flutter precache --ios
+
+echo "Regenerating Flutter iOS settings for this CI checkout..."
+rm -f "$IOS_DIR/Flutter/Generated.xcconfig"
+rm -f "$IOS_DIR/Flutter/flutter_export_environment.sh"
+rm -rf "$IOS_DIR/.symlinks"
 flutter pub get
+
+if ! grep -Fq "FLUTTER_APPLICATION_PATH=$REPO_ROOT" "$IOS_DIR/Flutter/Generated.xcconfig"; then
+  echo "Generated.xcconfig was not regenerated for the Xcode Cloud checkout:"
+  grep -F "FLUTTER_APPLICATION_PATH=" "$IOS_DIR/Flutter/Generated.xcconfig" || true
+  exit 1
+fi
 
 cd "$IOS_DIR"
 pod install
+
+if ! grep -Fq "app_links" "$IOS_DIR/Podfile.lock"; then
+  echo "Flutter plugin pods were not installed. Podfile.lock does not contain app_links."
+  exit 1
+fi
 
 echo "iOS pre-xcodebuild done."
