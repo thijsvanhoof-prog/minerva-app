@@ -10,6 +10,10 @@ REPO_ROOT="$(cd "$IOS_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 echo "Repository root: $REPO_ROOT"
 
+if [ -d "$HOME/flutter/bin" ]; then
+  export PATH="$HOME/flutter/bin:$PATH"
+fi
+
 if ! command -v flutter >/dev/null 2>&1; then
   echo "Flutter not found on PATH. Installing stable Flutter SDK..."
   git clone --depth 1 --branch stable https://github.com/flutter/flutter.git "$HOME/flutter"
