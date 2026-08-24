@@ -1,6 +1,5 @@
 import Flutter
 import UIKit
-import FirebaseMessaging
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -23,7 +22,6 @@ import FirebaseMessaging
     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
   ) {
     super.application(application, didRegisterForRemoteNotificationsWithDeviceToken: deviceToken)
-    Messaging.messaging().apnsToken = deviceToken
     print("APNs device token ontvangen.")
   }
 
