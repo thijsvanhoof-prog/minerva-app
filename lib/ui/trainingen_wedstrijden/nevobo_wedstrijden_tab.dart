@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart' show debugPrint, listEquals;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -10,6 +10,7 @@ import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/trainingen_wedstrijden/match_travel.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -239,6 +240,289 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
 
   String _matchKey({required String teamCode, required DateTime start}) {
     return 'nevobo_match:${teamCode.trim().toUpperCase()}:${start.toUtc().toIso8601String()}';
+  }
+
+  String _normalizeMatchSummaryForCompare(String value) {
+    return value
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(RegExp(r'[^a-z0-9 ]'), '')
+        .trim();
+  }
+
+  (String team, DateTime start)? _parseNevoboMatchKey(String key) {
+    if (!key.startsWith('nevobo_match:')) return null;
+    final rest = key.substring('nevobo_match:'.length);
+    final idx = rest.indexOf(':');
+    if (idx <= 0 || idx + 1 >= rest.length) return null;
+    final team = rest.substring(0, idx).trim().toUpperCase();
+    final start = DateTime.tryParse(rest.substring(idx + 1))?.toUtc();
+    if (team.isEmpty || start == null) return null;
+    return (team, start);
+  }
+
+  bool _summariesMatchForCancellation(String a, String b) {
+    final na = _normalizeMatchSummaryForCompare(a);
+    final nb = _normalizeMatchSummaryForCompare(b);
+    if (na.isEmpty || nb.isEmpty) return false;
+    return na == nb || na.contains(nb) || nb.contains(na);
+  }
+
+  DateTime? _parseCancellationStartsAt(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is DateTime) return raw.toUtc();
+    final s = raw.toString().trim();
+    if (s.isEmpty) return null;
+    return DateTime.tryParse(s)?.toUtc();
+  }
+
+  _MatchRef? _findMatchRefByEquivalentKey({
+    required List<_MatchRef> matches,
+    required String rowKey,
+  }) {
+    final rowParts = _parseNevoboMatchKey(rowKey);
+    if (rowParts == null) return null;
+    const tolerance = Duration(minutes: 2);
+    for (final m in matches) {
+      final localParts = _parseNevoboMatchKey(m.matchKey);
+      if (localParts == null) continue;
+      if (localParts.$1 != rowParts.$1) continue;
+      if (localParts.$2.difference(rowParts.$2).abs() <= tolerance) return m;
+    }
+    return null;
+  }
+
+  _MatchRef? _findMatchRefByTeamAndTime({
+    required List<_MatchRef> matches,
+    required String teamCode,
+    required DateTime startsAt,
+  }) {
+    const tolerance = Duration(minutes: 2);
+    _MatchRef? best;
+    Duration? bestDiff;
+    for (final m in matches) {
+      if (m.teamCode.trim().toUpperCase() != teamCode) continue;
+      final diff = m.start.toUtc().difference(startsAt).abs();
+      if (diff <= tolerance && (bestDiff == null || diff < bestDiff)) {
+        best = m;
+        bestDiff = diff;
+      }
+    }
+    return best;
+  }
+
+  _MatchRef? _findMatchRefByTimeAndSummary({
+    required List<_MatchRef> matches,
+    required DateTime startsAt,
+    required String rowSummary,
+  }) {
+    const tolerance = Duration(minutes: 2);
+    _MatchRef? best;
+    Duration? bestDiff;
+    for (final m in matches) {
+      final diff = m.start.toUtc().difference(startsAt).abs();
+      if (diff > tolerance) continue;
+      if (!_summariesMatchForCancellation(m.summary, rowSummary)) continue;
+      if (bestDiff == null || diff < bestDiff) {
+        best = m;
+        bestDiff = diff;
+      }
+    }
+    return best;
+  }
+
+  _MatchRef? _findMatchRefByTeamAndSummary({
+    required List<_MatchRef> matches,
+    required String teamCode,
+    required String rowSummary,
+  }) {
+    _MatchRef? best;
+    for (final m in matches) {
+      if (m.teamCode.trim().toUpperCase() != teamCode) continue;
+      if (!_summariesMatchForCancellation(m.summary, rowSummary)) continue;
+      best ??= m;
+    }
+    return best;
+  }
+
+  _MatchRef? _findMatchRefByTeamAndLocalDate({
+    required List<_MatchRef> matches,
+    required String teamCode,
+    required DateTime startsAt,
+    required String rowSummary,
+  }) {
+    final localRow = startsAt.toLocal();
+    for (final m in matches) {
+      if (m.teamCode.trim().toUpperCase() != teamCode) continue;
+      final localMatch = m.start.toLocal();
+      if (localMatch.year != localRow.year ||
+          localMatch.month != localRow.month ||
+          localMatch.day != localRow.day) {
+        continue;
+      }
+      if (rowSummary.trim().isEmpty ||
+          _summariesMatchForCancellation(m.summary, rowSummary)) {
+        return m;
+      }
+    }
+    return null;
+  }
+
+  _MatchRef? _findMatchRefForCancellationRow({
+    required List<_MatchRef> matches,
+    required Set<String> localKeys,
+    required Map<String, dynamic> row,
+  }) {
+    final rowKey = (row['match_key'] ?? '').toString();
+    if (rowKey.isNotEmpty) {
+      if (localKeys.contains(rowKey)) {
+        for (final m in matches) {
+          if (m.matchKey == rowKey) return m;
+        }
+      }
+      final byKey = _findMatchRefByEquivalentKey(matches: matches, rowKey: rowKey);
+      if (byKey != null) return byKey;
+    }
+
+    final teamCode = (row['team_code'] ?? '').toString().trim().toUpperCase();
+    final startsAt = _parseCancellationStartsAt(row['starts_at']);
+    final rowSummary = (row['summary'] ?? '').toString();
+
+    if (teamCode.isNotEmpty && startsAt != null) {
+      final byTeamTime = _findMatchRefByTeamAndTime(
+        matches: matches,
+        teamCode: teamCode,
+        startsAt: startsAt,
+      );
+      if (byTeamTime != null) return byTeamTime;
+    }
+
+    if (startsAt != null && rowSummary.trim().isNotEmpty) {
+      final byTimeSummary = _findMatchRefByTimeAndSummary(
+        matches: matches,
+        startsAt: startsAt,
+        rowSummary: rowSummary,
+      );
+      if (byTimeSummary != null) return byTimeSummary;
+    }
+
+    if (teamCode.isNotEmpty && rowSummary.trim().isNotEmpty) {
+      final byTeamSummary = _findMatchRefByTeamAndSummary(
+        matches: matches,
+        teamCode: teamCode,
+        rowSummary: rowSummary,
+      );
+      if (byTeamSummary != null) return byTeamSummary;
+    }
+
+    if (teamCode.isNotEmpty && startsAt != null) {
+      final byTeamDate = _findMatchRefByTeamAndLocalDate(
+        matches: matches,
+        teamCode: teamCode,
+        startsAt: startsAt,
+        rowSummary: rowSummary,
+      );
+      if (byTeamDate != null) return byTeamDate;
+    }
+
+    if (teamCode.isEmpty && rowKey.isNotEmpty) {
+      final rowParts = _parseNevoboMatchKey(rowKey);
+      if (rowParts != null) {
+        return _findMatchRefByTeamAndTime(
+          matches: matches,
+          teamCode: rowParts.$1,
+          startsAt: rowParts.$2,
+        );
+      }
+    }
+
+    return null;
+  }
+
+  void _applyCancellationRowToMaps({
+    required Map<String, dynamic> row,
+    required _MatchRef ref,
+    required Map<String, bool> map,
+    required Map<String, String?> reasons,
+  }) {
+    final localKey = ref.matchKey;
+    final cancelled = row['is_cancelled'] == true;
+    if (cancelled) {
+      map[localKey] = true;
+      final reason = (row['reason'] ?? '').toString().trim();
+      if (reason.isNotEmpty) reasons[localKey] = reason;
+      return;
+    }
+    map.putIfAbsent(localKey, () => false);
+    final reason = (row['reason'] ?? '').toString().trim();
+    reasons.putIfAbsent(localKey, () => reason.isEmpty ? null : reason);
+  }
+
+  /// Nevobo levert wedstrijden; lokale annuleringen uit `match_cancellations` winnen.
+  void _overlayLocalCancellations({
+    required List<_MatchRef> matches,
+    required List<Map<String, dynamic>> rows,
+    required Map<String, bool> map,
+    required Map<String, String?> reasons,
+  }) {
+    final localKeys = matches.map((m) => m.matchKey).toSet();
+    for (final ref in matches) {
+      for (final r in rows) {
+        if (r['is_cancelled'] != true) continue;
+        final hit = _findMatchRefForCancellationRow(
+          matches: [ref],
+          localKeys: localKeys,
+          row: r,
+        );
+        if (hit != null) {
+          _applyCancellationRowToMaps(
+            row: r,
+            ref: hit,
+            map: map,
+            reasons: reasons,
+          );
+          break;
+        }
+      }
+    }
+    for (final r in rows) {
+      final ref = _findMatchRefForCancellationRow(
+        matches: matches,
+        localKeys: localKeys,
+        row: r,
+      );
+      if (ref == null) continue;
+      _applyCancellationRowToMaps(row: r, ref: ref, map: map, reasons: reasons);
+    }
+  }
+
+  void _debugLogCancellationMatching({
+    required List<_MatchRef> matches,
+    required List<Map<String, dynamic>> rows,
+    required Map<String, bool> matched,
+  }) {
+    debugPrint(
+      'NevoboWedstrijden: cancellations refs=${matches.length} rows=${rows.length} matched=${matched.length}',
+    );
+    for (final m in matches) {
+      if (m.teamCode.trim().toUpperCase() != 'JC1') continue;
+      debugPrint(
+        'NevoboWedstrijden: local JC1 key=${m.matchKey} '
+        'startUtc=${m.start.toUtc().toIso8601String()} summary=${m.summary}',
+      );
+    }
+    for (final r in rows) {
+      final key = (r['match_key'] ?? '').toString();
+      final team = (r['team_code'] ?? '').toString().trim().toUpperCase();
+      if (team != 'JC1' && !key.contains(':JC1:')) continue;
+      debugPrint(
+        'NevoboWedstrijden: cancel JC1 row key=$key team=$team '
+        'start=${r['starts_at']} cancelled=${r['is_cancelled']} reason=${r['reason']}',
+      );
+    }
+    for (final entry in matched.entries.where((e) => e.value)) {
+      debugPrint('NevoboWedstrijden: matched cancelled key=${entry.key}');
+    }
   }
 
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
@@ -560,25 +844,131 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   }
 
   Future<void> _loadCancellationsForMatches(List<_MatchRef> matches) async {
-    if (matches.isEmpty) return;
+    if (matches.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _cancelledByMatchKey.clear();
+        _cancelReasonByMatchKey.clear();
+      });
+      return;
+    }
     final keys = matches.map((m) => m.matchKey).toSet().toList();
-    if (keys.isEmpty) return;
+
+    final teamCodes = matches
+        .map((m) => m.teamCode.trim().toUpperCase())
+        .where((c) => c.isNotEmpty)
+        .toSet()
+        .toList();
+
+    DateTime? minStart;
+    DateTime? maxStart;
+    for (final m in matches) {
+      final utc = m.start.toUtc();
+      if (minStart == null || utc.isBefore(minStart)) minStart = utc;
+      if (maxStart == null || utc.isAfter(maxStart)) maxStart = utc;
+    }
 
     try {
-      final res = await _client
-          .from('match_cancellations')
-          .select('match_key, is_cancelled, reason')
-          .inFilter('match_key', keys);
-      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      const selectWithSummary =
+          'match_key, team_code, starts_at, summary, is_cancelled, reason';
+      const selectWithoutSummary =
+          'match_key, team_code, starts_at, is_cancelled, reason';
+      final rowsByKey = <String, Map<String, dynamic>>{};
+
+      Future<void> runSelect(String select, Future<dynamic> Function() query) async {
+        try {
+          final res = await query();
+          for (final r in (res as List<dynamic>).cast<Map<String, dynamic>>()) {
+            final k = (r['match_key'] ?? '').toString();
+            if (k.isNotEmpty) rowsByKey[k] = r;
+          }
+        } catch (e) {
+          debugPrint('NevoboWedstrijden: cancellations query failed ($select): $e');
+        }
+      }
+
+      await runSelect(
+        selectWithSummary,
+        () => _client.from('match_cancellations').select(selectWithSummary).inFilter('match_key', keys),
+      );
+
+      if (teamCodes.isNotEmpty) {
+        await runSelect(
+          selectWithSummary,
+          () => _client
+              .from('match_cancellations')
+              .select(selectWithSummary)
+              .inFilter('team_code', teamCodes)
+              .eq('is_cancelled', true),
+        );
+      }
+
+      if (teamCodes.isNotEmpty && minStart != null && maxStart != null) {
+        final tightStart = minStart
+            .subtract(const Duration(minutes: 2))
+            .toUtc()
+            .toIso8601String();
+        final tightEnd = maxStart
+            .add(const Duration(minutes: 2))
+            .toUtc()
+            .toIso8601String();
+        await runSelect(
+          selectWithSummary,
+          () => _client
+              .from('match_cancellations')
+              .select(selectWithSummary)
+              .inFilter('team_code', teamCodes)
+              .gte('starts_at', tightStart)
+              .lte('starts_at', tightEnd),
+        );
+      }
+
+      if (minStart != null && maxStart != null) {
+        final wideStart = minStart
+            .subtract(const Duration(days: 1))
+            .toUtc()
+            .toIso8601String();
+        final wideEnd = maxStart
+            .add(const Duration(days: 1))
+            .toUtc()
+            .toIso8601String();
+        await runSelect(
+          selectWithSummary,
+          () => _client
+              .from('match_cancellations')
+              .select(selectWithSummary)
+              .gte('starts_at', wideStart)
+              .lte('starts_at', wideEnd),
+        );
+      }
+
+      if (rowsByKey.isEmpty && teamCodes.isNotEmpty) {
+        await runSelect(
+          selectWithoutSummary,
+          () => _client
+              .from('match_cancellations')
+              .select(selectWithoutSummary)
+              .inFilter('team_code', teamCodes)
+              .eq('is_cancelled', true),
+        );
+      }
+
+      final rows = rowsByKey.values.toList();
       final map = <String, bool>{};
       final reasons = <String, String?>{};
-      for (final r in rows) {
-        final k = (r['match_key'] ?? '').toString();
-        if (k.isEmpty) continue;
-        map[k] = r['is_cancelled'] == true;
-        final reason = (r['reason'] ?? '').toString().trim();
-        reasons[k] = reason.isEmpty ? null : reason;
-      }
+      _overlayLocalCancellations(
+        matches: matches,
+        rows: rows,
+        map: map,
+        reasons: reasons,
+      );
+
+      _debugLogCancellationMatching(
+        matches: matches,
+        rows: rows,
+        matched: map,
+      );
+
       if (!mounted) return;
       setState(() {
         _cancelledByMatchKey
@@ -588,8 +978,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           ..clear()
           ..addAll(reasons);
       });
-    } catch (_) {
-      // Table missing or RLS; ignore (best-effort)
+    } catch (e) {
+      debugPrint('NevoboWedstrijden: cancellations load failed: $e');
     }
   }
 
@@ -798,6 +1188,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         }
       }
       if (mounted) setState(() => _upcomingMatchRefs = matchRefs);
+      // Nevobo-wedstrijden blijven de bron; lokale annuleringen overlayen daarna.
       await _loadCancellationsForMatches(matchRefs);
       await _loadAvailabilityForMatches(matchRefs);
       await _loadRefereesForMatches(matchRefs);
@@ -890,13 +1281,26 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final tellers = _tellerNamesByMatchKey[key] ?? const [];
     final hasCounts = playing.isNotEmpty || coaches.isNotEmpty || notPlaying.isNotEmpty || nietGereageerd.isNotEmpty;
     final expanded = _expandedMatchKeys.contains(key);
+    final summaryColor =
+        isCancelled ? AppColors.textSecondary : AppColors.onBackground;
+    final teamLabelColor =
+        isCancelled ? AppColors.textSecondary : AppColors.primary;
+    final metaStyle = TextStyle(
+      color: AppColors.textSecondary,
+      fontSize: 13,
+    );
+    final disabledMetaStyle = metaStyle.copyWith(
+      color: AppColors.textSecondary.withValues(alpha: isCancelled ? 0.85 : 1),
+    );
 
-    return Column(
+    return Opacity(
+      opacity: isCancelled ? 0.72 : 1,
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             _formatDateTime(ref.start),
-            style: const TextStyle(
+            style: TextStyle(
               color: AppColors.textSecondary,
               fontWeight: FontWeight.w800,
             ),
@@ -905,7 +1309,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           Text(
             teamDisplayLabel,
             style: TextStyle(
-              color: AppColors.primary,
+              color: teamLabelColor,
               fontWeight: FontWeight.w700,
               fontSize: 13,
             ),
@@ -917,7 +1321,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                 child: _buildMatchSummaryText(
                   NevoboApi.displayTeamName(ref.summary),
                   style: TextStyle(
-                    color: AppColors.onBackground,
+                    color: summaryColor,
                     fontWeight: FontWeight.w800,
                     decoration: isCancelled
                         ? TextDecoration.lineThrough
@@ -928,7 +1332,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
               ),
               if (isCancelled)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
                     color: AppColors.error.withValues(alpha: 0.14),
                     borderRadius: BorderRadius.circular(999),
@@ -950,24 +1355,22 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
             const SizedBox(height: 2),
             Text(
               ref.location,
-              style: const TextStyle(color: AppColors.textSecondary),
+              style: disabledMetaStyle,
+            ),
+            MatchTravelRow(
+              location: ref.location,
+              textDecoration: isCancelled ? TextDecoration.lineThrough : null,
             ),
           ],
           const SizedBox(height: 4),
           Text(
             'Scheidsrechter: ${_formatRoleNames(referees)}',
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 13,
-            ),
+            style: disabledMetaStyle,
           ),
           const SizedBox(height: 2),
           Text(
             'Teller: ${_formatRoleNames(tellers)}',
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 13,
-            ),
+            style: disabledMetaStyle,
           ),
           if (isCancelled && cancelReason != null && cancelReason.trim().isNotEmpty) ...[
             const SizedBox(height: 6),
@@ -1123,6 +1526,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
             ),
           ],
         ],
+      ),
     );
   }
 

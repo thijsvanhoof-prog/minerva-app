@@ -107,6 +107,34 @@ class NevoboApi {
     return _deriveCodeFromDisplayName(raw);
   }
 
+  /// Velden voor Supabase `teams` insert wanneer [teamName] een Nevobo-code oplevert.
+  static Map<String, String> nevoboCodeFieldsForTeamName(String teamName) {
+    final code = extractCodeFromTeamName(teamName);
+    if (code == null || code.isEmpty) return const {};
+    return {'nevobo_code': code};
+  }
+
+  /// Best-effort: werk `nevobo_code` bij na hernoemen (alleen als code afleidbaar is).
+  /// Laat bestaande `nevobo_code` ongemoeid wanneer uit de naam geen code komt.
+  static Future<void> updateNevoboCodeFromTeamNameIfDerivable({
+    required SupabaseClient client,
+    required int teamId,
+    required String teamName,
+  }) async {
+    final fields = nevoboCodeFieldsForTeamName(teamName);
+    if (fields.isEmpty) return;
+    try {
+      for (final idField in const ['team_id', 'id']) {
+        try {
+          await client.from('teams').update(fields).eq(idField, teamId);
+          return;
+        } on PostgrestException catch (_) {
+          continue;
+        }
+      }
+    } catch (_) {}
+  }
+
   /// Custom team ordering for the app:
   /// dames -> heren -> recreanten -> A-jeugd -> B-jeugd -> C-jeugd -> volleystars.
   ///
@@ -678,25 +706,82 @@ class NevoboApi {
       }
       if (raw.contains('T')) {
         final d = raw.substring(0, 8);
-        final t = raw.substring(9, 15);
+        final rest = raw.substring(9);
+        final t = rest.length >= 6 ? rest.substring(0, 6) : rest.padRight(6, '0');
+        final suffix = rest.length > 6 ? rest.substring(6) : '';
         final iso =
             '${d.substring(0, 4)}-${d.substring(4, 6)}-${d.substring(6, 8)}T'
-            '${t.substring(0, 2)}:${t.substring(2, 4)}:${t.substring(4, 6)}';
-        return DateTime.parse(iso);
+            '${t.substring(0, 2)}:${t.substring(2, 4)}:${t.substring(4, 6)}$suffix';
+        return _parseNevoboDateTime(iso);
       }
     } catch (_) {}
     return null;
   }
 
-  static DateTime? _parseDateTime(String? raw) {
+  /// Parse Nevobo wedstrijdtijd (`tijdstip` uit JSON of ICS `DTSTART`).
+  ///
+  /// - Met `Z` of offset: absolute tijd (UTC/offset).
+  /// - Zonder timezone: bedoeld als Nederlandse lokale wedstrijdtijd (CET/CEST).
+  static DateTime? parseMatchDateTime(String? raw) => _parseNevoboDateTime(raw);
+
+  static DateTime? _parseDateTime(String? raw) => _parseNevoboDateTime(raw);
+
+  static DateTime? _parseNevoboDateTime(String? raw) {
     if (raw == null) return null;
     final s = raw.trim();
     if (s.isEmpty) return null;
     try {
+      if (RegExp(r'([Zz]|[+-]\d{2}:?\d{2})$').hasMatch(s)) {
+        return DateTime.parse(s);
+      }
+
+      final naive = RegExp(
+        r'^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$',
+      ).firstMatch(s);
+      if (naive != null) {
+        return _dateTimeInNetherlandsLocal(
+          year: int.parse(naive.group(1)!),
+          month: int.parse(naive.group(2)!),
+          day: int.parse(naive.group(3)!),
+          hour: int.parse(naive.group(4)!),
+          minute: int.parse(naive.group(5)!),
+          second: int.parse(naive.group(6) ?? '0'),
+        );
+      }
+
       return DateTime.parse(s);
     } catch (_) {
       return null;
     }
+  }
+
+  static DateTime _dateTimeInNetherlandsLocal({
+    required int year,
+    required int month,
+    required int day,
+    required int hour,
+    required int minute,
+    required int second,
+  }) {
+    final offsetHours = _netherlandsUtcOffsetHours(year, month, day, hour);
+    return DateTime.utc(year, month, day, hour - offsetHours, minute, second).toLocal();
+  }
+
+  /// EU DST-regels voor Nederland (CET +1, CEST +2).
+  static int _netherlandsUtcOffsetHours(int year, int month, int day, int hour) {
+    final instant = DateTime.utc(year, month, day, hour);
+    final dstStart = _euDstTransitionUtc(year, 3);
+    final dstEnd = _euDstTransitionUtc(year, 10);
+    if (!instant.isBefore(dstStart) && instant.isBefore(dstEnd)) return 2;
+    return 1;
+  }
+
+  static DateTime _euDstTransitionUtc(int year, int month) {
+    var day = DateTime.utc(year, month + 1, 0).day;
+    while (DateTime.utc(year, month, day).weekday != DateTime.sunday) {
+      day--;
+    }
+    return DateTime.utc(year, month, day, 1);
   }
 
   static Future<NevoboTeam> _resolveTeam(NevoboTeam team) async {

@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:minerva_app/ui/auth/auth_email_change_pending.dart';
 import 'package:minerva_app/ui/auth/reset_password_page.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/shell.dart';
 
 class AuthGate extends StatefulWidget {
@@ -15,6 +17,7 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   final _auth = Supabase.instance.client.auth;
+
   bool _isEnsuringGuestSession = false;
   bool _showingResetPasswordPage = false;
   bool _passwordRecoveryPending = false;
@@ -29,12 +32,49 @@ class _AuthGateState extends State<AuthGate> {
         _openResetPasswordPage();
         return;
       }
+      if (state.session != null &&
+          (state.event == AuthChangeEvent.signedIn ||
+              state.event == AuthChangeEvent.userUpdated)) {
+        unawaited(_maybeHandleEmailChangeConfirmed());
+      }
       // Zodra iemand uitlogt of sessie vervalt, direct terug naar gast.
       if (state.session == null) {
         _ensureGuestSession();
       }
     });
     _ensureGuestSession();
+  }
+
+  Future<void> _maybeHandleEmailChangeConfirmed() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+
+    final confirmed = await consumePendingEmailChangeIfConfirmed(
+      userId: user.id,
+      currentEmail: user.email,
+    );
+    if (!confirmed) return;
+
+    try {
+      await _auth.refreshSession();
+    } catch (_) {}
+
+    final freshUser = _auth.currentUser ?? user;
+    try {
+      await Supabase.instance.client.from('profiles').upsert({
+        'id': freshUser.id,
+        'email': freshUser.email ?? '',
+      });
+    } catch (_) {}
+
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      if (messenger != null) {
+        showTopMessageWithMessenger(messenger, 'E-mailadres is bevestigd.');
+      }
+    });
   }
 
   void _openResetPasswordPage() {

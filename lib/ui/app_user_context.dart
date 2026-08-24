@@ -157,7 +157,11 @@ class AppUserContext extends InheritedWidget {
   /// Central place for feature permissions (can be reused across the app).
   /// Nieuws/agenda beheren: admin, bestuur en communicatie (sluit aan bij RLS).
   bool get canManageAgenda =>
-      hasFullAdminRights || isInBestuur || isInCommunicatie;
+      hasFullAdminRights ||
+      isInBestuur ||
+      isInCommunicatie ||
+      isInJeugdcommissie ||
+      isInEvenementen;
   bool get canViewAgendaRsvps =>
       hasFullAdminRights ||
       isInBestuur ||

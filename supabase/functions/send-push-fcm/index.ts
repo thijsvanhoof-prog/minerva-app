@@ -8,17 +8,92 @@
 //   SUPABASE_SERVICE_ROLE_KEY    — Om push_tokens en notification_preferences te lezen
 //
 // Deploy: supabase functions deploy send-push-fcm
+// Gateway: verify_jwt = false in config.toml; user-JWT wordt in deze function gevalideerd.
 //
 // Body: { "title": "Titel", "body": "Bericht", "user_ids": ["uuid"] } of { "title": "...", "body": "...", "broadcast": true }
 
 import { serve } from "std/http/server.ts";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type User } from "@supabase/supabase-js";
 import * as jose from "https://deno.land/x/jose@v5.2.0/index.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+
+const userJwtPattern = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+function unauthorizedResponse(): Response {
+  return new Response(JSON.stringify({ error: "Unauthorized" }), {
+    status: 401,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function forbiddenResponse(): Response {
+  return new Response(JSON.stringify({ error: "Forbidden" }), {
+    status: 403,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function isGuestAccount(user: User): boolean {
+  const email = (user.email ?? "").trim().toLowerCase();
+  if (!email) return false;
+  if (email === "gast@mail.com") return true;
+  const configuredGuest = (Deno.env.get("GUEST_EMAIL") ?? "").trim().toLowerCase();
+  return configuredGuest.length > 0 && email === configuredGuest;
+}
+
+/** Zelfde rechten als can_manage_home_news(), maar voor expliciete caller user id (service-role). */
+async function callerCanManageContentBroadcast(
+  supabase: ReturnType<typeof createClient>,
+  userId: string,
+): Promise<boolean> {
+  const { data: adminRow } = await supabase
+    .from("global_admins")
+    .select("id")
+    .eq("id", userId)
+    .maybeSingle();
+  if (adminRow) return true;
+
+  const { data: committees } = await supabase
+    .from("committee_members")
+    .select("committee_name")
+    .eq("profile_id", userId);
+
+  for (const row of committees ?? []) {
+    const name = (row.committee_name ?? "").toString().trim().toLowerCase();
+    if (name === "bestuur" || name.includes("bestuur")) return true;
+    if (name === "cc" || name.includes("communicatie")) return true;
+  }
+  return false;
+}
+
+/** Valideer ingelogde user via Authorization Bearer (user access token). */
+async function authenticateCaller(
+  req: Request,
+  supabaseUrl: string,
+  serviceRoleKey: string,
+): Promise<User | null> {
+  const authHeader = req.headers.get("Authorization");
+  if (!authHeader?.startsWith("Bearer ")) return null;
+
+  const accessToken = authHeader.slice("Bearer ".length).trim();
+  if (!accessToken || !userJwtPattern.test(accessToken)) return null;
+
+  const supabase = createClient(supabaseUrl, serviceRoleKey);
+  const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+  if (error || !user) return null;
+
+  if (user.is_anonymous === true) return null;
+  const appMeta = user.app_metadata ?? {};
+  const userMeta = user.user_metadata ?? {};
+  if (appMeta.is_anonymous === true || userMeta.is_anonymous === true) return null;
+  if ((appMeta.provider ?? "").toString().toLowerCase() === "anonymous") return null;
+
+  return user;
+}
 
 type Body = {
   title?: string;
@@ -67,6 +142,11 @@ serve(async (req) => {
     );
   }
 
+  const caller = await authenticateCaller(req, supabaseUrl, serviceRoleKey);
+  if (!caller) {
+    return unauthorizedResponse();
+  }
+
   let body: Body;
   try {
     body = (await req.json()) as Body;
@@ -92,6 +172,17 @@ serve(async (req) => {
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
+
+  if (isGuestAccount(caller)) {
+    return forbiddenResponse();
+  }
+
+  if (body.broadcast === true) {
+    const canBroadcast = await callerCanManageContentBroadcast(supabase, caller.id);
+    if (!canBroadcast) {
+      return forbiddenResponse();
+    }
+  }
 
   // Team-specifiek: resolve team_id / team_ids / nevobo_team_code naar user_ids (leden + ouders van leden).
   let targetUserIds: string[] | undefined = body.user_ids ?? undefined;

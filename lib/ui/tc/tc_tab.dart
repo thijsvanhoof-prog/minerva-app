@@ -1205,23 +1205,26 @@ class _TcTabState extends State<TcTab> {
     }
 
     Object? lastError;
+    final nevoboFields = NevoboApi.nevoboCodeFieldsForTeamName(teamName);
     final payloads = <Map<String, dynamic>>[];
     for (final season in seasonCandidates) {
       payloads.add({
         'team_name': teamName,
         'season': season,
         if (trainingOnly) 'training_only': true,
+        ...nevoboFields,
       });
       payloads.add({
         'name': teamName,
         'season': season,
         if (trainingOnly) 'training_only': true,
+        ...nevoboFields,
       });
     }
-    payloads.add({'team_name': teamName, if (trainingOnly) 'training_only': true});
-    payloads.add({'name': teamName, if (trainingOnly) 'training_only': true});
-    payloads.add({'team_name': teamName});
-    payloads.add({'name': teamName});
+    payloads.add({'team_name': teamName, if (trainingOnly) 'training_only': true, ...nevoboFields});
+    payloads.add({'name': teamName, if (trainingOnly) 'training_only': true, ...nevoboFields});
+    payloads.add({'team_name': teamName, ...nevoboFields});
+    payloads.add({'name': teamName, ...nevoboFields});
 
     for (final payload in payloads) {
       try {

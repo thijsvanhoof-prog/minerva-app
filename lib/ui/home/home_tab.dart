@@ -72,6 +72,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   bool _newsFromSupabase = false;
   String _newsIdField = 'news_id';
 
+  /// Gast/toeschouwer-melding: standaard uitgeklapt, kan ingeklapt worden tot icoon.
+  bool _showGuestAccountHint = true;
+
   NewsCategory _categoryFromDb(dynamic v) {
     final s = (v ?? '').toString().trim().toLowerCase();
     switch (s) {
@@ -4396,6 +4399,74 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                       ],
               ),
             ),
+            if (widget.showOnlyHighlightsAndNews)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: _showGuestAccountHint
+                    ? GlassCard(
+                        padding: const EdgeInsets.all(12),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              color: AppColors.warning,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Ben je lid van VV Minerva en wil je gekoppeld worden aan je team? '
+                                'Maak dan een eigen account aan via Profiel. Na koppeling kun je je team, '
+                                'trainingen, wedstrijden en taken bekijken.',
+                                style: TextStyle(
+                                  color: AppColors.onBackground
+                                      .withValues(alpha: 0.92),
+                                  fontSize: 13,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Sluiten',
+                              onPressed: () =>
+                                  setState(() => _showGuestAccountHint = false),
+                              icon: const Icon(Icons.close, size: 18),
+                              color: AppColors.textSecondary,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          ],
+                        ),
+                      )
+                    : Align(
+                        alignment: Alignment.centerLeft,
+                        child: Tooltip(
+                          message: 'Accountinformatie tonen',
+                          child: Semantics(
+                            label: 'Accountinformatie tonen',
+                            button: true,
+                            child: IconButton(
+                              onPressed: () =>
+                                  setState(() => _showGuestAccountHint = true),
+                              icon: const Icon(Icons.info_outline),
+                              color: AppColors.warning,
+                              iconSize: 22,
+                              padding: const EdgeInsets.all(8),
+                              constraints: const BoxConstraints(
+                                minWidth: 40,
+                                minHeight: 40,
+                              ),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          ),
+                        ),
+                      ),
+              ),
             Expanded(
               child: IndexedStack(
                 index: _contentIndexForSelectedTab(_tabController.index),

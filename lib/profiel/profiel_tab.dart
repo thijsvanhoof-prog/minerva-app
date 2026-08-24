@@ -9,6 +9,8 @@ import 'package:minerva_app/ui/notifications/notification_settings_page.dart';
 import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:minerva_app/ui/auth/auth_page.dart';
+import 'package:minerva_app/ui/auth/auth_email_change_pending.dart';
+import 'package:minerva_app/ui/auth/auth_redirect_urls.dart';
 import 'package:minerva_app/ui/auth/register_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -110,6 +112,13 @@ class _ProfielTabState extends State<ProfielTab> {
     });
 
     try {
+      try {
+        await _client.auth.refreshSession();
+      } catch (_) {}
+      try {
+        await _client.auth.getUser();
+      } catch (_) {}
+
       // Vernieuw globale context (o.a. displayName in header) zodat wijzigingen direct zichtbaar zijn.
       if (mounted) await AppUserContext.of(context).reloadUserContext?.call();
       if (!mounted) return;
@@ -949,8 +958,10 @@ class _ProfielTabState extends State<ProfielTab> {
   Widget build(BuildContext context) {
     final user = _client.auth.currentUser;
     final showGuestProfile = user == null || _isAnonymousAuthUser(user);
-    final email = user?.email ?? 'Onbekend';
     final ctx = AppUserContext.of(context);
+    final email = ctx.email.trim().isNotEmpty
+        ? ctx.email.trim()
+        : (user?.email ?? 'Onbekend');
     final displayName = ctx.displayName.trim().isNotEmpty ? ctx.displayName.trim() : (user?.email ?? 'Onbekend');
     final roleLabels = _buildRoleLabels(ctx);
 
@@ -1459,9 +1470,26 @@ class _ProfielTabState extends State<ProfielTab> {
   }
 
   Future<void> _changeEmailFlow({required String currentEmail}) async {
+    try {
+      await _client.auth.refreshSession();
+    } catch (_) {}
+    try {
+      await _client.auth.getUser();
+    } catch (_) {}
+    if (mounted) {
+      await AppUserContext.of(context).reloadUserContext?.call();
+    }
+    if (!mounted) return;
+
+    final ctx = AppUserContext.of(context);
+    final user = _client.auth.currentUser;
+    final resolvedEmail = ctx.email.trim().isNotEmpty
+        ? ctx.email.trim()
+        : (user?.email ?? currentEmail).trim();
+
     final newEmail = await showDialog<String>(
       context: context,
-      builder: (context) => _EditEmailDialog(hint: currentEmail),
+      builder: (context) => _EditEmailDialog(hint: resolvedEmail),
     );
 
     if (!mounted) return;
@@ -1472,15 +1500,20 @@ class _ProfielTabState extends State<ProfielTab> {
       showTopMessage(context, 'Vul een geldig e-mailadres in.', isError: true);
       return;
     }
-    if (email == currentEmail) {
+    if (email.toLowerCase() == resolvedEmail.toLowerCase()) {
       showTopMessage(context, 'Dit is al je huidige e-mailadres.', isError: true);
       return;
     }
 
     try {
+      final user = _client.auth.currentUser;
+      if (user == null) return;
+
       await _client.auth.updateUser(
         UserAttributes(email: email),
+        emailRedirectTo: supabaseEmailChangeRedirectUrl(),
       );
+      await setPendingEmailChange(userId: user.id, email: email);
       if (!mounted) return;
       showTopMessage(context, 'E-mail wijziging gestart. Check je mail om te bevestigen.');
       await _reload();

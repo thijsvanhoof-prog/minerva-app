@@ -142,25 +142,21 @@ class _InfoTabState extends State<InfoTab> {
       final nameByProfileId = await _loadProfileNames(
         profileIds: profileIds.toList(),
       );
-      Map<String, String> emailByProfileId = await _loadProfileEmails(
+      // E-mail: RPC/rows primair (auth.users via RPC), profiles.email alleen fallback.
+      final emailByProfileId = <String, String>{};
+      for (final row in rows) {
+        final pid = row['profile_id']?.toString() ?? '';
+        if (pid.isEmpty) continue;
+        final email = (row['email'] ?? row['contact_email'] ?? row['mail'])
+            ?.toString()
+            .trim();
+        if (email != null && email.isNotEmpty) emailByProfileId[pid] = email;
+      }
+      final profileEmails = await _loadProfileEmails(
         profileIds: profileIds.toList(),
       );
-      final hasEmailInRows = rows.any((r) {
-        final direct = r['email']?.toString().trim() ?? '';
-        final contact = r['contact_email']?.toString().trim() ?? '';
-        final mail = r['mail']?.toString().trim() ?? '';
-        return direct.isNotEmpty || contact.isNotEmpty || mail.isNotEmpty;
-      });
-      if (hasEmailInRows) {
-        final fromRpc = <String, String>{};
-        for (final row in rows) {
-          final pid = row['profile_id']?.toString() ?? '';
-          final email = (row['email'] ?? row['contact_email'] ?? row['mail'])
-              ?.toString()
-              .trim();
-          if (pid.isNotEmpty && email != null && email.isNotEmpty) fromRpc[pid] = email;
-        }
-        if (fromRpc.isNotEmpty) emailByProfileId = fromRpc;
+      for (final entry in profileEmails.entries) {
+        emailByProfileId.putIfAbsent(entry.key, () => entry.value);
       }
 
       // Build members by committee
@@ -177,12 +173,7 @@ class _InfoTabState extends State<InfoTab> {
             ? applyDisplayNameOverrides(displayNameFromRow!)
             : applyDisplayNameOverrides((nameByProfileId[pid] ?? '').trim());
         final displayName = memberName.isNotEmpty ? memberName : unknownUserName;
-        final rowEmail = (row['email'] ?? row['contact_email'] ?? row['mail'])
-            ?.toString()
-            .trim();
-        final email = rowEmail?.isNotEmpty == true
-            ? rowEmail
-            : emailByProfileId[pid]?.trim();
+        final email = emailByProfileId[pid]?.trim();
         // Alleen @-adressen tonen (e-mail van Minerva)
         final emailToShow = (email != null && email.contains('@'))
             ? email
@@ -452,6 +443,7 @@ class _InfoTabState extends State<InfoTab> {
                 color: AppColors.primary,
                 onRefresh: _loadCommittees,
                 child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
                   padding: EdgeInsets.fromLTRB(
                     16,
                     16,

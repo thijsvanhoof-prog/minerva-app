@@ -7,6 +7,7 @@ import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
+import 'package:minerva_app/ui/auth/auth_redirect_urls.dart';
 import 'package:minerva_app/ui/auth/auth_validation.dart';
 
 /// Scherm om een wachtwoord-resetlink per e-mail aan te vragen.
@@ -64,10 +65,10 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
 
     setState(() => _loading = true);
     try {
-      final redirectTo = (dotenv.env['SUPABASE_RESET_REDIRECT_URL'] ?? '').trim();
+      final redirectTo = supabaseResetRedirectUrl();
       await _client.auth.resetPasswordForEmail(
         email,
-        redirectTo: redirectTo.isNotEmpty ? redirectTo : null,
+        redirectTo: redirectTo,
       );
       if (!mounted) return;
       setState(() => _sent = true);

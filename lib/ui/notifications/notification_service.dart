@@ -12,6 +12,7 @@ class NotificationService {
   NotificationService._();
 
   static bool _firebaseInitialized = false;
+  static bool _tokenRefreshListenerAttached = false;
   static final Map<String, DateTime> _cooldowns = {};
 
   static bool get pushSupported {
@@ -35,6 +36,41 @@ class NotificationService {
         sound: true,
       );
     } catch (_) {}
+    _attachTokenRefreshListener();
+  }
+
+  static void _attachTokenRefreshListener() {
+    if (_tokenRefreshListenerAttached) return;
+    _tokenRefreshListenerAttached = true;
+    FirebaseMessaging.instance.onTokenRefresh.listen((token) async {
+      if (token.isEmpty) return;
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId == null) return;
+      try {
+        await _persistPushToken(userId: userId, token: token);
+        debugPrint(
+          'NotificationService: vernieuwd token opgeslagen in push_tokens (${Platform.isIOS ? 'ios' : 'android'}).',
+        );
+      } catch (e) {
+        debugPrint('NotificationService: token refresh opslaan mislukt: $e');
+      }
+    });
+  }
+
+  static Future<void> _persistPushToken({
+    required String userId,
+    required String token,
+  }) async {
+    final platform = Platform.isIOS ? 'ios' : 'android';
+    await Supabase.instance.client.from('push_tokens').upsert(
+          {
+            'user_id': userId,
+            'token': token,
+            'platform': platform,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          onConflict: 'user_id,token',
+        );
   }
 
   /// Roept aan bij uitloggen: verwijdert tokens van de huidige user uit Supabase.
@@ -155,18 +191,9 @@ class NotificationService {
     }
     debugPrint('NotificationService: FCM-token ontvangen.');
 
-    final platform = Platform.isIOS ? 'ios' : 'android';
-    await Supabase.instance.client.from('push_tokens').upsert(
-          {
-            'user_id': userId,
-            'token': token,
-            'platform': platform,
-            'updated_at': DateTime.now().toUtc().toIso8601String(),
-          },
-          onConflict: 'user_id,token',
-        );
+    await _persistPushToken(userId: userId, token: token);
     debugPrint(
-      'NotificationService: token opgeslagen in push_tokens ($platform).',
+      'NotificationService: token opgeslagen in push_tokens (${Platform.isIOS ? 'ios' : 'android'}).',
     );
   }
 
@@ -188,7 +215,9 @@ class NotificationService {
           'updated_at': DateTime.now().toUtc().toIso8601String(),
         });
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('NotificationService: syncUser mislukt: $e');
+    }
   }
 
   /// Verstuur een clubbrede push via de Supabase Edge Function `send-push-fcm`.

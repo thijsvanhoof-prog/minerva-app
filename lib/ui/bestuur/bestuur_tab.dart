@@ -10,6 +10,7 @@ import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNam
 import 'package:minerva_app/ui/commissies/commissies_tab.dart'
     show CommitteeAgendaRsvpsView;
 import 'package:minerva_app/ui/notifications/notification_service.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/match_travel.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 class BestuurTab extends StatefulWidget {
@@ -304,8 +305,10 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
       if (cancelled && teamId != null) {
         await NotificationService.sendTeamUpdate(
           title: 'Training geannuleerd',
-          body: trainingLabel,
+          body: 'Training geannuleerd: $trainingLabel',
           teamId: teamId,
+          dedupeKey: 'training-cancelled:$sessionId',
+          cooldownSeconds: 300,
         );
       }
       if (!mounted) return;
@@ -535,6 +538,7 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
   bool _loadingTeams = true;
   String? _error;
   List<NevoboTeam> _teams = const [];
+  final Map<String, int> _teamIdByCode = {};
 
   String? _expandedTeamCode;
   final Map<String, bool> _loadingMatchesByTeam = {};
@@ -573,8 +577,18 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
         excludeTrainingOnly: false,
       );
       if (!mounted) return;
+      final teamIdByCode = <String, int>{};
+      for (final e in withIds) {
+        final id = e.teamId;
+        if (id != null) {
+          teamIdByCode[e.team.code.trim().toUpperCase()] = id;
+        }
+      }
       setState(() {
         _teams = withIds.map((e) => e.team).toList();
+        _teamIdByCode
+          ..clear()
+          ..addAll(teamIdByCode);
         _loadingTeams = false;
       });
     } catch (e) {
@@ -715,11 +729,31 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
         onConflict: 'match_key',
       );
       if (cancelled) {
-        await NotificationService.sendTeamUpdateByNevoboCode(
-          title: 'Wedstrijd geannuleerd',
-          body: NevoboApi.displayTeamName(match.summary),
-          teamCode: team.code,
-        );
+        final matchName = NevoboApi.displayTeamName(match.summary);
+        final pushBody = reason != null && reason.trim().isNotEmpty
+            ? 'Wedstrijd geannuleerd: $matchName\nReden: ${reason.trim()}'
+            : matchName;
+        final teamId = _teamIdByCode[team.code.trim().toUpperCase()];
+        if (teamId != null) {
+          await NotificationService.sendTeamUpdate(
+            title: 'Wedstrijd geannuleerd',
+            body: pushBody,
+            teamId: teamId,
+            dedupeKey: 'match-cancelled:$key',
+            cooldownSeconds: 300,
+          );
+        } else {
+          debugPrint(
+            'Bestuur: geen teamId gevonden voor wedstrijdpush teamCode=${team.code}',
+          );
+          await NotificationService.sendTeamUpdateByNevoboCode(
+            title: 'Wedstrijd geannuleerd',
+            body: pushBody,
+            teamCode: team.code,
+            dedupeKey: 'match-cancelled:$key',
+            cooldownSeconds: 300,
+          );
+        }
       }
 
       if (!mounted) return;
@@ -904,6 +938,10 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                                     color: AppColors.textSecondary,
                                     decoration: cancelled ? TextDecoration.lineThrough : TextDecoration.none,
                                   ),
+                                ),
+                                MatchTravelRow(
+                                  location: m.location,
+                                  textDecoration: cancelled ? TextDecoration.lineThrough : null,
                                 ),
                               ],
                               if (cancelled && reason != null && reason.trim().isNotEmpty) ...[

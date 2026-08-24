@@ -6,8 +6,54 @@ import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/notifications/notification_service.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/match_travel.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+const _matchTaskPushTitle = 'Nieuwe wedstrijdtaak';
+
+String _matchTaskPushBody({required bool fluiten, required bool tellen}) {
+  if (fluiten && tellen) {
+    return 'Er zijn wedstrijdtaken gekoppeld aan jouw team.';
+  }
+  if (fluiten) return 'Fluiten is gekoppeld aan jouw team.';
+  if (tellen) return 'Tellen is gekoppeld aan jouw team.';
+  return 'Er is een wedstrijdtaak gekoppeld aan jouw team.';
+}
+
+String _matchTaskPushDedupeKey({
+  required String matchKey,
+  required int teamId,
+  required bool fluiten,
+  required bool tellen,
+}) {
+  final kinds = [
+    if (fluiten) 'fluiten',
+    if (tellen) 'tellen',
+  ].join('+');
+  return 'match-task:$matchKey:$teamId:$kinds';
+}
+
+/// Best-effort team-push na koppelen van fluiten/tellen aan een team.
+Future<void> _notifyTeamMatchTasksLinked({
+  required int teamId,
+  required String matchKey,
+  required bool fluiten,
+  required bool tellen,
+}) async {
+  if (!fluiten && !tellen) return;
+  await NotificationService.sendTeamUpdate(
+    title: _matchTaskPushTitle,
+    body: _matchTaskPushBody(fluiten: fluiten, tellen: tellen),
+    teamId: teamId,
+    dedupeKey: _matchTaskPushDedupeKey(
+      matchKey: matchKey,
+      teamId: teamId,
+      fluiten: fluiten,
+      tellen: tellen,
+    ),
+  );
+}
 
 class MyTasksTab extends StatelessWidget {
   const MyTasksTab({
@@ -841,6 +887,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
                       m.location.trim(),
                       style: const TextStyle(color: AppColors.textSecondary),
                     ),
+                    MatchTravelRow(location: m.location),
                   ],
                   const SizedBox(height: 8),
                   Text(
@@ -1672,7 +1719,12 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       if (!mounted) return;
       setState(() {
         _linkRowsByKey = {..._linkRowsByKey, key: row};
-        _teamIdByTaskId = {..._teamIdByTaskId, ...teamIdByTaskId};
+        final updatedTeamIds = Map<int, int>.from(_teamIdByTaskId);
+        for (final tid in taskIds) {
+          updatedTeamIds.remove(tid);
+        }
+        updatedTeamIds.addAll(teamIdByTaskId);
+        _teamIdByTaskId = updatedTeamIds;
       });
     } catch (_) {
       // ignore
@@ -1888,6 +1940,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
+                        MatchTravelRow(location: match.location),
                       ],
                       const SizedBox(height: 14),
 
@@ -1941,6 +1994,29 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                           label: Text('Koppel $taskLabel aan ${_teamLabel(selectedTeamId)}'),
                         ),
                       ),
+                      if (currentLinked != null) ...[
+                        const SizedBox(height: 10),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () async {
+                              Navigator.of(sheetContext).pop(false);
+                              await _unlinkMatchTask(
+                                ctx: ctx,
+                                match: match,
+                                fluiten: fluiten,
+                                tellen: tellen,
+                              );
+                            },
+                            icon: const Icon(Icons.link_off),
+                            label: Text('Ontkoppel $taskLabel'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.error,
+                              side: const BorderSide(color: AppColors.error),
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   );
                 },
@@ -1953,6 +2029,75 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
 
     // handled inside sheet
     if (result != true) return;
+  }
+
+  Future<void> _unlinkMatchTask({
+    required AppUserContext ctx,
+    required _HomeMatch match,
+    required bool fluiten,
+    required bool tellen,
+  }) async {
+    if (!ctx.canManageTasks) return;
+    if (_client.auth.currentUser == null) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+
+    final key = _matchKey(match);
+    final kind = fluiten
+        ? 'fluiten'
+        : tellen
+            ? 'tellen'
+            : null;
+    if (kind == null) return;
+
+    try {
+      final byKind = await _taskIdByKindForMatchKey(key);
+      final taskId = byKind[kind];
+      if (taskId == null) {
+        if (!mounted) return;
+        showTopMessageWithMessenger(
+          messenger,
+          'Geen taak gevonden om te ontkoppelen.',
+          isError: true,
+        );
+        return;
+      }
+
+      try {
+        await _client.from('club_task_signups').delete().eq('task_id', taskId);
+      } catch (_) {}
+      await _client.from('club_task_team_assignments').delete().eq('task_id', taskId);
+
+      await _maybeClearLinkedTeamIdForMatch(key);
+
+      if (!mounted) return;
+      await _refreshLinkRowForKey(key);
+      if (!mounted) return;
+      await _refreshStatusForKey(key);
+      if (!mounted) return;
+      showTopMessageWithMessenger(messenger, 'Ontkoppeld.');
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessageWithMessenger(messenger, 'Ontkoppelen mislukt: $e', isError: true);
+    }
+  }
+
+  Future<void> _maybeClearLinkedTeamIdForMatch(String key) async {
+    try {
+      final byKind = await _taskIdByKindForMatchKey(key);
+      final taskIds = byKind.values.toList();
+      if (taskIds.isEmpty) return;
+
+      final assignments = await _loadTeamAssignmentsForTaskIds(taskIds);
+      if (assignments.isNotEmpty) return;
+
+      await _client.from('nevobo_home_matches').update({
+        'linked_team_id': null,
+        'linked_by': null,
+        'linked_at': null,
+        'updated_by': _client.auth.currentUser?.id,
+      }).eq('match_key', key);
+    } catch (_) {}
   }
 
   Future<int?> _pickTeamId({
@@ -2075,6 +2220,8 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
 
     final key = _matchKey(match);
     int created = 0;
+    var linkedFluiten = false;
+    var linkedTellen = false;
 
     Future<int> createTask(String type, String title) async {
       final inserted = await _client
@@ -2130,8 +2277,10 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         final existing = existingTaskIds['fluiten'];
         if (existing != null) {
           toAssign.add(existing);
+          linkedFluiten = true;
         } else {
           await createTask('fluiten', 'Fluiten (${NevoboApi.displayTeamCode(match.teamCode)})');
+          linkedFluiten = true;
         }
       }
 
@@ -2139,8 +2288,10 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         final existing = existingTaskIds['tellen'];
         if (existing != null) {
           toAssign.add(existing);
+          linkedTellen = true;
         } else {
           await createTask('tellen', 'Tellen (${NevoboApi.displayTeamCode(match.teamCode)})');
+          linkedTellen = true;
         }
       }
 
@@ -2161,11 +2312,12 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       if (!mounted) return;
       await _refreshStatusForKey(key);
       if (!mounted) return;
-      if (created > 0) {
-        await NotificationService.sendTeamUpdate(
-          title: 'Nieuwe taken voor wedstrijd',
-          body: NevoboApi.displayTeamName(match.summary),
+      if (linkedFluiten || linkedTellen) {
+        await _notifyTeamMatchTasksLinked(
           teamId: teamId,
+          matchKey: key,
+          fluiten: linkedFluiten,
+          tellen: linkedTellen,
         );
       }
       showTopMessageWithMessenger(messenger, 'Gekoppeld. ($created aangemaakt)');
@@ -2573,6 +2725,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
                               ),
+                              MatchTravelRow(location: m.location),
                             ],
                           ],
                         ),
@@ -3667,7 +3820,7 @@ class _MyTasksTabState extends State<MyTasksTab> {
       int created = 0;
       int skipped = 0;
       int missingTeamId = 0;
-      final createdTeamIds = <int>{};
+      final createdKeysByTeamId = <int, List<String>>{};
 
       for (final team in teams) {
         final teamId = teamIdByCode[team.code];
@@ -3720,16 +3873,21 @@ class _MyTasksTabState extends State<MyTasksTab> {
 
           existingKeys.add(key);
           created++;
-          createdTeamIds.add(teamId);
+          createdKeysByTeamId.putIfAbsent(teamId, () => []).add(key);
         }
       }
 
       if (!mounted) return;
-      if (created > 0 && createdTeamIds.isNotEmpty) {
-        await NotificationService.sendTeamUpdatesForTeams(
-          title: 'Nieuwe wedstrijdtaken toegevoegd',
-          body: '$created taak/taken',
-          teamIds: createdTeamIds.toList(),
+      for (final entry in createdKeysByTeamId.entries) {
+        final keys = entry.value..sort();
+        final count = keys.length;
+        await NotificationService.sendTeamUpdate(
+          title: _matchTaskPushTitle,
+          body: count > 1
+              ? 'Er zijn wedstrijdtaken gekoppeld aan jouw team.'
+              : 'Er is een wedstrijdtaak gekoppeld aan jouw team.',
+          teamId: entry.key,
+          dedupeKey: 'import-wedstrijd:${entry.key}:${keys.join('|')}',
         );
       }
       showTopMessageWithMessenger(
