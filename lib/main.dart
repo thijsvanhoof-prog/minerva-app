@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:ui';
 
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_ui.dart';
 import 'package:minerva_app/ui/auth/auth_gate.dart';
 import 'package:minerva_app/ui/notifications/notification_service.dart';
@@ -15,6 +19,22 @@ import 'package:minerva_app/ui/user_app_bootstrap.dart';
 Future<void> main() async {
   return runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
+
+    // Statusbalk: donkerblauwe achtergrond + witte iconen (tijd, batterij, wifi).
+    // Op Android 15+ zijn statusBarColor/navigationBarColor/navigationBarDividerColor beëindigd.
+    // Gebruik alleen brightness op Android; op iOS doet Info.plist + shell de rest.
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+      ));
+    } else {
+      SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+        statusBarColor: AppColors.darkBlue,
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+      ));
+    }
 
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
@@ -31,6 +51,17 @@ Future<void> main() async {
     };
 
     try {
+      // Firebase alleen op iOS/Android (FCM push); op macOS/web geen config en niet nodig.
+      final isMobile = defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.android;
+      if (!kIsWeb && isMobile) {
+        try {
+          await Firebase.initializeApp();
+        } catch (e) {
+          debugPrint('Firebase init failed (push uit): $e');
+        }
+      }
+
       await dotenv.load(fileName: '.env');
 
       final supabaseUrl = dotenv.env['SUPABASE_URL'] ?? '';
@@ -86,10 +117,13 @@ Future<void> main() async {
 
       runApp(const MinervaApp());
 
-      // OneSignal init after first frame (safer on cold-start iOS).
+      // FCM na eerste frame initialiseren (iOS: voorkomt problemen met debug-verbinding bij opstart).
       WidgetsBinding.instance.addPostFrameCallback((_) async {
-        final oneSignalAppId = dotenv.env['ONESIGNAL_APP_ID'] ?? '';
-        await NotificationService.initialize(oneSignalAppId: oneSignalAppId);
+        try {
+          await NotificationService.initialize();
+        } catch (e) {
+          debugPrint('Notification init failed (push uit): $e');
+        }
       });
     } catch (e, stackTrace) {
       debugPrint('Startup error: $e');

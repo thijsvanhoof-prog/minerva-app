@@ -1,0 +1,9 @@
+{
+  "id" : "7b2ef066-3b76-4955-a784-7f7b66489611",
+  "targets" : [
+    {
+      "id" : "FEFB426B-D69C-4779-9CAE-44E02C886C7F",
+      "name" : "minerva_app"
+    }
+  ]
+}

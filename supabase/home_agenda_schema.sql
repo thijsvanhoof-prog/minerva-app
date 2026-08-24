@@ -131,20 +131,20 @@ for delete
 to authenticated
 using (profile_id = auth.uid());
 
--- Admins (global) can manage agenda + RSVPs (optional)
+-- Beheer agenda + RSVPs: global admin, bestuur, communicatie (can_manage_home_agenda uit home_agenda_rls_fix.sql of force_content_rls_bestuur.sql)
 drop policy if exists "home_agenda_admin_all" on public.home_agenda;
 create policy "home_agenda_admin_all"
 on public.home_agenda
 for all
 to authenticated
-using (public.is_global_admin())
-with check (public.is_global_admin());
+using (public.can_manage_home_agenda())
+with check (public.can_manage_home_agenda());
 
 drop policy if exists "home_agenda_rsvps_admin_all" on public.home_agenda_rsvps;
 create policy "home_agenda_rsvps_admin_all"
 on public.home_agenda_rsvps
 for all
 to authenticated
-using (public.is_global_admin())
-with check (public.is_global_admin());
+using (public.can_manage_home_agenda())
+with check (public.can_manage_home_agenda());
 

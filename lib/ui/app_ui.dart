@@ -32,7 +32,7 @@ class AppUI {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppColors.cardRadius),
           side: BorderSide(
-            color: const Color(0xFF1A2B4A).withValues(alpha: 0.15),
+            color: AppColors.primary.withValues(alpha: 0.55),
             width: AppColors.cardBorderWidth,
           ),
         ),
@@ -144,7 +144,7 @@ class AppUI {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppColors.cardRadius),
           side: BorderSide(
-            color: AppColors.darkBlue.withValues(alpha: 0.15),
+            color: AppColors.primary.withValues(alpha: 0.55),
             width: AppColors.cardBorderWidth,
           ),
         ),
@@ -158,11 +158,12 @@ class AppUI {
         ),
       ),
 
-      tabBarTheme: const TabBarThemeData(
+      tabBarTheme: TabBarThemeData(
         labelColor: AppColors.primary,
         unselectedLabelColor: AppColors.textSecondary,
-        labelStyle: TextStyle(fontWeight: FontWeight.w800),
+        labelStyle: const TextStyle(fontWeight: FontWeight.w800),
         dividerColor: Colors.transparent,
+        splashBorderRadius: BorderRadius.circular(AppColors.cardRadius),
       ),
 
       segmentedButtonTheme: SegmentedButtonThemeData(
@@ -198,7 +199,7 @@ class AppUI {
       ),
 
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: const Color(0xFF1A2B4A).withValues(alpha: 0.95),
+        backgroundColor: AppColors.darkBlue.withValues(alpha: 0.95),
         contentTextStyle: const TextStyle(color: Colors.white),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(
@@ -224,11 +225,25 @@ class AppUI {
         labelStyle: const TextStyle(color: AppColors.textSecondary),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppColors.cardRadius),
-          borderSide: BorderSide(color: const Color(0xFF1A2B4A).withValues(alpha: 0.2)),
+          borderSide: BorderSide(
+            color: AppColors.primary.withValues(alpha: 0.55),
+            width: 1.5,
+          ),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppColors.cardRadius),
-          borderSide: const BorderSide(color: AppColors.primary, width: 1.3),
+          borderSide: const BorderSide(color: AppColors.primary, width: 2.2),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppColors.cardRadius),
+          borderSide: BorderSide(
+            color: AppColors.error.withValues(alpha: 0.85),
+            width: 1.7,
+          ),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppColors.cardRadius),
+          borderSide: const BorderSide(color: AppColors.error, width: 2.2),
         ),
       ),
     );

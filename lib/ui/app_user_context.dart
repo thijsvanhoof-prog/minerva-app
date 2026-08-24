@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'package:minerva_app/ui/committees/committee_normalization.dart';
+
 /// Gekoppeld kind-profiel voor ouder-kind account.
 class LinkedChild {
   final String profileId;
@@ -60,16 +62,28 @@ class TeamMembership {
   final int teamId;
   final String role;
   final String teamName;
+  /// Nevobo-teamcode (HS1, DS1, …) indien bekend; gebruikt voor Standen/Wedstrijden.
+  final String? nevoboCode;
+  /// Bij guardian-rol: displaynaam van het gekoppelde kind (voor label "Team (kind)").
+  final String? linkedChildDisplayName;
 
   const TeamMembership({
     required this.teamId,
     required this.role,
     required this.teamName,
+    this.nevoboCode,
+    this.linkedChildDisplayName,
   });
+
+  /// Teamnaam voor weergave: "Team" of "Team (kindnaam)" bij gekoppeld kind.
+  String get displayLabel =>
+      linkedChildDisplayName != null && linkedChildDisplayName!.trim().isNotEmpty
+          ? '$teamName (${linkedChildDisplayName!.trim()})'
+          : teamName;
 
   bool get canManageTeam {
     final r = role.trim().toLowerCase();
-    return r == 'trainer' || r == 'coach';
+    return r == 'trainer' || r == 'coach' || r == 'admin';
   }
 
   bool get isGuardian => role.trim().toLowerCase() == 'guardian';
@@ -126,8 +140,8 @@ class AppUserContext extends InheritedWidget {
   bool get hasFullAdminRights => isGlobalAdmin;
 
   bool isInCommittee(String name) {
-    final needle = name.trim().toLowerCase();
-    return committees.any((c) => c.trim().toLowerCase() == needle);
+    final needle = normalizeCommitteeKey(name);
+    return committees.any((c) => normalizeCommitteeKey(c) == needle);
   }
 
   bool get isInBestuur => isInCommittee('bestuur');
@@ -135,17 +149,34 @@ class AppUserContext extends InheritedWidget {
       isInCommittee('technische-commissie') || isInCommittee('tc');
   bool get isInCommunicatie => isInCommittee('communicatie');
   bool get isInWedstrijdzaken => isInCommittee('wedstrijdzaken');
+  bool get isInEvenementen => isInCommittee('evenementen');
+  bool get isInJeugdcommissie => isInCommittee('jeugdcommissie');
+  bool get isInScheidsrechtersTellers => isInCommittee('scheidsrechters-tellers');
+  bool get isInVrijwilligers => isInCommittee('vrijwilligers');
 
   /// Central place for feature permissions (can be reused across the app).
-  /// Bestuur: alles inzien (view), alleen admins mogen aanpassen (manage).
+  /// Nieuws/agenda beheren: admin, bestuur en communicatie (sluit aan bij RLS).
   bool get canManageAgenda =>
-      hasFullAdminRights || isInCommunicatie;
+      hasFullAdminRights ||
+      isInBestuur ||
+      isInCommunicatie ||
+      isInJeugdcommissie ||
+      isInEvenementen;
   bool get canViewAgendaRsvps =>
+      hasFullAdminRights ||
+      isInBestuur ||
+      isInCommunicatie ||
+      isInJeugdcommissie ||
+      isInEvenementen;
+
+  /// Alleen bestuur en communicatie (en global admin) mogen aanmeldingen exporteren.
+  bool get canExportAgendaRsvps =>
       hasFullAdminRights || isInBestuur || isInCommunicatie;
+
   bool get canManageNews =>
-      hasFullAdminRights || isInCommunicatie;
+      hasFullAdminRights || isInBestuur || isInCommunicatie;
   bool get canManageHighlights =>
-      hasFullAdminRights || isInCommunicatie;
+      hasFullAdminRights || isInBestuur || isInCommunicatie;
   bool get canManageTeams => hasFullAdminRights || isInTechnischeCommissie;
   bool get canManageMatches => hasFullAdminRights || isInWedstrijdzaken;
 
@@ -158,6 +189,10 @@ class AppUserContext extends InheritedWidget {
   // Tasks
   bool get canViewAllTasks => hasFullAdminRights || isInBestuur || isInWedstrijdzaken;
   bool get canManageTasks => hasFullAdminRights || isInWedstrijdzaken;
+
+  /// Weergave van alle accounts (gebruikersnamen, team toevoegen): bestuur, TC en admins.
+  bool get canViewAllAccounts =>
+      hasFullAdminRights || isInBestuur || isInTechnischeCommissie;
 
   static AppUserContext of(BuildContext context) {
     final result =

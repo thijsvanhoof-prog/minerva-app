@@ -1,15 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/primary_button.dart';
+import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart'; // TeamMembership
-import 'package:minerva_app/ui/display_name_overrides.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/trainingen_wedstrijden/add_training_page.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
-/// playing = speler, coach = trainer/coach. Aanwezig = één van beide; Afwezig = delete.
-enum AttendanceStatus { playing, coach }
+/// playing = speler, coach = trainer/coach, nietSpelend = aanwezig maar niet spelend, afgemeld = afgemeld.
+enum AttendanceStatus { playing, coach, nietSpelend, afgemeld }
 
 class TrainingsTab extends StatefulWidget {
   final List<TeamMembership> manageableTeams;
@@ -33,7 +35,13 @@ class _TrainingsTabState extends State<TrainingsTab> {
   final Map<int, AttendanceStatus?> _statusBySessionId = {};
   final Map<int, List<String>> _playingBySessionId = {};
   final Map<int, List<String>> _coachBySessionId = {};
+  final Map<int, List<String>> _nietSpelendBySessionId = {};
+  final Map<int, List<String>> _afgemeldBySessionId = {};
+  final Map<int, List<String>> _nietGereageerdBySessionId = {};
   final Set<int> _expandedSessionIds = {};
+  /// Welke team-accordions open staan (teamId); bij één team altijd uitgeklapt.
+  final Set<int> _expandedTrainingTeamIds = {};
+  bool _didInitExpandedTraining = false;
   String? _myDisplayName;
 
   bool _selectionMode = false;
@@ -49,8 +57,20 @@ class _TrainingsTabState extends State<TrainingsTab> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final ctx = AppUserContext.of(context);
-    final next = ctx.memberships.map((m) => m.teamId).toSet().toList()..sort();
+    // Gebruik de doorgegeven teams (Spelers- of Trainers-tab), niet alle memberships.
+    final byTeamId = <int, TeamMembership>{};
+    for (final m in widget.manageableTeams) {
+      byTeamId.putIfAbsent(m.teamId, () => m);
+    }
+    final ordered = byTeamId.entries.toList()
+      ..sort(
+        (a, b) => NevoboApi.compareTeamNames(
+          a.value.teamName,
+          b.value.teamName,
+          volleystarsLast: true,
+        ),
+      );
+    final next = ordered.map((e) => e.key).toList();
     if (_sameIntList(_allowedTeamIds, next)) return;
     _allowedTeamIds = next;
     setState(() {
@@ -63,10 +83,12 @@ class _TrainingsTabState extends State<TrainingsTab> {
     try {
       await AppUserContext.of(context).reloadUserContext?.call();
     } catch (_) {}
+    if (!mounted) return;
     setState(() {
       _loadFuture = _loadData(teamIds: _allowedTeamIds);
     });
     await _loadFuture;
+    if (!mounted) return;
   }
 
   Future<void> refresh() async {
@@ -98,6 +120,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
       _statusBySessionId.clear();
       _playingBySessionId.clear();
       _coachBySessionId.clear();
+      _nietSpelendBySessionId.clear();
+      _afgemeldBySessionId.clear();
+      _nietGereageerdBySessionId.clear();
       return;
     }
 
@@ -108,14 +133,34 @@ class _TrainingsTabState extends State<TrainingsTab> {
         )
         .eq('session_type', 'training')
         .inFilter('team_id', teamIds)
-        .order('start_datetime', ascending: false);
+        .order('start_datetime', ascending: true);
 
     final sessions = (sessionsRes as List<dynamic>).cast<Map<String, dynamic>>();
+    // Sorteer: eerst volgende datum bovenaan, verst onderaan.
+    sessions.sort((a, b) {
+      final rawA = a['start_datetime'] ?? a['start_timestamp'];
+      final rawB = b['start_datetime'] ?? b['start_timestamp'];
+      final startA = rawA is DateTime ? rawA : DateTime.tryParse(rawA?.toString() ?? '');
+      final startB = rawB is DateTime ? rawB : DateTime.tryParse(rawB?.toString() ?? '');
+      if (startA == null && startB == null) return 0;
+      if (startA == null) return 1;
+      if (startB == null) return -1;
+      final now = DateTime.now();
+      final aFuture = startA.isAfter(now);
+      final bFuture = startB.isAfter(now);
+      if (aFuture && !bFuture) return -1;
+      if (!aFuture && bFuture) return 1;
+      if (aFuture && bFuture) return startA.compareTo(startB);
+      return startB.compareTo(startA);
+    });
     _trainings = sessions;
 
     _statusBySessionId.clear();
     _playingBySessionId.clear();
     _coachBySessionId.clear();
+    _nietSpelendBySessionId.clear();
+    _afgemeldBySessionId.clear();
+    _nietGereageerdBySessionId.clear();
     if (_trainings.isEmpty) return;
 
     final sessionIds =
@@ -135,17 +180,21 @@ class _TrainingsTabState extends State<TrainingsTab> {
       final pid = r['person_id']?.toString() ?? '';
       if (pid.isNotEmpty) profileIds.add(pid);
     }
+    // Altijd naam van huidig profiel (zelf of kind) laden, ook als die nog nergens is aangemeld.
+    if (targetProfileId.isNotEmpty) profileIds.add(targetProfileId);
     final namesById = await _loadProfileDisplayNames(profileIds);
 
     final playingBySid = <int, List<String>>{};
     final coachBySid = <int, List<String>>{};
+    final nietSpelendBySid = <int, List<String>>{};
+    final afgemeldBySid = <int, List<String>>{};
 
     for (final r in allRows) {
       final sid = (r['session_id'] as num?)?.toInt();
       if (sid == null) continue;
       final pid = r['person_id']?.toString() ?? '';
       final status = (r['status'] ?? '').toString().trim().toLowerCase();
-      final name = pid.isEmpty ? '' : (namesById[pid] ?? _shortId(pid));
+      final name = pid.isEmpty ? '' : (namesById[pid] ?? unknownUserName);
 
       if (pid == targetProfileId) {
         final s = _statusFromString(status);
@@ -156,6 +205,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
         playingBySid.putIfAbsent(sid, () => []).add(name);
       } else if (status == 'coach') {
         coachBySid.putIfAbsent(sid, () => []).add(name);
+      } else if (status == 'niet_spelend' || status == 'nietspelend') {
+        nietSpelendBySid.putIfAbsent(sid, () => []).add(name);
+      } else if (status == 'afgemeld') {
+        afgemeldBySid.putIfAbsent(sid, () => []).add(name);
       }
     }
 
@@ -165,9 +218,73 @@ class _TrainingsTabState extends State<TrainingsTab> {
     for (final e in coachBySid.values) {
       e.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
+    for (final e in nietSpelendBySid.values) {
+      e.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    }
+    for (final e in afgemeldBySid.values) {
+      e.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    }
+
+    // Leden die niet hebben gereageerd: teamleden zonder attendance-row voor deze sessie.
+    final respondedBySid = <int, Set<String>>{};
+    for (final r in allRows) {
+      final sid = (r['session_id'] as num?)?.toInt();
+      if (sid == null) continue;
+      final pid = r['person_id']?.toString() ?? '';
+      if (pid.isEmpty) continue;
+      respondedBySid.putIfAbsent(sid, () => {}).add(pid);
+    }
+
+    Map<int, List<String>> teamMemberIdsByTid = {};
+    try {
+      final tmRes = await _client
+          .from('team_members')
+          .select('team_id, profile_id')
+          .inFilter('team_id', teamIds);
+      final tmRows = (tmRes as List<dynamic>).cast<Map<String, dynamic>>();
+      for (final row in tmRows) {
+        final tid = (row['team_id'] as num?)?.toInt();
+        final pid = row['profile_id']?.toString() ?? '';
+        if (tid == null || pid.isEmpty) continue;
+        teamMemberIdsByTid.putIfAbsent(tid, () => []).add(pid);
+      }
+    } catch (_) {
+      teamMemberIdsByTid = {};
+    }
+
+    final nietGereageerdBySid = <int, List<String>>{};
+    final idsToLoad = <String>{};
+    for (final s in _trainings) {
+      final sid = (s['session_id'] as num?)?.toInt();
+      final tid = (s['team_id'] as num?)?.toInt();
+      if (sid == null || tid == null) continue;
+      final members = teamMemberIdsByTid[tid] ?? [];
+      final responded = respondedBySid[sid] ?? {};
+      final niet = members.where((p) => !responded.contains(p)).toList();
+      if (niet.isNotEmpty) {
+        idsToLoad.addAll(niet);
+        nietGereageerdBySid[sid] = niet;
+      }
+    }
+
+    Map<String, String> allNamesById = Map.from(namesById);
+    if (idsToLoad.isNotEmpty) {
+      final extra = await _loadProfileDisplayNames(idsToLoad);
+      allNamesById = {...allNamesById, ...extra};
+    }
+
+    for (final sid in nietGereageerdBySid.keys) {
+      final ids = nietGereageerdBySid[sid]!;
+      final names = ids
+          .map((p) => allNamesById[p] ?? unknownUserName)
+          .where((n) => n.trim().isNotEmpty)
+          .toList()
+        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      nietGereageerdBySid[sid] = names;
+    }
 
     if (!mounted) return;
-    final myName = namesById[targetProfileId] ?? _shortId(targetProfileId);
+    final myName = allNamesById[targetProfileId] ?? unknownUserName;
     setState(() {
       _myDisplayName = myName;
       _playingBySessionId
@@ -176,6 +293,15 @@ class _TrainingsTabState extends State<TrainingsTab> {
       _coachBySessionId
         ..clear()
         ..addAll(coachBySid);
+      _nietSpelendBySessionId
+        ..clear()
+        ..addAll(nietSpelendBySid);
+      _afgemeldBySessionId
+        ..clear()
+        ..addAll(afgemeldBySid);
+      _nietGereageerdBySessionId
+        ..clear()
+        ..addAll(nietGereageerdBySid);
     });
   }
 
@@ -183,26 +309,39 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final me = _myDisplayName ?? 'Ik';
     final playing = List<String>.from(_playingBySessionId[sessionId] ?? []);
     final coaches = List<String>.from(_coachBySessionId[sessionId] ?? []);
+    final nietSpelend = List<String>.from(_nietSpelendBySessionId[sessionId] ?? []);
+    final afgemeld = List<String>.from(_afgemeldBySessionId[sessionId] ?? []);
     playing.remove(me);
     coaches.remove(me);
+    nietSpelend.remove(me);
+    afgemeld.remove(me);
     if (effective == AttendanceStatus.playing) {
       playing.add(me);
       playing.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     } else if (effective == AttendanceStatus.coach) {
       coaches.add(me);
       coaches.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    } else if (effective == AttendanceStatus.nietSpelend) {
+      nietSpelend.add(me);
+      nietSpelend.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    } else if (effective == AttendanceStatus.afgemeld) {
+      afgemeld.add(me);
+      afgemeld.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
     if (effective == null) {
       _statusBySessionId.remove(sessionId);
     } else {
       _statusBySessionId[sessionId] = effective;
+      // Wie reageert verdwijnt uit "niet gereageerd"
+      final ng = List<String>.from(_nietGereageerdBySessionId[sessionId] ?? []);
+      ng.remove(me);
+      _nietGereageerdBySessionId[sessionId] = ng;
     }
     _playingBySessionId[sessionId] = playing;
     _coachBySessionId[sessionId] = coaches;
+    _nietSpelendBySessionId[sessionId] = nietSpelend;
+    _afgemeldBySessionId[sessionId] = afgemeld;
   }
-
-  String _shortId(String v) =>
-      v.length <= 8 ? v : '${v.substring(0, 4)}…${v.substring(v.length - 4)}';
 
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> ids) async {
     if (ids.isEmpty) return {};
@@ -221,7 +360,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
         if (id.isEmpty) continue;
         final raw = (r['display_name'] ?? '').toString().trim();
         final name = applyDisplayNameOverrides(raw);
-        map[id] = name.isNotEmpty ? name : _shortId(id);
+        map[id] = name.isNotEmpty ? name : unknownUserName;
       }
       if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
         map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -253,7 +392,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
           .toString()
           .trim();
       final name = applyDisplayNameOverrides(n);
-      map[id] = name.isNotEmpty ? name : _shortId(id);
+      map[id] = name.isNotEmpty ? name : unknownUserName;
     }
     if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
       map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -269,6 +408,11 @@ class _TrainingsTabState extends State<TrainingsTab> {
         return AttendanceStatus.coach;
       case 'aanwezig':
         return AttendanceStatus.playing;
+      case 'niet_spelend':
+      case 'nietspelend':
+        return AttendanceStatus.nietSpelend;
+      case 'afgemeld':
+        return AttendanceStatus.afgemeld;
       default:
         return null;
     }
@@ -293,11 +437,140 @@ class _TrainingsTabState extends State<TrainingsTab> {
     return '$date $st – $et';
   }
 
-  bool get _canCreateTrainings {
-    final roles = widget.manageableTeams
-        .map((m) => m.role.toLowerCase())
-        .toList();
-    return roles.any((r) => r == 'trainer' || r == 'coach');
+  /// Mag trainingen aanmaken: trainer, coach of admin (canManageTeam).
+  bool get _canCreateTrainings =>
+      widget.manageableTeams.any((m) => m.canManageTeam);
+
+  /// Team-ids waar deze gebruiker trainer/coach is; alleen die trainingen mogen worden verwijderd.
+  Set<int> get _manageableTeamIds =>
+      widget.manageableTeams.map((m) => m.teamId).toSet();
+
+  bool _canDeleteTrainingForTeam(int teamId) => _manageableTeamIds.contains(teamId);
+
+  /// Trainingen die nog niet afgelopen zijn (niet geannuleerd, start in de toekomst).
+  /// Gebruikt voor zowel de "Voor alle"-kaart als de lijst; verleden wordt niet getoond.
+  List<Map<String, dynamic>> get _visibleTrainings {
+    final now = DateTime.now();
+    return _trainings.where((t) {
+      if (t['is_cancelled'] == true) return false;
+      final start = t['start_datetime'] ?? t['start_timestamp'];
+      if (start == null) return false;
+      final dt = start is DateTime ? start : DateTime.tryParse(start.toString());
+      return dt != null && dt.toLocal().isAfter(now);
+    }).toList();
+  }
+
+  /// Trainingen gegroepeerd per team_id; teamIds in vaste volgorde (gesorteerd).
+  Map<int, List<Map<String, dynamic>>> _groupVisibleTrainingsByTeam() {
+    final visible = _visibleTrainings;
+    final byTeam = <int, List<Map<String, dynamic>>>{};
+    for (final t in visible) {
+      final teamId = (t['team_id'] as num?)?.toInt() ?? 0;
+      byTeam.putIfAbsent(teamId, () => []).add(t);
+    }
+    return byTeam;
+  }
+
+  /// Displaylabel voor team (inclusief "(kindnaam)" bij gekoppeld kind).
+  String _teamDisplayLabel(int teamId) {
+    try {
+      final ctx = AppUserContext.of(context);
+      final m = ctx.memberships.where((m) => m.teamId == teamId).firstOrNull;
+      return m?.displayLabel ?? m?.teamName ?? 'Team $teamId';
+    } catch (_) {
+      return 'Team $teamId';
+    }
+  }
+
+  /// Eén team-accordionkaart in dezelfde stijl als de wedstrijden-tab (GlassCard, donkerblauwe header, uitklapicoon).
+  Widget _buildTeamTrainingAccordion({
+    required int teamId,
+    required int teamIndex,
+    required List<int> teamIds,
+    required Map<int, List<Map<String, dynamic>>> byTeam,
+  }) {
+    final useAccordion = teamIds.length > 1;
+    final expanded = !useAccordion || _expandedTrainingTeamIds.contains(teamId);
+
+    final sessions = byTeam[teamId];
+    final hasSessions = sessions != null && sessions.isNotEmpty;
+
+    return GlassCard(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: useAccordion
+                ? () {
+                    setState(() {
+                      if (_expandedTrainingTeamIds.contains(teamId)) {
+                        _expandedTrainingTeamIds.remove(teamId);
+                      } else {
+                        _expandedTrainingTeamIds.add(teamId);
+                      }
+                    });
+                  }
+                : null,
+            borderRadius: BorderRadius.circular(AppColors.cardRadius),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: AppColors.darkBlue,
+                        borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                      ),
+                      child: Text(
+                        _teamDisplayLabel(teamId),
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.w900,
+                            ),
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 2,
+                      ),
+                    ),
+                  ),
+                  if (useAccordion) ...[
+                    const SizedBox(width: 8),
+                    Icon(
+                      expanded ? Icons.expand_less : Icons.expand_more,
+                      color: AppColors.textSecondary,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          if (expanded) ...[
+            const SizedBox(height: 12),
+            if (hasSessions) _buildTeamTrainingsAanwezigRow(teamId, sessions),
+            if (!hasSessions)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(0, 4, 0, 8),
+                child: Text(
+                  'Er zijn voor dit team nog geen trainingen.',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 14,
+                  ),
+                ),
+              )
+            else
+              ...sessions.map(
+                (session) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _buildTrainingCard(session),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
   }
 
   /// Bepaal of gebruiker als trainer/coach wordt aangemeld voor dit team (anders speler).
@@ -313,23 +586,339 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
   }
 
-  String _attendanceSummary(List<String> playing, List<String> coaches) {
-    final parts = <String>[];
-    if (coaches.isNotEmpty) parts.add('Trainer/coach: ${coaches.length}');
-    if (playing.isNotEmpty) parts.add('Speler(s): ${playing.length}');
-    return parts.join(' • ');
+  /// Spelend = playing + coaches + nietSpelend (iedereen aanwezig).
+  Widget _buildAttendanceCategory(String label, int count, List<String> names, bool expanded, TextStyle labelStyle) {
+    if (count == 0) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('$label: $count', style: labelStyle),
+        if (expanded && names.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(left: 12, top: 2),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: names.map((n) => Text('- $n', style: labelStyle.copyWith(fontSize: 12))).toList(),
+            ),
+          ),
+      ],
+    );
   }
 
-  List<Widget> _attendanceNameLists(List<String> playing, List<String> coaches) {
-    final out = <Widget>[];
-    if (coaches.isNotEmpty) {
-      out.add(Text('Trainer/coach: ${coaches.join(', ')}', style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)));
-      out.add(const SizedBox(height: 4));
-    }
-    if (playing.isNotEmpty) {
-      out.add(Text('Speler(s): ${playing.join(', ')}', style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)));
-    }
-    return out;
+  Widget _buildTrainingCard(Map<String, dynamic> session) {
+    final sessionId = (session['session_id'] as num).toInt();
+    final teamId = (session['team_id'] as num?)?.toInt() ?? 0;
+    final isCancelled = (session['is_cancelled'] == true);
+    final title = (session['title'] ?? 'Training').toString();
+    final location = (session['location'] ?? '').toString();
+    final start = session['start_datetime'] ?? session['start_timestamp'];
+    final end = session['end_timestamp'];
+    final currentStatus = _statusBySessionId[sessionId];
+    final isPresent = currentStatus == AttendanceStatus.playing || currentStatus == AttendanceStatus.coach;
+    final isNotPlaying = currentStatus == AttendanceStatus.nietSpelend;
+    final isAfgemeld = currentStatus == AttendanceStatus.afgemeld;
+    final playing = _playingBySessionId[sessionId] ?? [];
+    final coaches = _coachBySessionId[sessionId] ?? [];
+    final nietSpelend = _nietSpelendBySessionId[sessionId] ?? [];
+    final afgemeld = _afgemeldBySessionId[sessionId] ?? [];
+    final nietGereageerd = _nietGereageerdBySessionId[sessionId] ?? [];
+    final expanded = _expandedSessionIds.contains(sessionId);
+    final hasCounts = playing.isNotEmpty || coaches.isNotEmpty || nietSpelend.isNotEmpty || afgemeld.isNotEmpty || nietGereageerd.isNotEmpty;
+
+    return GlassCard(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              if (_selectionMode && _canDeleteTrainingForTeam(teamId))
+                Checkbox(
+                  value: _selectedSessionIds.contains(sessionId),
+                  activeColor: AppColors.primary,
+                  onChanged: (v) => _toggleSelected(sessionId, v ?? false),
+                ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            title,
+                            style: TextStyle(
+                              color: AppColors.onBackground,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              decoration: isCancelled
+                                  ? TextDecoration.lineThrough
+                                  : TextDecoration.none,
+                            ),
+                          ),
+                        ),
+                        if (isCancelled)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: AppColors.error.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: AppColors.error.withValues(alpha: 0.35),
+                              ),
+                            ),
+                            child: const Text(
+                              'Geannuleerd',
+                              style: TextStyle(
+                                color: AppColors.error,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    if (location.isNotEmpty)
+                      Text(
+                        location,
+                        style: TextStyle(
+                          color: AppColors.textSecondary,
+                          decoration: isCancelled
+                              ? TextDecoration.lineThrough
+                              : TextDecoration.none,
+                        ),
+                      ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _formatRange(start, end),
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        decoration: isCancelled
+                            ? TextDecoration.lineThrough
+                            : TextDecoration.none,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (isCancelled) ...[
+            const Text(
+              'Deze training is geannuleerd (bijv. vakantie/feestdag).',
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 8),
+          ],
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(width: 4),
+              isPresent
+                  ? FilledButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _updateAttendance(
+                                sessionId,
+                                _isTrainerOrCoachForTeam(teamId)
+                                    ? AttendanceStatus.coach
+                                    : AttendanceStatus.playing,
+                              ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.success,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Aanmelden'),
+                    )
+                  : OutlinedButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _updateAttendance(
+                                sessionId,
+                                _isTrainerOrCoachForTeam(teamId)
+                                    ? AttendanceStatus.coach
+                                    : AttendanceStatus.playing,
+                              ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Aanmelden'),
+                    ),
+              const SizedBox(width: 6),
+              isNotPlaying
+                  ? FilledButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _updateAttendance(sessionId, AttendanceStatus.nietSpelend),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.amber.shade600,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Niet spelend'),
+                    )
+                  : OutlinedButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _updateAttendance(sessionId, AttendanceStatus.nietSpelend),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Niet spelend'),
+                    ),
+              const SizedBox(width: 6),
+              isAfgemeld
+                  ? FilledButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () async {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Afmelden bevestigen'),
+                                  content: const Text(
+                                    'Weet je zeker dat je je wilt afmelden voor deze training?',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.of(ctx).pop(false),
+                                      child: const Text('Annuleren'),
+                                    ),
+                                    ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: AppColors.primary,
+                                        foregroundColor: AppColors.background,
+                                      ),
+                                      onPressed: () =>
+                                          Navigator.of(ctx).pop(true),
+                                      child: const Text('Afmelden'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (confirm == true && mounted) {
+                                _updateAttendance(sessionId, AttendanceStatus.afgemeld);
+                              }
+                            },
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.error,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Afmelden'),
+                    )
+                  : OutlinedButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () async {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Afmelden bevestigen'),
+                                  content: const Text(
+                                    'Weet je zeker dat je je wilt afmelden voor deze training?',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.of(ctx).pop(false),
+                                      child: const Text('Annuleren'),
+                                    ),
+                                    ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: AppColors.primary,
+                                        foregroundColor: AppColors.background,
+                                      ),
+                                      onPressed: () =>
+                                          Navigator.of(ctx).pop(true),
+                                      child: const Text('Afmelden'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (confirm == true && mounted) {
+                                _updateAttendance(sessionId, AttendanceStatus.afgemeld);
+                              }
+                            },
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Afmelden'),
+                    ),
+              const SizedBox(width: 6),
+            ],
+          ),
+          if (hasCounts) ...[
+            const SizedBox(height: 8),
+            GestureDetector(
+              onTap: () {
+                setState(() {
+                  if (expanded) {
+                    _expandedSessionIds.remove(sessionId);
+                  } else {
+                    _expandedSessionIds.add(sessionId);
+                  }
+                });
+              },
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        expanded ? Icons.expand_less : Icons.expand_more,
+                        size: 18,
+                        color: AppColors.textSecondary,
+                      ),
+                      const SizedBox(width: 4),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  _buildAttendanceCategory(
+                    'Spelend',
+                    playing.length + coaches.length + nietSpelend.length,
+                    [...playing, ...coaches, ...nietSpelend],
+                    expanded,
+                    const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  ),
+                  if (playing.isNotEmpty || coaches.isNotEmpty || nietSpelend.isNotEmpty) const SizedBox(height: 4),
+                  _buildAttendanceCategory(
+                    'Afgemeld',
+                    afgemeld.length,
+                    afgemeld,
+                    expanded,
+                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.9), fontSize: 13),
+                  ),
+                  if (afgemeld.isNotEmpty) const SizedBox(height: 4),
+                  _buildAttendanceCategory(
+                    'Niet gereageerd',
+                    nietGereageerd.length,
+                    nietGereageerd,
+                    expanded,
+                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.7), fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
   void _toggleSelectionMode() {
@@ -352,7 +941,19 @@ class _TrainingsTabState extends State<TrainingsTab> {
   Future<void> _bulkDeleteSelected() async {
     if (_selectedSessionIds.isEmpty) return;
 
-    final count = _selectedSessionIds.length;
+    // Alleen trainingen van teams waar deze gebruiker trainer/coach is mogen worden verwijderd.
+    final toDelete = _selectedSessionIds.where((sessionId) {
+      final t = _trainings.cast<Map<String, dynamic>>().where(
+            (t) => (t['session_id'] as num?)?.toInt() == sessionId,
+          ).firstOrNull;
+      if (t == null) return false;
+      final teamId = (t['team_id'] as num?)?.toInt() ?? 0;
+      return _manageableTeamIds.contains(teamId);
+    }).toList();
+
+    if (toDelete.isEmpty) return;
+
+    final count = toDelete.length;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -375,7 +976,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
     await _client.from('sessions').delete().inFilter(
           'session_id',
-          _selectedSessionIds.toList(),
+          toDelete,
         );
 
     if (!mounted) return;
@@ -402,37 +1003,37 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final user = _client.auth.currentUser;
     if (user == null) return;
     if (!mounted) return;
+    final effective = status;
+    if (effective == null) return;
 
     final ctx = AppUserContext.of(context);
     final targetProfileId = ctx.attendanceProfileId;
 
-    final effective = status;
-
     final prevStatus = _statusBySessionId[sessionId];
     final prevPlaying = List<String>.from(_playingBySessionId[sessionId] ?? []);
     final prevCoaches = List<String>.from(_coachBySessionId[sessionId] ?? []);
+    final prevNietSpelend = List<String>.from(_nietSpelendBySessionId[sessionId] ?? []);
+    final prevAfgemeld = List<String>.from(_afgemeldBySessionId[sessionId] ?? []);
 
     _applyOptimisticAttendanceUpdate(sessionId, effective);
     if (!mounted) return;
     setState(() {});
 
     try {
-      if (effective == null) {
-        await _client
-            .from('attendance')
-            .delete()
-            .eq('session_id', sessionId)
-            .eq('person_id', targetProfileId);
-      } else {
-        await _client.from('attendance').upsert(
-          {
-            'session_id': sessionId,
-            'person_id': targetProfileId,
-            'status': effective.name,
-          },
-          onConflict: 'session_id,person_id',
-        );
-      }
+      final apiStatus = switch (effective) {
+        AttendanceStatus.playing => 'playing',
+        AttendanceStatus.coach => 'coach',
+        AttendanceStatus.nietSpelend => 'niet_spelend',
+        AttendanceStatus.afgemeld => 'afgemeld',
+      };
+      await _client.from('attendance').upsert(
+        {
+          'session_id': sessionId,
+          'person_id': targetProfileId,
+          'status': apiStatus,
+        },
+        onConflict: 'session_id,person_id',
+      );
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -443,8 +1044,113 @@ class _TrainingsTabState extends State<TrainingsTab> {
         }
         _playingBySessionId[sessionId] = prevPlaying;
         _coachBySessionId[sessionId] = prevCoaches;
+        _nietSpelendBySessionId[sessionId] = prevNietSpelend;
+        _afgemeldBySessionId[sessionId] = prevAfgemeld;
       });
     }
+  }
+
+  /// Aanmelden voor alle binnenkomende trainingen van één team; per training coach of playing op basis van team.
+  Future<void> _setMyStatusForAllTrainingsAanwezigForTeam(int teamId) async {
+    final user = _client.auth.currentUser;
+    if (user == null) return;
+    final upcoming = _visibleTrainings
+        .where((t) => (t['team_id'] as num?)?.toInt() == teamId)
+        .toList();
+    if (upcoming.isEmpty) return;
+
+    final ctx = AppUserContext.of(context);
+    final targetProfileId = ctx.attendanceProfileId;
+
+    final prevStatus = Map<int, AttendanceStatus?>.from(_statusBySessionId);
+    final prevPlaying = <int, List<String>>{
+      for (final e in _playingBySessionId.entries) e.key: List<String>.from(e.value),
+    };
+    final prevCoaches = <int, List<String>>{
+      for (final e in _coachBySessionId.entries) e.key: List<String>.from(e.value),
+    };
+
+    for (final t in upcoming) {
+      final sid = (t['session_id'] as num?)?.toInt();
+      if (sid == null) continue;
+      final status = _isTrainerOrCoachForTeam(teamId)
+          ? AttendanceStatus.coach
+          : AttendanceStatus.playing;
+      _applyOptimisticAttendanceUpdate(sid, status);
+    }
+    if (!mounted) return;
+    setState(() {});
+
+    try {
+      for (final t in upcoming) {
+        final sid = (t['session_id'] as num?)?.toInt();
+        if (sid == null) continue;
+        final status = _isTrainerOrCoachForTeam(teamId)
+            ? AttendanceStatus.coach
+            : AttendanceStatus.playing;
+        await _client.from('attendance').upsert(
+          {
+            'session_id': sid,
+            'person_id': targetProfileId,
+            'status': status.name,
+          },
+          onConflict: 'session_id,person_id',
+        );
+      }
+      if (!mounted) return;
+      showTopMessage(
+        context,
+        'Aanwezig voor ${upcoming.length} training(en) opgeslagen.',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _statusBySessionId
+          ..clear()
+          ..addAll(prevStatus);
+        _playingBySessionId
+          ..clear()
+          ..addAll(prevPlaying);
+        _coachBySessionId
+          ..clear()
+          ..addAll(prevCoaches);
+      });
+      showTopMessage(context, 'Kon aanwezigheid niet opslaan: $e', isError: true);
+    }
+  }
+
+  /// Rij "Aanmelden voor alle trainingen van dit team" (staat in de team-accordion).
+  Widget _buildTeamTrainingsAanwezigRow(int teamId, List<Map<String, dynamic>> upcoming) {
+    final allPresent = upcoming.every((t) {
+      final sid = (t['session_id'] as num?)?.toInt();
+      return sid != null && _statusBySessionId[sid] != null;
+    });
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        children: [
+          Text(
+            '${upcoming.length} training(en)',
+            style: const TextStyle(color: AppColors.textSecondary),
+          ),
+          const SizedBox(width: 12),
+          allPresent
+              ? FilledButton.icon(
+                  onPressed: () => _setMyStatusForAllTrainingsAanwezigForTeam(teamId),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.success,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.check_circle, size: 18),
+                  label: const Text('Aanwezig'),
+                )
+              : OutlinedButton(
+                  onPressed: () => _setMyStatusForAllTrainingsAanwezigForTeam(teamId),
+                  child: const Text('Aanwezig'),
+                ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -478,6 +1184,40 @@ class _TrainingsTabState extends State<TrainingsTab> {
                 style: TextStyle(
                   color: AppColors.textSecondary.withValues(alpha: 0.9),
                   fontSize: 12.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Geen teams in deze tab (bijv. Spelers-tab maar je staat nergens als speler).
+    if (widget.manageableTeams.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.group_off, size: 48, color: AppColors.textSecondary.withValues(alpha: 0.7)),
+              const SizedBox(height: 16),
+              Text(
+                'Je staat bij geen team als speler',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Staat je bij een team alleen als trainer/coach? Dan zie je dat team onder de tab Trainers.\n\n'
+                'Om hier teams te zien: vraag de Technische Commissie (Commissie → TC) om je als speler aan een team toe te voegen.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 14,
                 ),
               ),
             ],
@@ -536,29 +1276,28 @@ class _TrainingsTabState extends State<TrainingsTab> {
               );
             }
 
-            if (_trainings.isEmpty) {
-              return ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
-                children: const [
-                  SizedBox(height: 40),
-                  Text(
-                    'Geen trainingen gevonden.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: AppColors.textSecondary),
-                  ),
-                ],
-              );
+            final hasHeader = _canCreateTrainings;
+            final byTeam = _groupVisibleTrainingsByTeam();
+            // Alle teams waaraan je gekoppeld bent (eigen + kinderen), niet alleen teams met trainingen.
+            final teamIds = _allowedTeamIds;
+
+            if (teamIds.length > 1 && !_didInitExpandedTraining) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && !_didInitExpandedTraining && _allowedTeamIds.isNotEmpty) {
+                  setState(() {
+                    _expandedTrainingTeamIds.add(_allowedTeamIds.first);
+                    _didInitExpandedTraining = true;
+                  });
+                }
+              });
             }
 
-            return ListView.separated(
+            return ListView(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(12),
-              itemCount: _trainings.length + (_canCreateTrainings ? 1 : 0),
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (context, index) {
-                if (_canCreateTrainings && index == 0) {
-                  return GlassCard(
+              children: [
+                if (hasHeader) ...[
+                  GlassCard(
                     padding: const EdgeInsets.all(12),
                     child: Row(
                       children: [
@@ -593,176 +1332,19 @@ class _TrainingsTabState extends State<TrainingsTab> {
                         ],
                       ],
                     ),
-                  );
-                }
-
-                final session = _trainings[_canCreateTrainings ? index - 1 : index];
-                final sessionId = (session['session_id'] as num).toInt();
-                final teamId = (session['team_id'] as num?)?.toInt() ?? 0;
-                final isCancelled = (session['is_cancelled'] == true);
-
-                final title = (session['title'] ?? 'Training').toString();
-                final location = (session['location'] ?? '').toString();
-
-                final start = session['start_datetime'] ?? session['start_timestamp'];
-                final end = session['end_timestamp'];
-
-                final currentStatus = _statusBySessionId[sessionId];
-                final isPresent = currentStatus != null;
-                final playing = _playingBySessionId[sessionId] ?? [];
-                final coaches = _coachBySessionId[sessionId] ?? [];
-                final expanded = _expandedSessionIds.contains(sessionId);
-                final hasCounts = playing.isNotEmpty || coaches.isNotEmpty;
-
-                return GlassCard(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          if (_selectionMode)
-                            Checkbox(
-                              value: _selectedSessionIds.contains(sessionId),
-                              activeColor: AppColors.primary,
-                              onChanged: (v) => _toggleSelected(sessionId, v ?? false),
-                            ),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        title,
-                                        style: TextStyle(
-                                          color: AppColors.onBackground,
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.w700,
-                                          decoration: isCancelled
-                                              ? TextDecoration.lineThrough
-                                              : TextDecoration.none,
-                                        ),
-                                      ),
-                                    ),
-                                    if (isCancelled)
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                        decoration: BoxDecoration(
-                                          color: AppColors.error.withValues(alpha: 0.14),
-                                          borderRadius: BorderRadius.circular(999),
-                                          border: Border.all(
-                                            color: AppColors.error.withValues(alpha: 0.35),
-                                          ),
-                                        ),
-                                        child: const Text(
-                                          'Geannuleerd',
-                                          style: TextStyle(
-                                            color: AppColors.error,
-                                            fontWeight: FontWeight.w900,
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                                const SizedBox(height: 4),
-                                if (location.isNotEmpty)
-                                  Text(
-                                    location,
-                                    style: TextStyle(
-                                      color: AppColors.textSecondary,
-                                      decoration: isCancelled
-                                          ? TextDecoration.lineThrough
-                                          : TextDecoration.none,
-                                    ),
-                                  ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  _formatRange(start, end),
-                                  style: TextStyle(
-                                    color: AppColors.textSecondary,
-                                    decoration: isCancelled
-                                        ? TextDecoration.lineThrough
-                                        : TextDecoration.none,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      if (isCancelled) ...[
-                        const Text(
-                          'Deze training is geannuleerd (bijv. vakantie/feestdag).',
-                          style: TextStyle(color: AppColors.textSecondary),
-                        ),
-                        const SizedBox(height: 8),
-                      ],
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          ElevatedButton(
-                            onPressed: isCancelled
-                                ? null
-                                : () => _updateAttendance(
-                                      sessionId,
-                                      _isTrainerOrCoachForTeam(teamId)
-                                          ? AttendanceStatus.coach
-                                          : AttendanceStatus.playing,
-                                    ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: isPresent ? AppColors.primary : AppColors.card,
-                              foregroundColor: isPresent ? AppColors.background : AppColors.onBackground,
-                              side: isPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
-                            ),
-                            child: const Text('Aanwezig'),
-                          ),
-                          ElevatedButton(
-                            onPressed: isCancelled ? null : () => _updateAttendance(sessionId, null),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: !isPresent ? AppColors.primary : AppColors.card,
-                              foregroundColor: !isPresent ? AppColors.background : AppColors.onBackground,
-                              side: !isPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
-                            ),
-                            child: const Text('Afwezig'),
-                          ),
-                        ],
-                      ),
-                      if (hasCounts) ...[
-                        const SizedBox(height: 8),
-                        GestureDetector(
-                          onTap: () {
-                            setState(() {
-                              if (expanded) {
-                                _expandedSessionIds.remove(sessionId);
-                              } else {
-                                _expandedSessionIds.add(sessionId);
-                              }
-                            });
-                          },
-                          child: Row(
-                            children: [
-                              Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 18, color: AppColors.textSecondary),
-                              const SizedBox(width: 4),
-                              Text(
-                                _attendanceSummary(playing, coaches),
-                                style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (expanded) ...[
-                          const SizedBox(height: 6),
-                          ..._attendanceNameLists(playing, coaches),
-                        ],
-                      ],
-                    ],
                   ),
-                );
-              },
+                  const SizedBox(height: 8),
+                ],
+                for (var i = 0; i < teamIds.length; i++) ...[
+                  _buildTeamTrainingAccordion(
+                    teamId: teamIds[i],
+                    teamIndex: i,
+                    teamIds: teamIds,
+                    byTeam: byTeam,
+                  ),
+                  const SizedBox(height: 10),
+                ],
+              ],
             );
           },
         ),

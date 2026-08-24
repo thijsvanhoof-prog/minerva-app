@@ -30,6 +30,8 @@ Daarna kun je in de app activiteiten toevoegen (bestuur/communicatie), bewerken,
 
 De tabel `home_agenda` bevat o.a.: **titel**, **beschrijving** (alleen zichtbaar bij Lees meer), **start_datetime**, **end_datetime**, **location**, **can_rsvp**.
 
+**Optioneel – custom titel en beperkingen:** Voer `home_agenda_rsvp_extended.sql` uit om per activiteit een eigen knoptitel (bijv. "Lunch deelnemen") in te stellen en aanmelden te beperken tot bepaalde teams of commissies.
+
 **Let op:** `home_agenda_schema.sql` gebruikt `is_global_admin()`. Als die functie nog niet bestaat, krijg je fouten bij de admin-policies. Zorg dat je eerst een globale admin-functie (en evt. `committee_members`) hebt, of pas het schema aan zodat alleen RLS voor select/insert/delete op RSVPs actief is.
 
 ## Nieuwsberichten (titel + beschrijving)
@@ -46,6 +48,21 @@ Bestuur en communicatie kunnen nieuwsberichten toevoegen via de + knop. De tabel
 Daarna kun je in de app nieuwsberichten toevoegen. Zonder deze tabel wordt mock-nieuws getoond.
 
 **"column home_news.description does not exist"?** Je hebt waarschijnlijk een oudere tabel zonder `description`. Voer `home_news_minimal.sql` **opnieuw** uit; het script voegt de ontbrekende kolom toe.
+
+**Foto's en linkjes bij nieuws:** Om bij nieuwsberichten afbeeldingen (URL's) en linkjes toe te voegen, voer daarna **`home_news_photos_links.sql`** uit. Daarmee krijg je de kolommen `image_urls` en `links` op `home_news`.
+
+**Foto's uit album (telefoon/desktop):** Om bij nieuws "Foto uit album" te laten uploaden naar Supabase in plaats van alleen als link:
+
+1. Maak in **Supabase Dashboard → Storage** een nieuwe bucket: naam **`news-images`**, **Public bucket** aan → Create.
+2. Voer **`storage_news_images.sql`** uit (public read + brede upload als startpunt).
+3. Voer **`fix_news_images_storage_upload_ownership.sql`** uit — upload alleen naar `{auth.uid()}/news/{fileName}` (zoals de app doet).
+4. Voer **`fix_news_images_storage_update_delete_policies.sql`** uit — update/delete alleen voor contentmanagers (bestuur/communicatie).
+
+**Padconventie:** nieuwe uploads gaan naar `{userId}/news/{fileName}`. Oude bestanden onder `news/...` blijven bereikbaar via public read; migratie is niet nodig.
+
+**Let op:** `storage_news_images.sql` is legacy setup en maakt een brede upload-policy aan. Draai het niet opnieuw op een live project zonder direct daarna stap 3 uit te voeren — anders staat brede upload weer aan.
+
+Daarna worden foto's uit het album geüpload naar Storage en alleen de URL in de database opgeslagen. **Gratis plan:** 1 GB bestandsopslag (ruimte voor veel foto's); database blijft licht.
 
 ## Match availability (Sport → Wedstrijden: Speler / Trainer/coach / Speel niet / Afmelden)
 
@@ -65,3 +82,49 @@ Daarna werken Speler, Trainer/coach, Speel niet en Afmelden in Sport → Wedstri
 **"Kon status niet opslaan" / `match_availability_status_check` (PostgrestException 23514)?** De constraint laat dan geen `coach` toe. Voer **`match_availability_fix_status_constraint.sql`** uit in de SQL Editor. Daarna zou Aanwezig/Afwezig weer moeten werken.
 
 Voor **admin-override** (globale beheer van alle availability): gebruik `match_availability_schema.sql` (vereist `is_global_admin`).
+
+## Wedstrijd-annuleringen (Commissie → Bestuur → Wedstrijden)
+
+Bestuur kan wedstrijden als geannuleerd markeren (bijv. vakantie, geen tegenstander). Zonder de tabel krijg je **"Could not find the table 'public.match_cancellations'"** bij het annuleren. De annulering is alleen zichtbaar in de app, niet gekoppeld aan Nevobo.
+
+**Setup:**
+
+1. Open **Supabase Dashboard** → jouw project → **SQL Editor**.
+2. Maak een nieuw query.
+3. Kopieer de inhoud van `match_cancellations_minimal.sql` en plak die in de editor.
+4. Klik **Run**.
+
+## Commissies: leden toevoegen (alle profielen zichtbaar)
+
+Bij **Commissie → Bestuur → Commissies → Lid toevoegen** kun je normaal alle leden kiezen. Als je alleen je eigen naam ziet, komt dat vaak door restrictieve RLS op de `profiles`-tabel. Los dit op met een RPC die bestuur toegang geeft tot alle profielen:
+
+1. Open **Supabase Dashboard** → jouw project → **SQL Editor**.
+2. Kopieer de inhoud van `committee_list_profiles_rpc.sql` en plak die in de editor.
+3. Klik **Run**.
+
+Vereist: `committee_members`-tabel met je bestuur-leden.
+
+## Commissie → TC: teambeheer (teams + teamleden)
+
+In de app kunnen TC-leden teams toevoegen, bewerken en verwijderen (tab **Commissie → TC**). Bestuur mag meekijken maar niet beheren; globale admins mogen alles.
+
+**Setup (in deze volgorde uitvoeren in SQL Editor):**
+
+1. **`teams_schema.sql`** — basis-tabel `public.teams` (als die nog niet bestaat).
+2. **`teams_rls.sql`** — alle ingelogde gebruikers mogen teams lezen (o.a. voor Standen).
+3. **`teams_tc_manage.sql`** — TC-leden krijgen `for all` op `teams` (toevoegen, wijzigen, **verwijderen**). Globale admins behouden volledige toegang via `teams_manage_admins`.
+4. **`team_members_tc_manage.sql`** — TC-leden mogen `team_members` lezen en beheren (leden toevoegen, rol wijzigen, verwijderen).
+
+**Optioneel bij rol-fouten:** **`team_members_fix_role_constraint.sql`** als je **"Bijwerken mislukt" / `team_members_role_check` (PostgrestException 23514)** krijgt (bijv. rol `trainingslid` niet toegestaan).
+
+**Rechten in de app vs Supabase:**
+
+| Rol | Teams beheren | Teamleden beheren |
+|-----|---------------|-------------------|
+| TC-lid | Ja | Ja |
+| Globale admin | Ja | Ja |
+| Bestuur | Nee (alleen bekijken) | Nee |
+
+**Commissienamen:** SQL controleert `committee_members` op canonieke waarden `technische-commissie` of `tc`. De app normaliseert breder (bijv. "Technische Commissie"), maar houd commissienamen in de database bij voorkeur canoniek — anders kan de UI TC-rechten tonen terwijl RLS operaties blokkeert.
+
+**Team verwijderen:** kan falen als er nog gekoppelde records zijn (bijv. `team_members`, trainingen/sessions, of andere tabellen met foreign keys — afhankelijk van je productie-database). Ruim dan eerst die koppelingen op (bijv. leden uit het team halen) en probeer opnieuw.

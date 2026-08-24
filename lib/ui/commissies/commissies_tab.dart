@@ -1,13 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/committees/committee_normalization.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/tab_page_header.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart' show unknownUserName;
+import 'package:minerva_app/ui/shell.dart';
 import 'package:minerva_app/profiel/admin_gebruikersnamen_page.dart';
 import 'package:minerva_app/ui/bestuur/bestuur_tab.dart';
 import 'package:minerva_app/ui/tc/tc_tab.dart';
 import 'package:minerva_app/ui/tasks/my_tasks_tab.dart';
-import 'package:minerva_app/ui/info/info_tab.dart';
 
 class CommissiesTab extends StatelessWidget {
   const CommissiesTab({super.key});
@@ -24,6 +28,15 @@ class CommissiesTab extends StatelessWidget {
         return 'CC';
       case 'wedstrijdzaken':
         return 'WZ';
+      case 'evenementen':
+      case 'evenementen-commissie':
+        return 'EV';
+      case 'jeugd':
+      case 'jeugdcommissie':
+        return 'Jeugd';
+      case 'scheidsrechters/tellers':
+      case 'scheidsrechters-tellers':
+        return 'S/T';
       case 'admin':
         return 'Admin';
       default:
@@ -44,62 +57,90 @@ class CommissiesTab extends StatelessWidget {
         return 'Communicatie commissie';
       case 'wedstrijdzaken':
         return 'Wedstrijdzaken';
+      case 'evenementen':
+      case 'evenementen-commissie':
+        return 'Evenementen commissie';
+      case 'jeugd':
+      case 'jeugdcommissie':
+        return 'Jeugdcommissie';
+      case 'scheidsrechters/tellers':
+      case 'scheidsrechters-tellers':
+        return 'Scheidsrechters/Tellers';
       case 'admin':
         return 'Admin';
-      case 'jeugd':
-        return 'Jeugdcommissie';
       default:
         return '${k[0].toUpperCase()}${k.substring(1).replaceAll('-', ' ')}';
     }
   }
 
-  /// Vaste volgorde: Bestuur, TC, CC, WZ, Admin.
+  /// Volgorde: Admin eerst (licht), dan Bestuur, TC, CC, WZ – voorkomt freeze bij opstarten.
   static int _committeeOrder(String key) {
     switch (key.trim().toLowerCase()) {
-      case 'bestuur':
+      case 'admin':
         return 0;
+      case 'bestuur':
+        return 1;
       case 'technische-commissie':
       case 'tc':
-        return 1;
-      case 'communicatie':
         return 2;
-      case 'wedstrijdzaken':
+      case 'communicatie':
         return 3;
-      case 'admin':
+      case 'wedstrijdzaken':
         return 4;
-      default:
+      case 'evenementen':
+      case 'evenementen-commissie':
         return 5;
+      case 'jeugd':
+      case 'jeugdcommissie':
+        return 6;
+      case 'scheidsrechters/tellers':
+      case 'scheidsrechters-tellers':
+        return 7;
+      default:
+        return 8;
     }
+  }
+
+  /// Of de gebruiker deze commissie mag inzien/aanpassen: alleen eigen commissies, tenzij bestuur of admin.
+  static bool _mayViewCommittee(AppUserContext ctx, String committeeKey) {
+    if (ctx.hasFullAdminRights || ctx.isInBestuur) return true;
+    return ctx.isInCommittee(committeeKey);
   }
 
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
-    List<String> committees;
-    // Bestuur: alles kunnen zien, behalve Admin.
-    if (ctx.isInBestuur) {
-      committees = [
-        'bestuur',
-        'technische-commissie',
-        'communicatie',
-        'wedstrijdzaken',
-      ];
-    } else {
-      // TC, WZ, CC, Admin: alleen de eigen tab. Overige commissies (jeugd, etc.) behouden.
-      committees = [];
-      if (ctx.isInTechnischeCommissie) committees.add('technische-commissie');
-      if (ctx.isInWedstrijdzaken) committees.add('wedstrijdzaken');
-      if (ctx.isInCommunicatie) committees.add('communicatie');
-      if (ctx.hasFullAdminRights) committees.add('admin');
-      for (final c in ctx.committees) {
-        final k = c.trim().toLowerCase();
-        if (k != 'bestuur' && k != 'technische-commissie' && k != 'tc' &&
-            k != 'wedstrijdzaken' && k != 'communicatie' && k != 'admin') {
-          if (!committees.any((x) => x.trim().toLowerCase() == k)) {
-            committees.add(c);
-          }
+    // Alle mogelijke commissies (vaste set + eventueel uit context).
+    final List<String> allPossible = [
+      'bestuur',
+      'technische-commissie',
+      'communicatie',
+      'wedstrijdzaken',
+      'evenementen',
+      'jeugdcommissie',
+      'scheidsrechters-tellers',
+    ];
+    for (final c in ctx.committees) {
+      final k = c.trim().toLowerCase();
+      if (k != 'bestuur' && k != 'technische-commissie' && k != 'tc' &&
+          k != 'wedstrijdzaken' && k != 'communicatie' &&
+          k != 'evenementen' && k != 'evenementen-commissie' &&
+          k != 'jeugd' && k != 'jeugdcommissie' &&
+          k != 'scheidsrechters/tellers' && k != 'scheidsrechters-tellers' &&
+          k != 'vrijwilligers' &&
+          k != 'admin') {
+        if (!allPossible.any((x) => x.trim().toLowerCase() == k)) {
+          allPossible.add(c);
         }
       }
+    }
+    // Alleen commissies tonen waar de gebruiker in zit, tenzij bestuur of admin (die zien alles).
+    final List<String> committees = allPossible
+        .where((c) => _mayViewCommittee(ctx, c))
+        .toList();
+    // Admin-tab alleen voor globale admins (gebruikersnamen wijzigen, accounts verwijderen).
+    if (ctx.hasFullAdminRights && !committees.any((c) => c.trim().toLowerCase() == 'admin')) {
+      committees.add('admin');
     }
     committees.sort((a, b) {
       final orderA = _committeeOrder(a);
@@ -112,9 +153,21 @@ class CommissiesTab extends StatelessWidget {
       return Scaffold(
         backgroundColor: Colors.transparent,
         body: SafeArea(
-          top: true,
+          top: false,
           bottom: false,
-          child: RefreshIndicator(
+          child: Column(
+            children: [
+              TabPageHeader(
+                child: Text(
+                  'Commissie',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+              ),
+              Expanded(
+                child: RefreshIndicator(
             color: AppColors.primary,
             onRefresh: () async {
               await ctx.reloadUserContext?.call();
@@ -122,7 +175,7 @@ class CommissiesTab extends StatelessWidget {
             child: ListView(
               padding: EdgeInsets.fromLTRB(
                 16,
-                16 + MediaQuery.paddingOf(context).top,
+                16,
                 16,
                 16 + MediaQuery.paddingOf(context).bottom,
               ),
@@ -156,52 +209,138 @@ class CommissiesTab extends StatelessWidget {
               ],
             ),
           ),
+              ),
+            ],
+          ),
         ),
       );
     }
 
+    // Lazy: bouw alleen de geselecteerde tab (voorkomt freeze bij Shell-start)
     return DefaultTabController(
       length: committees.length,
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: SafeArea(
-          top: true,
-          bottom: false,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-                child: GlassCard(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  showBorder: false,
-                  showShadow: false,
-                  child: TabBar(
-                    isScrollable: committees.length > 2,
-                    tabAlignment: TabAlignment.center,
-                    dividerColor: Colors.transparent,
-                    indicator: BoxDecoration(
-                      color: AppColors.darkBlue,
-                      borderRadius: BorderRadius.circular(AppColors.cardRadius),
+      initialIndex: 0,
+      child: _CommissiesTabBody(committees: committees),
+    );
+  }
+}
+
+class _CommissiesTabBody extends StatefulWidget {
+  final List<String> committees;
+
+  const _CommissiesTabBody({required this.committees});
+
+  @override
+  State<_CommissiesTabBody> createState() => _CommissiesTabBodyState();
+}
+
+class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
+  bool _nevoboTableMissing = false;
+  bool _schemaCheckDone = false;
+
+  Future<void> _checkNevoboTable() async {
+    if (_schemaCheckDone) return;
+    _schemaCheckDone = true;
+    try {
+      await Supabase.instance.client
+          .from('nevobo_home_matches')
+          .select('match_key')
+          .limit(1);
+    } catch (_) {
+      if (mounted) setState(() => _nevoboTableMissing = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ctx = AppUserContext.of(context);
+    if ((ctx.isInBestuur || ctx.hasFullAdminRights) && !_schemaCheckDone) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _checkNevoboTable());
+    }
+    final controller = DefaultTabController.of(context);
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: SafeArea(
+        top: false,
+        bottom: false,
+        child: Column(
+          children: [
+            TabPageHeader(
+              child: Text(
+                'Commissie',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w800,
                     ),
-                    indicatorSize: TabBarIndicatorSize.tab,
-                    tabs: committees
-                        .map((c) => Tab(text: _formatTabLabel(c)))
-                        .toList(),
+              ),
+            ),
+            if (_nevoboTableMissing) ...[
+              Padding(
+                padding: AppColors.tabContentPadding,
+                child: GlassCard(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Supabase tabel ontbreekt',
+                          style: TextStyle(
+                            color: AppColors.onBackground,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Run `supabase/nevobo_home_matches_schema.sql` in Supabase om koppelingen op te slaan (nodig voor Google Sheet sync).',
+                          style: TextStyle(color: AppColors.textSecondary),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
-              Expanded(
-                child: TabBarView(
-                  children: committees.map((committeeKey) {
+              const SizedBox(height: 8),
+            ],
+            Padding(
+              padding: AppColors.tabContentPadding,
+              child: GlassCard(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                showBorder: false,
+                showShadow: false,
+                child: TabBar(
+                  controller: controller,
+                  isScrollable: widget.committees.length > 2,
+                  tabAlignment: TabAlignment.center,
+                  dividerColor: Colors.transparent,
+                  indicator: BoxDecoration(
+                    color: AppColors.darkBlue,
+                    borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                  ),
+                  indicatorSize: TabBarIndicatorSize.tab,
+                  labelColor: AppColors.primary,
+                  unselectedLabelColor: AppColors.textSecondary,
+                  tabs: widget.committees
+                      .map((c) => Tab(text: CommissiesTab._formatTabLabel(c)))
+                      .toList(),
+                ),
+              ),
+            ),
+            Expanded(
+              child: AnimatedBuilder(
+                animation: controller,
+                builder: (context, _) => IndexedStack(
+                  index: controller.index,
+                  children: widget.committees.map((c) {
                     return _CommitteeContent(
-                      committeeKey: committeeKey,
-                      committeeName: _formatCommitteeName(committeeKey),
+                      committeeKey: c,
+                      committeeName: CommissiesTab._formatCommitteeName(c),
                     );
                   }).toList(),
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -217,23 +356,42 @@ class _CommitteeContent extends StatelessWidget {
     required this.committeeName,
   });
 
+  /// Admin is geen commissie-variant; blijft expliciet apart na centrale normalisatie.
+  static String _resolveCommitteeKey(String value) {
+    final key = normalizeCommitteeKey(value);
+    if (key == 'admin') return 'admin';
+    return key;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final key = committeeKey.trim().toLowerCase();
+    final key = _resolveCommitteeKey(committeeKey);
 
     // Technische commissie: TC-taken (trainingen, wedstrijden, teams)
-    if (key == 'technische-commissie' || key == 'tc') {
+    if (key == 'technische-commissie') {
       return const TcTab();
     }
 
-    // Bestuur: trainingen, wedstrijden, commissies beheren
+    // Bestuur: trainingen, wedstrijden, commissies beheren + aanmeldingen
     if (key == 'bestuur') {
       return const BestuurTab();
     }
 
     // Wedstrijdzaken: teamtaken + overzicht (altijd volledig zichtbaar)
-    if (key.contains('wedstrijd')) {
+    if (key == 'wedstrijdzaken') {
       return const MyTasksTab(forceFullView: true);
+    }
+
+    // Scheidsrechters/Tellers: alle wedstrijden met fluit/tel-aanmelding.
+    if (key == 'scheidsrechters-tellers') {
+      return const MyTasksTab(stOverviewMode: true);
+    }
+
+    // Communicatie, Jeugd en Evenementen: aanmeldingen op activiteiten.
+    if (key == 'communicatie' ||
+        key == 'jeugdcommissie' ||
+        key == 'evenementen') {
+      return const CommitteeAgendaRsvpsView();
     }
 
     // Admin: gebruikersnamen, etc.
@@ -241,7 +399,7 @@ class _CommitteeContent extends StatelessWidget {
       return const _AdminCommitteeView();
     }
 
-    // Overige commissies (communicatie, jeugd, etc.): contact/info
+    // Overige commissies: contact/info
     return _GenericCommitteeView(committeeName: committeeName);
   }
 }
@@ -263,16 +421,16 @@ class _AdminCommitteeView extends StatelessWidget {
         children: [
           GlassCard(
             child: ListTile(
-              leading: const Icon(Icons.person_outline, color: AppColors.primary),
+              leading: const Icon(Icons.admin_panel_settings_outlined, color: AppColors.primary),
               title: const Text(
-                'Gebruikersnamen wijzigen',
+                'Gebruikersnamen en accounts',
                 style: TextStyle(
                   color: AppColors.onBackground,
                   fontWeight: FontWeight.w600,
                 ),
               ),
               subtitle: const Text(
-                'Wijzig gebruikersnamen van leden.',
+                'Bekijk alle accounts, wijzig gebruikersnamen of voeg leden aan teams toe. Alleen voor admins.',
                 style: TextStyle(color: AppColors.textSecondary),
               ),
               trailing: const Icon(Icons.chevron_right),
@@ -336,13 +494,7 @@ class _GenericCommitteeView extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const InfoTab(),
-                      ),
-                    );
-                  },
+                  onPressed: ShellNavigatorScope.goToContactTab,
                   icon: const Icon(Icons.mail_outline, size: 18),
                   label: const Text('Contactpersonen bekijken'),
                 ),
@@ -350,6 +502,211 @@ class _GenericCommitteeView extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class CommitteeAgendaRsvpsView extends StatefulWidget {
+  const CommitteeAgendaRsvpsView({super.key});
+
+  @override
+  State<CommitteeAgendaRsvpsView> createState() => _CommitteeAgendaRsvpsViewState();
+}
+
+class _CommitteeAgendaRsvpsViewState extends State<CommitteeAgendaRsvpsView> {
+  final SupabaseClient _client = Supabase.instance.client;
+  bool _loading = true;
+  String? _error;
+  List<Map<String, dynamic>> _agendaRows = const [];
+  Map<int, List<String>> _namesByAgendaId = const {};
+
+  DateTime? _parseAgendaStart(Map<String, dynamic> row) {
+    final rawStart = row['start_datetime'];
+    if (rawStart is DateTime) return rawStart.toLocal();
+    final startParsed = DateTime.tryParse((rawStart ?? '').toString());
+    if (startParsed != null) return startParsed.toLocal();
+
+    final eventDate = (row['event_date'] ?? '').toString().trim();
+    if (eventDate.isEmpty) return null;
+    final eventTime = (row['event_time'] ?? '').toString().trim();
+    final normalizedTime = eventTime.isEmpty ? '23:59:59' : eventTime;
+    final parsed = DateTime.tryParse('$eventDate $normalizedTime');
+    return parsed?.toLocal();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  String _formatDateTime(dynamic raw) {
+    final dt = DateTime.tryParse(raw?.toString() ?? '')?.toLocal();
+    if (dt == null) return 'Datum onbekend';
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(dt.day)}-${two(dt.month)}-${dt.year} ${two(dt.hour)}:${two(dt.minute)}';
+  }
+
+  Future<void> _load() async {
+    if (!mounted) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final aRes = await _client
+          .from('home_agenda')
+          .select('agenda_id, title, start_datetime, event_date, event_time')
+          .order('start_datetime', ascending: true);
+      final now = DateTime.now();
+      final agendaRows = (aRes as List<dynamic>)
+          .cast<Map<String, dynamic>>()
+          .where((row) {
+            final start = _parseAgendaStart(row);
+            // Onbekende datum niet verbergen; alleen verlopen items filteren.
+            return start == null || !start.isBefore(now);
+          })
+          .toList();
+
+      final sRes = await _client
+          .from('home_agenda_rsvps')
+          .select('agenda_id, profile_id')
+          .order('created_at', ascending: false);
+      final signupRows = (sRes as List<dynamic>).cast<Map<String, dynamic>>();
+
+      final profileIds = <String>{};
+      for (final r in signupRows) {
+        final pid = (r['profile_id'] ?? '').toString().trim();
+        if (pid.isNotEmpty) profileIds.add(pid);
+      }
+
+      final namesByProfile = <String, String>{};
+      if (profileIds.isNotEmpty) {
+        try {
+          final rpc = await _client.rpc(
+            'get_profile_display_names',
+            params: {'profile_ids': profileIds.toList()},
+          );
+          final rows = (rpc as List<dynamic>).cast<Map<String, dynamic>>();
+          for (final row in rows) {
+            final id = (row['profile_id'] ?? row['id'] ?? '').toString().trim();
+            final name = (row['display_name'] ?? '').toString().trim();
+            if (id.isNotEmpty) namesByProfile[id] = name.isEmpty ? unknownUserName : name;
+          }
+        } catch (_) {}
+      }
+
+      final byAgenda = <int, List<String>>{};
+      for (final r in signupRows) {
+        final agendaId = (r['agenda_id'] as num?)?.toInt();
+        if (agendaId == null) continue;
+        final pid = (r['profile_id'] ?? '').toString().trim();
+        final name = namesByProfile[pid] ?? unknownUserName;
+        byAgenda.putIfAbsent(agendaId, () => []).add(name);
+      }
+      for (final entry in byAgenda.entries) {
+        entry.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _agendaRows = agendaRows;
+        _namesByAgendaId = byAgenda;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+    }
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(_error!, style: const TextStyle(color: AppColors.error)),
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      color: AppColors.primary,
+      onRefresh: _load,
+      child: _agendaRows.isEmpty
+          ? ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: EdgeInsets.fromLTRB(
+                16,
+                12,
+                16,
+                16 + MediaQuery.paddingOf(context).bottom,
+              ),
+              children: const [
+                Text(
+                  'Geen aankomende activiteiten met aanmeldingen.',
+                  style: TextStyle(color: AppColors.textSecondary),
+                ),
+              ],
+            )
+          : ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: EdgeInsets.fromLTRB(16, 12, 16, 16 + MediaQuery.paddingOf(context).bottom),
+        itemCount: _agendaRows.length,
+        separatorBuilder: (_, _) => const SizedBox(height: 12),
+        itemBuilder: (context, index) {
+          final row = _agendaRows[index];
+          final agendaId = (row['agenda_id'] as num?)?.toInt();
+          final title = (row['title'] ?? 'Activiteit').toString();
+          final startsAt = row['start_datetime'] ?? row['event_date'];
+          final names = agendaId == null ? const <String>[] : (_namesByAgendaId[agendaId] ?? const <String>[]);
+          return GlassCard(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 16,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _formatDateTime(startsAt),
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '${names.length} aanmelding(en)',
+                    style: const TextStyle(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  if (names.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      names.join(', '),
+                      style: const TextStyle(color: AppColors.textSecondary),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }

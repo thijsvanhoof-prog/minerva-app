@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:minerva_app/ui/branded_background.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/primary_button.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
@@ -26,6 +26,12 @@ class _RegisterPageState extends State<RegisterPage> {
   bool _loading = false;
   bool _obscurePass = true;
   bool _obscureConfirm = true;
+
+  String get _reservedGuestEmail {
+    final configured = (dotenv.env['GUEST_EMAIL'] ?? '').trim().toLowerCase();
+    if (configured.isNotEmpty) return configured;
+    return 'gast@mail.com';
+  }
 
   @override
   void initState() {
@@ -70,6 +76,14 @@ class _RegisterPageState extends State<RegisterPage> {
 
     if (email.isEmpty) {
       showTopMessage(context, 'Vul een e-mailadres in.', isError: true);
+      return;
+    }
+    if (email.toLowerCase() == _reservedGuestEmail) {
+      showTopMessage(
+        context,
+        'Dit e-mailadres is gereserveerd voor het interne gastaccount.',
+        isError: true,
+      );
       return;
     }
     if (username.isEmpty) {
@@ -127,17 +141,23 @@ class _RegisterPageState extends State<RegisterPage> {
   Widget build(BuildContext context) {
     final topPadding = MediaQuery.paddingOf(context).top + 16;
 
+    // Android 15+: statusBarColor/systemNavigationBarColor zijn beëindigd.
+    final overlayStyle = Theme.of(context).platform == TargetPlatform.android
+        ? const SystemUiOverlayStyle(
+            statusBarIconBrightness: Brightness.dark,
+            systemNavigationBarIconBrightness: Brightness.dark,
+          )
+        : const SystemUiOverlayStyle(
+            statusBarColor: Colors.transparent,
+            statusBarIconBrightness: Brightness.dark,
+            systemNavigationBarColor: Colors.transparent,
+            systemNavigationBarIconBrightness: Brightness.dark,
+          );
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.dark,
-        systemNavigationBarColor: Colors.transparent,
-        systemNavigationBarIconBrightness: Brightness.dark,
-      ),
+      value: overlayStyle,
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: BrandedBackground(
-          child: ListView(
+        body: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.fromLTRB(
               16,
@@ -241,7 +261,6 @@ class _RegisterPageState extends State<RegisterPage> {
             ],
           ),
         ),
-      ),
     );
   }
 }

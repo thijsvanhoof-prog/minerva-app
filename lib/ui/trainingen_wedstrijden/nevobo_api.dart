@@ -74,6 +74,25 @@ class NevoboApi {
 
   static NevoboTeam? teamFromCode(String code) => _fromCode(code);
 
+  /// Path of the resolved team after a successful standings fetch (e.g. /competitie/teams/ckm0v2o/dames/1).
+  static String? resolvedTeamPath(String code) => _resolvedTeamByCode[code]?.teamPath;
+
+  /// Weergavenaam: MR → XR (recreanten/mix). Gebruik overal waar teamcodes/namen aan de gebruiker getoond worden.
+  static String displayTeamCode(String code) {
+    final normalized = code.trim().toUpperCase();
+    if (normalized.startsWith('MR')) return 'XR${normalized.substring(2)}';
+    return normalized;
+  }
+
+  /// Weergavenaam voor volledige teamnaam: "Minerva MR1" → "Minerva XR1".
+  static String displayTeamName(String name) {
+    if (name.isEmpty) return name;
+    return name.replaceAllMapped(
+      RegExp(r'\bMR(\d+)\b', caseSensitive: false),
+      (m) => 'XR${m.group(1)}',
+    );
+  }
+
   static String? extractCodeFromTeamName(String raw) {
     final normalized = raw.trim().toUpperCase().replaceAll(' ', '');
 
@@ -88,8 +107,36 @@ class NevoboApi {
     return _deriveCodeFromDisplayName(raw);
   }
 
+  /// Velden voor Supabase `teams` insert wanneer [teamName] een Nevobo-code oplevert.
+  static Map<String, String> nevoboCodeFieldsForTeamName(String teamName) {
+    final code = extractCodeFromTeamName(teamName);
+    if (code == null || code.isEmpty) return const {};
+    return {'nevobo_code': code};
+  }
+
+  /// Best-effort: werk `nevobo_code` bij na hernoemen (alleen als code afleidbaar is).
+  /// Laat bestaande `nevobo_code` ongemoeid wanneer uit de naam geen code komt.
+  static Future<void> updateNevoboCodeFromTeamNameIfDerivable({
+    required SupabaseClient client,
+    required int teamId,
+    required String teamName,
+  }) async {
+    final fields = nevoboCodeFieldsForTeamName(teamName);
+    if (fields.isEmpty) return;
+    try {
+      for (final idField in const ['team_id', 'id']) {
+        try {
+          await client.from('teams').update(fields).eq(idField, teamId);
+          return;
+        } on PostgrestException catch (_) {
+          continue;
+        }
+      }
+    } catch (_) {}
+  }
+
   /// Custom team ordering for the app:
-  /// dames -> heren -> recreanten -> meiden A -> jongens A -> meiden B -> jongens B -> meiden C -> jongens C.
+  /// dames -> heren -> recreanten -> A-jeugd -> B-jeugd -> C-jeugd -> volleystars.
   ///
   /// Sorts within each group by team number (ascending).
   static int compareTeamCodes(String a, String b) {
@@ -139,12 +186,10 @@ class NevoboApi {
       'HS' => 1, // heren
       'MR' => 2, // recreanten/mix
       'XR' => 2, // display alias for recreanten/mix
-      'MA' => 3, // meiden A
-      'JA' => 4, // jongens A
-      'MB' => 5, // meiden B
-      'JB' => 6, // jongens B
-      'MC' => 7, // meiden C
-      'JC' => 8, // jongens C
+      'MA' || 'JA' => 3, // A-jeugd
+      'MB' || 'JB' => 4, // B-jeugd
+      'MC' || 'JC' => 5, // C-jeugd
+      'VS' || 'CM' || 'CMV' => 6, // Volleystars / CMV
       _ => 99,
     };
     return (group, number);
@@ -174,9 +219,56 @@ class NevoboApi {
     return null;
   }
 
-  static Future<List<NevoboTeam>> loadTeamsFromSupabase({
+  /// Team codes die alleen meedoen met trainingen (niet standen/wedstrijden).
+  static Future<Set<String>> loadTrainingOnlyTeamCodes({
     required SupabaseClient client,
   }) async {
+    final candidates = <String>['team_name', 'name', 'short_name', 'code', 'team_code', 'abbreviation'];
+    final season = currentSeason();
+    for (final nameField in candidates) {
+      try {
+        List<Map<String, dynamic>> rows;
+        try {
+          final res = await client.from('teams').select('$nameField, training_only, season').eq('season', season);
+          rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+          if (rows.isEmpty) {
+            final fallback = await client.from('teams').select('$nameField, training_only');
+            rows = (fallback as List<dynamic>).cast<Map<String, dynamic>>();
+          }
+        } catch (_) {
+          final res = await client.from('teams').select('$nameField, training_only');
+          rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        }
+        final codes = <String>{};
+        for (final row in rows) {
+          if (row['training_only'] == true) {
+            final v = row[nameField]?.toString() ?? '';
+            final code = extractCodeFromTeamName(v);
+            if (code != null && code.isNotEmpty) codes.add(code.trim().toUpperCase());
+          }
+        }
+        return codes;
+      } catch (_) {
+        // Kolom training_only bestaat mogelijk niet (oude schema).
+        return {};
+      }
+    }
+    return {};
+  }
+
+  /// Huidig volleybalseizoen (sept–mei). Bijv. in feb 2026 → "2025-2026", in okt 2026 → "2026-2027".
+  static String currentSeason() {
+    final now = DateTime.now();
+    final year = now.year;
+    return now.month >= 9 ? '$year-${year + 1}' : '${year - 1}-$year';
+  }
+
+  static Future<List<NevoboTeam>> loadTeamsFromSupabase({
+    required SupabaseClient client,
+    bool excludeTrainingOnly = false,
+  }) async {
+    final season = currentSeason();
+
     // We don't know the exact column name in the teams table, so we try common candidates.
     final candidates = <String>[
       'team_name',
@@ -189,16 +281,35 @@ class NevoboApi {
 
     for (final nameField in candidates) {
       try {
-        final res = await client.from('teams').select(nameField);
-        final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        final baseCols = excludeTrainingOnly ? '$nameField, training_only' : nameField;
+        final selectCols = '$baseCols, nevobo_code';
+        List<Map<String, dynamic>> rows;
+        try {
+          final res = await client
+              .from('teams')
+              .select('$selectCols, season')
+              .eq('season', season);
+          rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+          if (rows.isEmpty) {
+            final fallback = await client.from('teams').select(baseCols);
+            rows = (fallback as List<dynamic>).cast<Map<String, dynamic>>();
+          }
+        } catch (_) {
+          try {
+            final res = await client.from('teams').select(baseCols);
+            rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+          } catch (_) {
+            rethrow;
+          }
+        }
         final set = <String>{};
         for (final row in rows) {
+          if (excludeTrainingOnly && row['training_only'] == true) continue;
           final v = row[nameField]?.toString() ?? '';
-          final code = extractCodeFromTeamName(v);
-          if (code == null) continue;
-          if (code.isNotEmpty) {
-            set.add(code);
-          }
+          final code = extractCodeFromTeamName(v) ??
+              (row['nevobo_code'] as String?)?.trim().toUpperCase();
+          if (code == null || code.isEmpty) continue;
+          set.add(code);
         }
         if (set.isNotEmpty) {
           final teams = set
@@ -209,7 +320,7 @@ class NevoboApi {
           return teams;
         }
       } catch (_) {
-        // Try next candidate column.
+        // Try next candidate column, or training_only/nevobo_code may not exist.
       }
     }
 
@@ -220,6 +331,117 @@ class NevoboApi {
       NevoboTeam(code: 'JB1', category: 'jongens-b', number: 1),
       NevoboTeam(code: 'MB1', category: 'meiden-b', number: 1),
     ];
+  }
+
+  /// Zoals [loadTeamsFromSupabase] maar met team_id per team, voor sync van namen uit de API.
+  /// Gebruikt eerst [loadAllTeamsFromSupabase] zodat we alle teams uit de tabel krijgen.
+  static Future<List<({NevoboTeam team, int? teamId})>> loadTeamsFromSupabaseWithIds({
+    required SupabaseClient client,
+    bool excludeTrainingOnly = false,
+  }) async {
+    try {
+      final all = await loadAllTeamsFromSupabase(
+        client: client,
+        excludeTrainingOnly: excludeTrainingOnly,
+      );
+      final result = <({NevoboTeam team, int? teamId})>[];
+      for (final row in all) {
+        final code = extractCodeFromTeamName(row.name);
+        if (code == null || code.isEmpty) continue;
+        final team = _fromCode(code);
+        if (team == null) continue;
+        result.add((team: team, teamId: row.teamId));
+      }
+      if (result.isNotEmpty) {
+        result.sort((a, b) => compareTeams(a.team, b.team));
+        return result;
+      }
+    } catch (_) {}
+
+    return [
+      (team: const NevoboTeam(code: 'HS1', category: 'heren', number: 1), teamId: null),
+      (team: const NevoboTeam(code: 'DS1', category: 'dames', number: 1), teamId: null),
+      (team: const NevoboTeam(code: 'JB1', category: 'jongens-b', number: 1), teamId: null),
+      (team: const NevoboTeam(code: 'MB1', category: 'meiden-b', number: 1), teamId: null),
+    ];
+  }
+
+  /// Laadt alle teams uit de tabel (team_id + naam), voor Standen en TC.
+  /// Eerst RPC get_all_teams_for_app (SECURITY DEFINER), anders directe SELECT (kan door RLS 0 rijen geven).
+  /// excludeTrainingOnly: skip rijen met training_only = true (alleen bij directe SELECT).
+  static Future<List<({int teamId, String name})>> loadAllTeamsFromSupabase({
+    required SupabaseClient client,
+    bool excludeTrainingOnly = false,
+  }) async {
+    try {
+      final res = await client.rpc(
+        'get_all_teams_for_app',
+        params: {'p_include_training_only': !excludeTrainingOnly},
+      );
+      final rows = (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+      if (rows.isNotEmpty) {
+        final result = <({int teamId, String name})>[];
+        for (final row in rows) {
+          final id = (row['team_id'] as num?)?.toInt();
+          if (id == null) continue;
+          final name = (row['team_name'] as String?)?.toString().trim() ?? '';
+          result.add((teamId: id, name: name.isEmpty ? '(naam ontbreekt)' : name));
+        }
+        if (result.isNotEmpty) return result;
+      }
+    } catch (_) {}
+
+    const idFields = ['team_id', 'id'];
+    const nameFields = ['team_name', 'name', 'short_name', 'code', 'team_code', 'abbreviation'];
+
+    for (final idField in idFields) {
+      for (final nameField in nameFields) {
+        try {
+          final cols = excludeTrainingOnly
+              ? '$idField, $nameField, training_only'
+              : '$idField, $nameField';
+          List<Map<String, dynamic>> rows;
+          try {
+            final res = await client.from('teams').select(cols);
+            rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+          } catch (_) {
+            continue;
+          }
+          final result = <({int teamId, String name})>[];
+          for (final row in rows) {
+            if (excludeTrainingOnly && row['training_only'] == true) continue;
+            final id = (row[idField] as num?)?.toInt();
+            if (id == null) continue;
+            final name = (row[nameField] as String?)?.toString().trim() ?? '';
+            result.add((teamId: id, name: name.isEmpty ? '(naam ontbreekt)' : name));
+          }
+          if (result.isNotEmpty) return result;
+        } catch (_) {}
+      }
+    }
+    return const [];
+  }
+
+  /// Werkt teamnaam en nevobo_code in Supabase bij vanuit de API (standen/programma's/uitslagen).
+  static Future<void> syncTeamNameFromNevobo({
+    required SupabaseClient client,
+    required int? teamId,
+    required String nevoboCode,
+    required String teamName,
+  }) async {
+    if (teamName.trim().isEmpty || nevoboCode.trim().isEmpty) return;
+    try {
+      await client.rpc(
+        'sync_team_name_from_nevobo',
+        params: {
+          'p_team_id': teamId,
+          'p_nevobo_code': nevoboCode.trim(),
+          'p_team_name': teamName.trim(),
+        },
+      );
+    } catch (_) {
+      // RPC of kolom nevobo_code kan ontbreken; negeren.
+    }
   }
 
   static NevoboTeam? _fromCode(String code) {
@@ -484,25 +706,82 @@ class NevoboApi {
       }
       if (raw.contains('T')) {
         final d = raw.substring(0, 8);
-        final t = raw.substring(9, 15);
+        final rest = raw.substring(9);
+        final t = rest.length >= 6 ? rest.substring(0, 6) : rest.padRight(6, '0');
+        final suffix = rest.length > 6 ? rest.substring(6) : '';
         final iso =
             '${d.substring(0, 4)}-${d.substring(4, 6)}-${d.substring(6, 8)}T'
-            '${t.substring(0, 2)}:${t.substring(2, 4)}:${t.substring(4, 6)}';
-        return DateTime.parse(iso);
+            '${t.substring(0, 2)}:${t.substring(2, 4)}:${t.substring(4, 6)}$suffix';
+        return _parseNevoboDateTime(iso);
       }
     } catch (_) {}
     return null;
   }
 
-  static DateTime? _parseDateTime(String? raw) {
+  /// Parse Nevobo wedstrijdtijd (`tijdstip` uit JSON of ICS `DTSTART`).
+  ///
+  /// - Met `Z` of offset: absolute tijd (UTC/offset).
+  /// - Zonder timezone: bedoeld als Nederlandse lokale wedstrijdtijd (CET/CEST).
+  static DateTime? parseMatchDateTime(String? raw) => _parseNevoboDateTime(raw);
+
+  static DateTime? _parseDateTime(String? raw) => _parseNevoboDateTime(raw);
+
+  static DateTime? _parseNevoboDateTime(String? raw) {
     if (raw == null) return null;
     final s = raw.trim();
     if (s.isEmpty) return null;
     try {
+      if (RegExp(r'([Zz]|[+-]\d{2}:?\d{2})$').hasMatch(s)) {
+        return DateTime.parse(s);
+      }
+
+      final naive = RegExp(
+        r'^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$',
+      ).firstMatch(s);
+      if (naive != null) {
+        return _dateTimeInNetherlandsLocal(
+          year: int.parse(naive.group(1)!),
+          month: int.parse(naive.group(2)!),
+          day: int.parse(naive.group(3)!),
+          hour: int.parse(naive.group(4)!),
+          minute: int.parse(naive.group(5)!),
+          second: int.parse(naive.group(6) ?? '0'),
+        );
+      }
+
       return DateTime.parse(s);
     } catch (_) {
       return null;
     }
+  }
+
+  static DateTime _dateTimeInNetherlandsLocal({
+    required int year,
+    required int month,
+    required int day,
+    required int hour,
+    required int minute,
+    required int second,
+  }) {
+    final offsetHours = _netherlandsUtcOffsetHours(year, month, day, hour);
+    return DateTime.utc(year, month, day, hour - offsetHours, minute, second).toLocal();
+  }
+
+  /// EU DST-regels voor Nederland (CET +1, CEST +2).
+  static int _netherlandsUtcOffsetHours(int year, int month, int day, int hour) {
+    final instant = DateTime.utc(year, month, day, hour);
+    final dstStart = _euDstTransitionUtc(year, 3);
+    final dstEnd = _euDstTransitionUtc(year, 10);
+    if (!instant.isBefore(dstStart) && instant.isBefore(dstEnd)) return 2;
+    return 1;
+  }
+
+  static DateTime _euDstTransitionUtc(int year, int month) {
+    var day = DateTime.utc(year, month + 1, 0).day;
+    while (DateTime.utc(year, month, day).weekday != DateTime.sunday) {
+      day--;
+    }
+    return DateTime.utc(year, month, day, 1);
   }
 
   static Future<NevoboTeam> _resolveTeam(NevoboTeam team) async {
@@ -536,19 +815,28 @@ class NevoboApi {
   static List<String> _categoryCandidates(String code, String preferred) {
     final prefix = RegExp(r'^([A-Z]{2})').firstMatch(code)?.group(1) ?? '';
 
-    final list = <String>[preferred];
+    final list = <String>[];
     switch (prefix) {
       case 'MR':
+        // Recreanten/mix: probeer eerst specifieke recreanten-categorieën (Minerva XR1),
+        // anders kan generiek 'mix' dames-mix/DM1 opleveren.
         list.addAll(const [
-          'mix',
-          'mix-recreanten',
-          'recreanten',
           'recreanten-mix',
+          'recreanten',
+          'mix-recreanten',
           'mix-recreatie',
           'mix-recreatief',
           'mix-senioren',
+          'mix',
         ]);
+        if (!list.contains(preferred)) list.add(preferred);
         break;
+      default:
+        list.add(preferred);
+        break;
+    }
+    if (list.isEmpty) list.add(preferred);
+    switch (prefix) {
       case 'JA':
         list.addAll(const [
           'jongens-a',
@@ -720,40 +1008,88 @@ class NevoboApi {
     }
   }
 
+  /// True if [standings] contain a row for this team.
+  /// Match by team path (e.g. /competitie/teams/ckm0v2o/dames/1) or by name (Minerva + code).
+  static bool _standingsContainTeam(
+    List<NevoboStandingEntry> standings,
+    String teamCode,
+    String teamPath,
+  ) {
+    final normPath = teamPath.trim().toLowerCase().replaceAll(r'\', '/');
+    final a = teamCode.trim().toUpperCase();
+
+    for (final s in standings) {
+      if (s.teamPath != null && s.teamPath!.trim().toLowerCase().replaceAll(r'\', '/') == normPath) {
+        return true;
+      }
+      final name = s.teamName.trim().toLowerCase();
+      if (!name.contains('minerva')) continue;
+      final extracted = extractCodeFromTeamName(s.teamName);
+      if (extracted == null || extracted.isEmpty) continue;
+      final b = extracted.trim().toUpperCase();
+      if (a.startsWith('XR') && b.startsWith('MR') && a.substring(2) == b.substring(2)) return true;
+      if (b.startsWith('XR') && a.startsWith('MR') && b.substring(2) == a.substring(2)) return true;
+      if (a == b) return true;
+    }
+    return false;
+  }
+
   static Future<List<NevoboStandingEntry>> fetchStandingsForTeam({
     required NevoboTeam team,
   }) async {
-    final resolvedTeam = await _resolveTeam(team);
-    // Step 1: resolve the poule URL for the team
-    final teamUri = Uri.parse(
-      'https://api.nevobo.nl/competitie/pouleindelingen?team=${Uri.encodeComponent(resolvedTeam.teamPath)}',
-    );
-    final teamRes = await http.get(teamUri);
-    if (teamRes.statusCode != 200) {
-      throw Exception('Team poule HTTP ${teamRes.statusCode}');
+    final candidates = _categoryCandidates(team.code, team.category);
+    Exception? lastError;
+
+    for (final category in candidates) {
+      final probeTeam = NevoboTeam(code: team.code, category: category, number: team.number);
+      final teamPath = probeTeam.teamPath;
+
+      try {
+        final teamUri = Uri.parse(
+          'https://api.nevobo.nl/competitie/pouleindelingen?team=${Uri.encodeComponent(teamPath)}',
+        );
+        final teamRes = await http.get(teamUri);
+        if (teamRes.statusCode != 200) {
+          lastError = Exception('Team poule HTTP ${teamRes.statusCode} ($teamPath)');
+          continue;
+        }
+
+        final decodedTeam = jsonDecode(utf8.decode(teamRes.bodyBytes));
+        final poulePath = _extractPoulePath(decodedTeam);
+        if (poulePath == null || poulePath.isEmpty) {
+          lastError = Exception('Kon poule niet bepalen voor ${team.code} ($teamPath)');
+          continue;
+        }
+
+        final pouleUri = Uri.parse(
+          'https://api.nevobo.nl/competitie/pouleindelingen?poule=${Uri.encodeComponent(poulePath)}',
+        );
+        final pouleRes = await http.get(pouleUri);
+        if (pouleRes.statusCode != 200) {
+          lastError = Exception('Poule HTTP ${pouleRes.statusCode}');
+          continue;
+        }
+
+        final decodedPoule = jsonDecode(utf8.decode(pouleRes.bodyBytes));
+        final rawStandings = _parseStandings(decodedPoule);
+        final standings = await _resolveStandingNames(rawStandings);
+
+        if (!_standingsContainTeam(standings, team.code, teamPath)) {
+          lastError = Exception('Poule bevat niet Minerva ${team.code} ($teamPath)');
+          continue;
+        }
+
+        _resolvedTeamByCode[team.code] = probeTeam;
+        if (kDebugMode) {
+          debugPrint('Nevobo standings: ${team.code} -> ${standings.length} entries (category: $category)');
+        }
+        return standings;
+      } catch (e) {
+        lastError = e is Exception ? e : Exception('$e');
+      }
     }
 
-    final decodedTeam = jsonDecode(utf8.decode(teamRes.bodyBytes));
-    final poulePath = _extractPoulePath(decodedTeam);
-    if (poulePath == null || poulePath.isEmpty) {
-      throw Exception('Kon poule niet bepalen voor ${team.code}');
-    }
-
-    // Step 2: fetch poule standings
-    final pouleUri = Uri.parse(
-      'https://api.nevobo.nl/competitie/pouleindelingen?poule=${Uri.encodeComponent(poulePath)}',
-    );
-    final pouleRes = await http.get(pouleUri);
-    if (pouleRes.statusCode != 200) {
-      throw Exception('Poule HTTP ${pouleRes.statusCode}');
-    }
-
-    final decodedPoule = jsonDecode(utf8.decode(pouleRes.bodyBytes));
-    final standings = await _resolveStandingNames(_parseStandings(decodedPoule));
-    if (kDebugMode) {
-      debugPrint('Nevobo standings: ${resolvedTeam.code} -> ${standings.length} entries');
-    }
-    return standings;
+    throw lastError ?? Exception('Kon standen niet laden voor ${team.code}');
   }
 
   static String? _extractPoulePath(dynamic decoded) {

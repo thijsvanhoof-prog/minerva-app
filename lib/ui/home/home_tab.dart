@@ -1,5 +1,15 @@
+import 'dart:async' show Timer, TimeoutException;
+import 'dart:convert' show base64Decode, jsonDecode;
+
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'package:image_picker/image_picker.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
+import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -7,8 +17,10 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:minerva_app/data/mock_home_data.dart';
 import 'package:minerva_app/models/news_item.dart';
 import 'package:minerva_app/ui/app_colors.dart';
-import 'package:minerva_app/ui/display_name_overrides.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/notifications/notification_service.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_standen_tab.dart';
 
 /// Home-tab van VV Minerva. Stap voor stap herbouwd.
 ///
@@ -19,25 +31,34 @@ import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 /// Stap 5: Nieuwsberichten – NewsItem + mockNews (zoals oorspronkelijk)
 /// Stap 6: Afronden – refresh, foutmeldingen, admin-actions (highlights)
 class HomeTab extends StatefulWidget {
-  const HomeTab({super.key});
+  /// Waar true: alleen Uitgelicht en Nieuws (geen Agenda). Voor gebruikers zonder teamkoppeling.
+  final bool showOnlyHighlightsAndNews;
+
+  const HomeTab({super.key, this.showOnlyHighlightsAndNews = false});
 
   @override
   State<HomeTab> createState() => _HomeTabState();
 }
 
-class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
+class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   final SupabaseClient _client = Supabase.instance.client;
 
-  late final TabController _tabController;
+  late TabController _tabController;
+  late TabController _wedstrijdenSubTabController;
+  late TabController _agendaSubTabController;
 
   bool _loadingHighlights = true;
   String? _highlightsError;
   List<_Highlight> _highlights = const [];
+  bool _loadingUpcomingMatches = true;
+  String? _upcomingMatchesError;
+  List<_HomeUpcomingMatch> _upcomingMatches = const [];
 
   bool _loadingAgenda = true;
   String? _agendaError;
   List<_AgendaItem> _agendaItems = const [];
-  Set<int> _myRsvpAgendaIds = const {};
+  /// Per agenda_id: welke profile_ids (zelf + gekoppelde kinderen) zijn aangemeld. Voor Fase E multi-select.
+  Map<int, Set<String>> _rsvpProfileIdsByAgendaId = const {};
 
   // Agenda sub-tab: 0 = agenda, 1 = aanmeldingen (bestuur/communicatie)
   int _agendaMode = 0;
@@ -50,6 +71,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   List<NewsItem> _newsItems = const [];
   bool _newsFromSupabase = false;
   String _newsIdField = 'news_id';
+
+  /// Gast/toeschouwer-melding: standaard uitgeklapt, kan ingeklapt worden tot icoon.
+  bool _showGuestAccountHint = true;
 
   NewsCategory _categoryFromDb(dynamic v) {
     final s = (v ?? '').toString().trim().toLowerCase();
@@ -106,11 +130,52 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     return !DateTime.now().isAfter(visibleUntil);
   }
 
+  List<String> _extractUrlsFromText(String text) {
+    final re = RegExp(r'(https?:\/\/[^\s)]+|www\.[^\s)]+)', caseSensitive: false);
+    final urls = <String>{};
+    for (final m in re.allMatches(text)) {
+      final raw = m.group(0)?.trim() ?? '';
+      if (raw.isEmpty) continue;
+      final normalized = _normalizeNewsUrl(raw);
+      if (normalized != null) urls.add(normalized);
+    }
+    return urls.toList();
+  }
+
+  String? _normalizeNewsUrl(String input) {
+    final cleaned = input.trim().replaceAll(RegExp(r'[.,;!?]+$'), '');
+    if (cleaned.isEmpty) return null;
+    var candidate = cleaned;
+    if (candidate.toLowerCase().startsWith('www.')) {
+      candidate = 'https://$candidate';
+    } else if (!candidate.contains('://') &&
+        RegExp(r'^[^\s]+\.[^\s]+$').hasMatch(candidate)) {
+      candidate = 'https://$candidate';
+    }
+    final uri = Uri.tryParse(candidate);
+    if (uri == null || !uri.hasScheme || uri.host.trim().isEmpty) return null;
+    if (uri.scheme != 'http' && uri.scheme != 'https') return null;
+    return candidate;
+  }
+
+  void _addNewsLinkIfValid(
+    List<NewsLink> links, {
+    required String? url,
+    String? label,
+  }) {
+    final value = _normalizeNewsUrl((url ?? '').trim());
+    if (value == null) return;
+    final exists = links.any((l) => l.url.trim().toLowerCase() == value.toLowerCase());
+    if (exists) return;
+    links.add(NewsLink(url: value, label: (label ?? '').trim().isEmpty ? null : label!.trim()));
+  }
+
   Future<DateTime?> _pickVisibleUntilDate(DateTime? current) async {
     final now = DateTime.now();
     final initial = current ?? now;
     final picked = await showDatePicker(
       context: context,
+      locale: const Locale('nl', 'NL'),
       initialDate: DateTime(initial.year, initial.month, initial.day),
       firstDate: DateTime(now.year - 1, 1, 1),
       lastDate: DateTime(now.year + 5, 12, 31),
@@ -122,25 +187,91 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   }
 
   Future<void> _refreshHome() async {
-    await _loadHighlights();
+    await _loadUpcomingMatches();
     await _loadAgenda();
     await _loadNews();
+  }
+
+  void _initTabController() {
+    final length = widget.showOnlyHighlightsAndNews ? 2 : 3;
+    _tabController = TabController(
+      length: length,
+      vsync: this,
+      initialIndex: 0,
+    );
+    _tabController.addListener(() {
+      if (!mounted) return;
+      setState(() {});
+    });
+    _wedstrijdenSubTabController = TabController(length: 2, vsync: this);
+    _wedstrijdenSubTabController.addListener(() {
+      if (!mounted) return;
+      setState(() {});
+    });
+    _agendaSubTabController = TabController(length: 2, vsync: this);
+    _agendaSubTabController.addListener(() {
+      if (!mounted) return;
+      final next = _agendaSubTabController.index;
+      if (_agendaMode != next) {
+        setState(() => _agendaMode = next);
+      } else {
+        setState(() {});
+      }
+      if (next == 1) {
+        // ignore: unawaited_futures
+        _loadAgendaRsvps();
+      }
+    });
+  }
+
+  int _contentIndexForSelectedTab(int selectedIndex) {
+    if (widget.showOnlyHighlightsAndNews) {
+      // Tabvolgorde: Nieuws, Wedstrijden
+      // Contentvolgorde hieronder: Wedstrijden, Nieuws
+      return selectedIndex == 0 ? 1 : 0;
+    }
+    // Tabvolgorde: Nieuws, Agenda, Wedstrijden
+    // Contentvolgorde hieronder: Wedstrijden, Agenda, Nieuws
+    switch (selectedIndex) {
+      case 0:
+        return 2;
+      case 1:
+        return 1;
+      default:
+        return 0;
+    }
   }
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this, initialIndex: 0);
-    _loadHighlights();
+    _initTabController();
+    _loadUpcomingMatches();
     _loadAgenda();
     _loadNews();
   }
 
   @override
+  void didUpdateWidget(covariant HomeTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.showOnlyHighlightsAndNews !=
+        widget.showOnlyHighlightsAndNews) {
+      _tabController.dispose();
+      _wedstrijdenSubTabController.dispose();
+      _agendaSubTabController.dispose();
+      _initTabController();
+    }
+  }
+
+  @override
   void dispose() {
     _tabController.dispose();
+    _wedstrijdenSubTabController.dispose();
+    _agendaSubTabController.dispose();
     super.dispose();
   }
+
+  static const _loadTimeout = Duration(seconds: 10);
 
   Future<void> _loadHighlights() async {
     setState(() {
@@ -149,37 +280,44 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     });
 
     try {
-      // Best-effort: support optional `visible_until` column.
       List<dynamic> res;
       try {
         res = await _client
             .from('home_highlights')
             .select('highlight_id, title, subtitle, icon_name, visible_until')
-            .order('created_at', ascending: false);
+            .order('created_at', ascending: false)
+            .timeout(_loadTimeout);
       } catch (_) {
         res = await _client
             .from('home_highlights')
             .select('highlight_id, title, subtitle, icon_name')
-            .order('created_at', ascending: false);
+            .order('created_at', ascending: false)
+            .timeout(_loadTimeout);
       }
 
+      if (!mounted) return;
       final rows = res.cast<Map<String, dynamic>>();
-      final list = rows.map((r) {
-        final until = _parseVisibleUntil(r['visible_until']);
-        return _Highlight(
-          id: (r['highlight_id'] as num).toInt(),
-          title: (r['title'] as String?) ?? '',
-          subtitle: (r['subtitle'] as String?) ?? '',
-          iconText: (r['icon_name'] as String?) ?? '🏐',
-          visibleUntil: until,
-        );
-      }).where((h) => _isVisibleNow(h.visibleUntil)).toList();
+      final list = rows
+          .map((r) {
+            final until = _parseVisibleUntil(r['visible_until']);
+            return _Highlight(
+              id: (r['highlight_id'] as num).toInt(),
+              title: (r['title'] as String?) ?? '',
+              subtitle: (r['subtitle'] as String?) ?? '',
+              iconText: (r['icon_name'] as String?) ?? '🏐',
+              visibleUntil: until,
+            );
+          })
+          .where((h) => _isVisibleNow(h.visibleUntil))
+          .toList();
 
+      if (!mounted) return;
       setState(() {
         _highlights = list;
         _loadingHighlights = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _highlights = _mockHighlights();
         _highlightsError = e.toString();
@@ -197,10 +335,26 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     try {
       List<Map<String, dynamic>> rows = [];
       for (final attempt in const [
-        ('agenda_id, title, description, start_datetime, end_datetime, location, can_rsvp', 'start_datetime'),
-        ('agenda_id, title, description, start_datetime, location, can_rsvp', 'start_datetime'),
-        ('agenda_id, title, start_datetime, end_datetime, location, can_rsvp', 'start_datetime'),
-        ('agenda_id, title, start_datetime, location, can_rsvp', 'start_datetime'),
+        (
+          'agenda_id, title, description, start_datetime, end_datetime, location, can_rsvp, rsvp_label, rsvp_allowed_team_ids, rsvp_allowed_committee_keys',
+          'start_datetime',
+        ),
+        (
+          'agenda_id, title, description, start_datetime, end_datetime, location, can_rsvp',
+          'start_datetime',
+        ),
+        (
+          'agenda_id, title, description, start_datetime, location, can_rsvp',
+          'start_datetime',
+        ),
+        (
+          'agenda_id, title, start_datetime, end_datetime, location, can_rsvp',
+          'start_datetime',
+        ),
+        (
+          'agenda_id, title, start_datetime, location, can_rsvp',
+          'start_datetime',
+        ),
         ('agenda_id, title, starts_at, location, can_rsvp', 'starts_at'),
         ('agenda_id, title, start_at, location, can_rsvp', 'start_at'),
         ('agenda_id, title, when, where, can_rsvp', null),
@@ -212,20 +366,25 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           final select = attempt.$1;
           final orderColumn = attempt.$2;
           final res = orderColumn == null
-              ? await _client.from('home_agenda').select(select)
+              ? await _client
+                    .from('home_agenda')
+                    .select(select)
+                    .timeout(_loadTimeout)
               : await _client
-                  .from('home_agenda')
-                  .select(select)
-                  .order(orderColumn, ascending: true);
+                    .from('home_agenda')
+                    .select(select)
+                    .order(orderColumn, ascending: true)
+                    .timeout(_loadTimeout);
           rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
           break;
         } catch (_) {}
       }
 
       if (rows.isEmpty) {
+        if (!mounted) return;
         setState(() {
-          _agendaItems = _mockAgenda();
-          _myRsvpAgendaIds = const {};
+          _agendaItems = const [];
+          _rsvpProfileIdsByAgendaId = const {};
           _loadingAgenda = false;
         });
         return;
@@ -239,15 +398,49 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         final title = (row['title'] as String?) ?? '';
         final description = (row['description'] as String?)?.trim();
         final canRsvp = (row['can_rsvp'] as bool?) ?? false;
+        String? rsvpLabel;
+        List<int>? allowedTeamIds;
+        List<String>? allowedCommitteeKeys;
+        try {
+          rsvpLabel = (row['rsvp_label'] as String?)?.trim();
+          if (rsvpLabel?.isEmpty == true) rsvpLabel = null;
+          final teamIdsRaw = row['rsvp_allowed_team_ids'];
+          if (teamIdsRaw is List) {
+            allowedTeamIds = teamIdsRaw
+                .map((x) => (x is num) ? x.toInt() : int.tryParse(x.toString()))
+                .whereType<int>()
+                .toList();
+            if (allowedTeamIds.isEmpty) allowedTeamIds = null;
+          }
+          final committeeRaw = row['rsvp_allowed_committee_keys'];
+          if (committeeRaw is List) {
+            allowedCommitteeKeys = committeeRaw
+                .map((x) => x?.toString().trim())
+                .where((s) => s != null && s.isNotEmpty)
+                .cast<String>()
+                .toList();
+            if (allowedCommitteeKeys.isEmpty) allowedCommitteeKeys = null;
+          }
+        } catch (_) {}
         final location =
-            (row['location'] ?? row['where'] ?? row['locatie'])?.toString() ?? '';
+            (row['location'] ?? row['where'] ?? row['locatie'])?.toString() ??
+            '';
 
         DateTime? start;
-        final rawStart = row['start_datetime'] ?? row['starts_at'] ?? row['start_at'];
+        final rawStart =
+            row['start_datetime'] ?? row['starts_at'] ?? row['start_at'];
         if (rawStart is DateTime) {
           start = rawStart;
         } else if (rawStart != null) {
           start = DateTime.tryParse(rawStart.toString());
+        }
+        if (start == null) {
+          final legacyDate = (row['event_date'] ?? row['date'])?.toString();
+          final legacyTime = (row['event_time'] ?? '').toString().trim();
+          if (legacyDate != null && legacyDate.trim().isNotEmpty) {
+            final sep = legacyTime.isEmpty ? '00:00:00' : legacyTime;
+            start = DateTime.tryParse('${legacyDate.trim()} $sep');
+          }
         }
 
         DateTime? end;
@@ -270,10 +463,15 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           _AgendaItem(
             id: id,
             title: title,
-            description: description != null && description.isNotEmpty ? description : null,
+            description: description != null && description.isNotEmpty
+                ? description
+                : null,
             when: whenLabel,
             where: location,
             canRsvp: canRsvp,
+            rsvpLabel: rsvpLabel,
+            allowedTeamIds: allowedTeamIds,
+            allowedCommitteeKeys: allowedCommitteeKeys,
             startDatetime: start,
             endDatetime: end,
             dateLabel: dateLabel,
@@ -284,28 +482,52 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         );
       }
 
+      // Filter verleden activiteiten: alleen tonen wat nog niet afgelopen is.
+      final now = DateTime.now().toUtc();
+      final visibleItems = items.where((a) {
+        final einde = a.endDatetime ?? a.startDatetime;
+        if (einde == null) return true;
+        return einde.isAfter(now);
+      }).toList();
+
       final user = _client.auth.currentUser;
-      final agendaIdsWithRsvp =
-          items.where((a) => a.canRsvp).map((a) => a.id!).toList();
-      Set<int> myRsvps = {};
+      final agendaIdsWithRsvp = visibleItems
+          .where((a) => a.canRsvp)
+          .map((a) => a.id!)
+          .toList();
+      Map<int, Set<String>> rsvpProfileIdsByAgendaId = {};
       if (user != null && agendaIdsWithRsvp.isNotEmpty) {
         try {
+          if (!mounted) return;
+          final ctx = AppUserContext.of(context);
+          final profileIdsToLoad = [
+            ctx.loggedInProfileId,
+            ...ctx.linkedChildProfiles.map((c) => c.profileId),
+          ].where((id) => id.isNotEmpty).toSet().toList();
+          if (profileIdsToLoad.isEmpty) profileIdsToLoad.add(user.id);
+
           final res = await _client
               .from('home_agenda_rsvps')
-              .select('agenda_id')
-              .eq('profile_id', user.id)
-              .inFilter('agenda_id', agendaIdsWithRsvp);
+              .select('agenda_id, profile_id')
+              .inFilter('agenda_id', agendaIdsWithRsvp)
+              .inFilter('profile_id', profileIdsToLoad)
+              .timeout(_loadTimeout);
           final rsvpRows = (res as List<dynamic>).cast<Map<String, dynamic>>();
-          myRsvps = rsvpRows
-              .map((r) => (r['agenda_id'] as num?)?.toInt())
-              .whereType<int>()
-              .toSet();
+          for (final r in rsvpRows) {
+            final aid = (r['agenda_id'] as num?)?.toInt();
+            final pid = r['profile_id']?.toString() ?? '';
+            if (aid == null || pid.isEmpty) continue;
+            rsvpProfileIdsByAgendaId
+                .putIfAbsent(aid, () => {})
+                .add(pid);
+          }
         } catch (_) {}
       }
 
+      if (!mounted) return;
       setState(() {
-        _agendaItems = items;
-        _myRsvpAgendaIds = myRsvps;
+        _agendaItems = visibleItems;
+        _rsvpProfileIdsByAgendaId = rsvpProfileIdsByAgendaId;
         _loadingAgenda = false;
       });
 
@@ -321,28 +543,200 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         }
       } catch (_) {}
     } catch (e) {
+      if (!mounted) return;
       setState(() {
-        _agendaItems = _mockAgenda();
-        _myRsvpAgendaIds = const {};
+        _agendaItems = const [];
+        _rsvpProfileIdsByAgendaId = const {};
         _agendaError = e.toString();
         _loadingAgenda = false;
       });
     }
   }
 
-  String _shortId(String value) {
-    if (value.length <= 8) return value;
-    return '${value.substring(0, 4)}…${value.substring(value.length - 4)}';
+  Future<void> _loadUpcomingMatches() async {
+    if (mounted) {
+      setState(() {
+        _loadingUpcomingMatches = true;
+        _upcomingMatchesError = null;
+      });
+    }
+
+    try {
+      final nowLocal = DateTime.now();
+      final endInclusive = nowLocal.add(const Duration(days: 14));
+      final cutoff = nowLocal.subtract(const Duration(hours: 2));
+
+      // Alle wedstrijden uit de Nevobo API voor alle clubteams (volledige kalender).
+      final allFromApi = <_HomeUpcomingMatch>[];
+      final seenKeys = <String>{};
+
+      List<({NevoboTeam team, int? teamId})> withIds = [];
+      try {
+        withIds = await NevoboApi.loadTeamsFromSupabaseWithIds(
+          client: _client,
+          excludeTrainingOnly: false,
+        );
+      } catch (_) {}
+
+      for (final entry in withIds) {
+        if (!mounted) break;
+        try {
+          final matches = await NevoboApi.fetchMatchesForTeam(team: entry.team);
+          for (final m in matches) {
+            final start = m.start;
+            if (start == null) continue;
+            final startLocal = start.toLocal();
+            if (startLocal.isBefore(cutoff) || startLocal.isAfter(endInclusive)) continue;
+            final summary = m.summary.trim();
+            final dedupeKey = '${start.toUtc().toIso8601String()}|$summary';
+            if (seenKeys.contains(dedupeKey)) continue;
+            final side = _parseMinervaSideFromSummary(summary);
+            if (side == null) continue;
+            seenKeys.add(dedupeKey);
+            final matchKey = '${side.teamCode}|${start.toUtc().toIso8601String()}|$summary';
+            allFromApi.add(
+              _HomeUpcomingMatch(
+                matchKey: matchKey,
+                teamCode: side.teamCode,
+                startsAt: start,
+                summary: summary,
+                location: (m.location ?? '').trim(),
+                fluitenTaskId: null,
+                tellenTaskId: null,
+                fluitenNames: const [],
+                tellenNames: const [],
+                isHome: side.isHome,
+              ),
+            );
+          }
+        } catch (_) {}
+      }
+
+      allFromApi.sort((a, b) => a.startsAt.compareTo(b.startsAt));
+
+      // Enrich met fluiten/tellen uit nevobo_home_matches waar beschikbaar.
+      Map<String, ({int? fluitenId, int? tellenId})> dbByKey = {};
+      try {
+        final nowUtc = DateTime.now().toUtc();
+        final res = await _client
+            .from('nevobo_home_matches')
+            .select(
+              'match_key, team_code, starts_at, summary, fluiten_task_id, tellen_task_id',
+            )
+            .gte(
+              'starts_at',
+              nowUtc.subtract(const Duration(hours: 2)).toIso8601String(),
+            )
+            .limit(500);
+        final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        for (final row in rows) {
+          final key = (row['match_key'] ?? '').toString();
+          if (key.isEmpty) continue;
+          final fluitenId = (row['fluiten_task_id'] as num?)?.toInt();
+          final tellenId = (row['tellen_task_id'] as num?)?.toInt();
+          dbByKey[key] = (fluitenId: fluitenId, tellenId: tellenId);
+        }
+      } catch (_) {}
+
+      final taskIds = <int>{};
+      for (final m in allFromApi) {
+        final fromDb = dbByKey[m.matchKey];
+        if (fromDb != null) {
+          if (fromDb.fluitenId != null) taskIds.add(fromDb.fluitenId!);
+          if (fromDb.tellenId != null) taskIds.add(fromDb.tellenId!);
+        }
+      }
+
+      final namesByTaskId = <int, List<String>>{};
+      if (taskIds.isNotEmpty) {
+        try {
+          final sRes = await _client
+              .from('club_task_signups')
+              .select('task_id, profile_id')
+              .inFilter('task_id', taskIds.toList());
+          final sRows = (sRes as List<dynamic>).cast<Map<String, dynamic>>();
+          final profileIds = <String>{};
+          for (final row in sRows) {
+            final pid = row['profile_id']?.toString() ?? '';
+            if (pid.isNotEmpty) profileIds.add(pid);
+          }
+          final namesByProfileId = await _loadProfileDisplayNames(profileIds);
+          for (final row in sRows) {
+            final taskId = (row['task_id'] as num?)?.toInt();
+            final pid = row['profile_id']?.toString() ?? '';
+            if (taskId == null || pid.isEmpty) continue;
+            final name = (namesByProfileId[pid] ?? unknownUserName).trim();
+            namesByTaskId.putIfAbsent(taskId, () => []).add(name);
+          }
+          for (final e in namesByTaskId.entries) {
+            e.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+          }
+        } catch (_) {}
+      }
+
+      final enriched = allFromApi.map((m) {
+        final fromDb = dbByKey[m.matchKey];
+        final fluitenId = fromDb?.fluitenId;
+        final tellenId = fromDb?.tellenId;
+        return m.copyWith(
+          fluitenNames: fluitenId == null ? const [] : (namesByTaskId[fluitenId] ?? const []),
+          tellenNames: tellenId == null ? const [] : (namesByTaskId[tellenId] ?? const []),
+        );
+      }).toList();
+
+      // Bij Minerva vs Minerva alleen het item van het thuisteam tonen.
+      final filteredInternal = <_HomeUpcomingMatch>[];
+      for (final m in enriched) {
+        if (!_isInternalMinervaMatch(m.summary)) {
+          filteredInternal.add(m);
+          continue;
+        }
+        final parts = m.summary.split('-');
+        final homeCode = parts.isNotEmpty
+            ? _extractCodeFromSummarySide(parts.first)
+            : null;
+        final rowCode = _normalizeTeamCode(m.teamCode);
+        if (homeCode != null && rowCode.isNotEmpty && rowCode != homeCode) {
+          continue;
+        }
+        filteredInternal.add(m);
+      }
+
+      // Beperk tot aankomende 14 dagen (API kan iets meer teruggeven).
+      final limited = <_HomeUpcomingMatch>[];
+      for (final m in filteredInternal) {
+        final d = m.startsAt.toLocal();
+        if (d.isAfter(endInclusive)) break;
+        limited.add(m);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _upcomingMatches = limited;
+        _loadingUpcomingMatches = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _upcomingMatches = const [];
+        _upcomingMatchesError = e.toString();
+        _loadingUpcomingMatches = false;
+      });
+    }
   }
 
-  Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
+  Future<Map<String, String>> _loadProfileDisplayNames(
+    Set<String> profileIds,
+  ) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
 
     // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
     try {
-      final res =
-          await _client.rpc('get_profile_display_names', params: {'profile_ids': ids});
+      final res = await _client.rpc(
+        'get_profile_display_names',
+        params: {'profile_ids': ids},
+      );
       final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
       final map = <String, String>{};
       for (final r in rows) {
@@ -350,7 +744,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         if (id.isEmpty) continue;
         final raw = (r['display_name'] ?? '').toString().trim();
         final name = applyDisplayNameOverrides(raw);
-        map[id] = name.isNotEmpty ? name : _shortId(id);
+        map[id] = name.isNotEmpty ? name : unknownUserName;
       }
       if (map.isNotEmpty) return map;
     } catch (_) {
@@ -366,7 +760,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       'id, email',
     ]) {
       try {
-        final res = await _client.from('profiles').select(select).inFilter('id', ids);
+        final res = await _client
+            .from('profiles')
+            .select(select)
+            .inFilter('id', ids);
         rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
         break;
       } catch (_) {}
@@ -376,11 +773,12 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     for (final r in rows) {
       final id = r['id']?.toString() ?? '';
       if (id.isEmpty) continue;
-      final n = (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
-          .toString()
-          .trim();
+      final n =
+          (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
+              .toString()
+              .trim();
       final name = applyDisplayNameOverrides(n);
-      map[id] = name.isNotEmpty ? name : _shortId(id);
+      map[id] = name.isNotEmpty ? name : unknownUserName;
     }
     return map;
   }
@@ -430,7 +828,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final ctx = AppUserContext.of(context);
     if (!ctx.canViewAgendaRsvps) return;
 
-    final agendaIds = _agendaItems.where((a) => a.canRsvp).map((a) => a.id).whereType<int>().toList();
+    final agendaIds = _agendaItems
+        .where((a) => a.canRsvp)
+        .map((a) => a.id)
+        .whereType<int>()
+        .toList();
     if (agendaIds.isEmpty) {
       if (mounted) {
         setState(() {
@@ -458,7 +860,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           final res = await _client
               .from('home_agenda_rsvps')
               .select(select)
-              .inFilter('agenda_id', agendaIds);
+              .inFilter('agenda_id', agendaIds)
+              .timeout(_loadTimeout);
           rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
           break;
         } catch (_) {}
@@ -484,7 +887,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             res = await _client
                 .from('team_members')
                 .select('profile_id, team_id, role')
-                .inFilter('profile_id', profileIds.toList());
+                .inFilter('profile_id', profileIds.toList())
+                .timeout(_loadTimeout);
           } catch (_) {
             // If schema/RLS prevents selecting role, we can't reliably filter → show no teams.
             res = const [];
@@ -505,15 +909,21 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         }
       }
 
-      final teamNamesById = await _loadTeamNames(teamIds: teamIds.toList()..sort());
+      final teamNamesById = await _loadTeamNames(
+        teamIds: teamIds.toList()..sort(),
+      );
 
       List<String> teamLabelsFor(String profileId) {
         final ids = teamIdsByProfile[profileId]?.toList() ?? const [];
         final out = <String>[];
         for (final tid in ids) {
           final raw = (teamNamesById[tid] ?? '').trim();
-          final code = raw.isNotEmpty ? (NevoboApi.extractCodeFromTeamName(raw) ?? raw) : '';
-          out.add(code.isNotEmpty ? code : 'Team $tid');
+          final code = raw.isNotEmpty
+              ? (NevoboApi.extractCodeFromTeamName(raw) ?? raw)
+              : '';
+          out.add(code.isNotEmpty
+              ? NevoboApi.displayTeamCode(code)
+              : (raw.isNotEmpty ? NevoboApi.displayTeamName(raw) : '(naam ontbreekt)'));
         }
         out.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
         return out;
@@ -525,12 +935,16 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         final pid = r['profile_id']?.toString() ?? '';
         if (aid == null || pid.isEmpty) continue;
         final rawName = (nameById[pid] ?? '').trim();
-        final name = rawName.isNotEmpty ? rawName : _shortId(pid);
+        final name = rawName.isNotEmpty ? rawName : unknownUserName;
         final createdAtValue = r['created_at'];
         final createdAt = createdAtValue is DateTime
             ? createdAtValue
-            : (createdAtValue != null ? DateTime.tryParse(createdAtValue.toString()) : null);
-        byAgenda.putIfAbsent(aid, () => []).add(
+            : (createdAtValue != null
+                  ? DateTime.tryParse(createdAtValue.toString())
+                  : null);
+        byAgenda
+            .putIfAbsent(aid, () => [])
+            .add(
               _AgendaSignup(
                 agendaId: aid,
                 profileId: pid,
@@ -541,7 +955,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             );
       }
       for (final e in byAgenda.entries) {
-        e.value.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        e.value.sort(
+          (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+        );
       }
 
       if (!mounted) return;
@@ -558,10 +974,57 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     }
   }
 
+  /// CSV-veld escapen (komma/newline/quote → quoted en " → "").
+  static String _csvEscape(String s) {
+    if (!s.contains(RegExp(r'[,\n"]'))) return s;
+    return '"${s.replaceAll('"', '""')}"';
+  }
+
+  Future<void> _exportSignupsToCsv(
+    BuildContext context, {
+    required String activityTitle,
+    required List<_AgendaSignup> signups,
+  }) async {
+    final buffer = StringBuffer();
+    buffer.writeln('Naam,Team');
+    for (final s in signups) {
+      final team = s.teamLabels.isEmpty ? '—' : s.teamLabels.join(', ');
+      buffer.writeln('${_csvEscape(s.name)},${_csvEscape(team)}');
+    }
+    final csv = buffer.toString();
+    if (!context.mounted) return;
+
+    final isMobile =
+        !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.iOS ||
+            defaultTargetPlatform == TargetPlatform.android);
+
+    if (isMobile) {
+      // Share als tekst opent het deelmenu (Mail, Opslaan, Kopiëren, etc.); werkt betrouwbaar op iOS/Android.
+      try {
+        await Share.share(csv, subject: 'Aanmeldingen: $activityTitle');
+      } catch (_) {
+        await Clipboard.setData(ClipboardData(text: csv));
+        if (context.mounted) {
+          showTopMessage(
+            context,
+            'CSV gekopieerd. Plak in Excel of Google Sheets.',
+          );
+        }
+      }
+    } else {
+      await Clipboard.setData(ClipboardData(text: csv));
+      if (context.mounted) {
+        showTopMessage(
+          context,
+          'CSV gekopieerd. Plak in Excel of Google Sheets.',
+        );
+      }
+    }
+  }
+
   Widget _buildAgendaListView({required bool canManageAgenda}) {
-    final hasRsvp = _agendaItems.any((a) => a.canRsvp);
-    final showRsvpInfo = hasRsvp && _agendaItems.isNotEmpty;
-    final extraRows = showRsvpInfo ? 1 : 0;
+    final extraRows = 0;
     return RefreshIndicator(
       color: AppColors.primary,
       onRefresh: _refreshHome,
@@ -573,7 +1036,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           16,
           24 + MediaQuery.paddingOf(context).bottom,
         ),
-        itemCount: 1 + (_agendaItems.isEmpty ? 1 : _agendaItems.length + extraRows),
+        itemCount:
+            1 + (_agendaItems.isEmpty ? 1 : _agendaItems.length + extraRows),
         separatorBuilder: (_, _) => const SizedBox(height: 12),
         itemBuilder: (context, i) {
           if (i == 0) {
@@ -587,15 +1051,15 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                       onPressed: () => _openAddAgendaDialog(),
                     )
                   : (_loadingAgenda
-                      ? const SizedBox(
-                          height: 18,
-                          width: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: AppColors.primary,
-                          ),
-                        )
-                      : null),
+                        ? const SizedBox(
+                            height: 18,
+                            width: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppColors.primary,
+                            ),
+                          )
+                        : null),
             );
           }
 
@@ -614,27 +1078,21 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             );
           }
 
-          if (showRsvpInfo && i == 1) {
-            return Text(
-              'Bij aanmelden slaan we je naam en (spelers)team op. '
-              'Dit is zichtbaar voor Bestuur/Communicatie. Je kunt altijd weer afmelden.',
-              style: TextStyle(
-                color: AppColors.textSecondary.withValues(alpha: 0.9),
-                fontSize: 12.5,
-              ),
-            );
-          }
-
-          final itemIndex = showRsvpInfo ? (i - 2) : (i - 1);
+          final itemIndex = i - 1;
           final item = _agendaItems[itemIndex];
-          final signedUp = item.id != null && _myRsvpAgendaIds.contains(item.id);
-          final enabled = item.canRsvp && item.id != null;
+          final signedUpProfileIds = item.id != null ? (_rsvpProfileIdsByAgendaId[item.id] ?? <String>{}) : <String>{};
+          final signedUp = signedUpProfileIds.isNotEmpty;
+          final canSignUp = item.canUserSignUp(AppUserContext.of(context));
+          final enabled = item.canRsvp && item.id != null && canSignUp;
+          final signedUpLabel = signedUp ? _rsvpNamesLabel(item.id) : null;
           return _AgendaCard(
             item: item,
             signedUp: signedUp,
+            signedUpLabel: signedUpLabel,
             enabled: enabled,
+            showSignupButton: canSignUp && item.canRsvp,
             canManage: canManageAgenda,
-            onToggleRsvp: () => _toggleAgendaRsvp(item),
+            onToggleRsvp: () => _showAgendaRsvpDialog(item),
             onReadMore: () => _showAgendaDetail(item),
             onEdit: item.id != null ? () => _openEditAgendaDialog(item) : null,
             onDelete: item.id != null ? () => _deleteAgendaItem(item) : null,
@@ -644,7 +1102,23 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     );
   }
 
-  Widget _buildAgendaRsvpsView() {
+  Widget _buildAgendaRsvpsView({required bool canExportRsvps}) {
+    final ctx = AppUserContext.of(context);
+    final hidePastForCommitteeViews =
+        !ctx.hasFullAdminRights &&
+        !ctx.isInBestuur &&
+        (ctx.isInCommunicatie || ctx.isInEvenementen || ctx.isInJeugdcommissie);
+    final now = DateTime.now();
+    bool isOngoingOrUpcoming(_AgendaItem a) {
+      final until = (a.endDatetime ?? a.startDatetime)?.toLocal();
+      if (until == null) return true;
+      return !until.isBefore(now);
+    }
+    final rsvpItems = _agendaItems
+        .where((a) => a.canRsvp)
+        .where((a) => !hidePastForCommitteeViews || isOngoingOrUpcoming(a))
+        .toList();
+
     return RefreshIndicator(
       color: AppColors.primary,
       onRefresh: _loadAgendaRsvps,
@@ -677,65 +1151,133 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               style: const TextStyle(color: AppColors.error),
             )
           else ...[
-            if (_agendaItems.where((a) => a.canRsvp).isEmpty)
+            if (rsvpItems.isEmpty)
               const Text(
                 'Geen agenda-items met aanmeldingen.',
                 style: TextStyle(color: AppColors.textSecondary),
               )
             else
-              ..._agendaItems.where((a) => a.canRsvp).map((a) {
+              ...rsvpItems.map((a) {
                 final id = a.id ?? -1;
                 final signups = _rsvpsByAgendaId[id] ?? const [];
+                final secondaryStyle = Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: AppColors.textSecondary);
+                final whenWhere = [
+                  a.when,
+                  a.where,
+                ].where((s) => s.trim().isNotEmpty).join(' • ');
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 12),
-                  child: GlassCard(
-                    padding: const EdgeInsets.all(14),
+                  child: _CardBox(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          a.title,
-                          style: const TextStyle(
-                            color: AppColors.onBackground,
-                            fontWeight: FontWeight.w800,
-                          ),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    a.title,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium
+                                        ?.copyWith(
+                                          color: AppColors.onBackground,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                  ),
+                                  if (whenWhere.isNotEmpty) ...[
+                                    const SizedBox(height: 6),
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          Icons.calendar_today,
+                                          size: 14,
+                                          color: AppColors.textSecondary,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            whenWhere,
+                                            style: secondaryStyle,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                            if (canExportRsvps)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 8),
+                                child: FilledButton.icon(
+                                  onPressed: () => _exportSignupsToCsv(
+                                    context,
+                                    activityTitle: a.title,
+                                    signups: signups,
+                                  ),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: AppColors.primary,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  icon: const Icon(Icons.download, size: 18),
+                                  label: const Text('Export'),
+                                ),
+                              ),
+                          ],
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          [a.when, a.where].where((s) => s.trim().isNotEmpty).join(' • '),
-                          style: const TextStyle(color: AppColors.textSecondary),
-                        ),
-                        const SizedBox(height: 10),
+                        const SizedBox(height: 12),
                         if (signups.isEmpty)
-                          const Text(
-                            'Nog geen aanmeldingen.',
-                            style: TextStyle(color: AppColors.textSecondary),
-                          )
+                          Text('Nog geen aanmeldingen.', style: secondaryStyle)
                         else
                           ...signups.map((s) {
-                            final teams = s.teamLabels.isEmpty ? '—' : s.teamLabels.join(', ');
+                            final teams = s.teamLabels.isEmpty
+                                ? '—'
+                                : s.teamLabels.join(', ');
                             return Padding(
                               padding: const EdgeInsets.symmetric(vertical: 6),
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Icon(Icons.person_outline, size: 18, color: AppColors.iconMuted),
+                                  Icon(
+                                    Icons.person_outline,
+                                    size: 18,
+                                    color: AppColors.primary.withValues(
+                                      alpha: 0.8,
+                                    ),
+                                  ),
                                   const SizedBox(width: 10),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Text(
                                           s.name,
-                                          style: const TextStyle(
-                                            color: AppColors.onBackground,
-                                            fontWeight: FontWeight.w700,
-                                          ),
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium
+                                              ?.copyWith(
+                                                color: AppColors.onBackground,
+                                                fontWeight: FontWeight.w600,
+                                              ),
                                         ),
                                         const SizedBox(height: 2),
                                         Text(
                                           'Team: $teams',
-                                          style: const TextStyle(
+                                          style: TextStyle(
                                             color: AppColors.textSecondary,
                                             fontSize: 12.5,
                                           ),
@@ -769,19 +1311,57 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       List<Map<String, dynamic>> rows = const [];
       String idField = 'news_id';
       for (final attempt in const [
-        // Preferred: supports optional `visible_until`.
-        ('news_id, title, description, created_at, author, category, source, visible_until', 'news_id'),
-        ('id, title, description, created_at, author, category, source, visible_until', 'id'),
-        ('news_id, title, body, created_at, author, category, source, visible_until', 'news_id'),
-        ('id, title, body, created_at, author, category, source, visible_until', 'id'),
+        // Best: all columns including links.
+        ('news_id, title, description, created_at, author, category, source, visible_until, image_urls, links', 'news_id'),
+        ('id, title, description, created_at, author, category, source, visible_until, image_urls, links', 'id'),
+        ('news_id, title, body, created_at, author, category, source, visible_until, image_urls, links', 'news_id'),
+        ('id, title, body, created_at, author, category, source, visible_until, image_urls, links', 'id'),
+        // Without visible_until but with links.
+        ('news_id, title, description, created_at, author, category, source, image_urls, links', 'news_id'),
+        ('id, title, description, created_at, author, category, source, image_urls, links', 'id'),
+        ('news_id, title, body, created_at, author, category, source, image_urls, links', 'news_id'),
+        ('id, title, body, created_at, author, category, source, image_urls, links', 'id'),
+        // Without image_urls but with links.
+        ('news_id, title, description, created_at, author, category, source, visible_until, links', 'news_id'),
+        ('id, title, description, created_at, author, category, source, visible_until, links', 'id'),
+        ('news_id, title, body, created_at, author, category, source, visible_until, links', 'news_id'),
+        ('id, title, body, created_at, author, category, source, visible_until, links', 'id'),
+        // With links only (no visible_until, no image_urls).
+        ('news_id, title, description, created_at, author, category, source, links', 'news_id'),
+        ('id, title, description, created_at, author, category, source, links', 'id'),
+        ('news_id, title, body, created_at, author, category, source, links', 'news_id'),
+        ('id, title, body, created_at, author, category, source, links', 'id'),
+        // Fallback: without image_urls/links.
+        (
+          'news_id, title, description, created_at, author, category, source, visible_until',
+          'news_id',
+        ),
+        (
+          'id, title, description, created_at, author, category, source, visible_until',
+          'id',
+        ),
+        (
+          'news_id, title, body, created_at, author, category, source, visible_until',
+          'news_id',
+        ),
+        (
+          'id, title, body, created_at, author, category, source, visible_until',
+          'id',
+        ),
         ('news_id, title, description, created_at, visible_until', 'news_id'),
         ('id, title, description, created_at, visible_until', 'id'),
         ('news_id, title, body, created_at, visible_until', 'news_id'),
         ('id, title, body, created_at, visible_until', 'id'),
-        ('news_id, title, description, created_at, author, category, source', 'news_id'),
+        (
+          'news_id, title, description, created_at, author, category, source',
+          'news_id',
+        ),
         ('id, title, description, created_at, author, category, source', 'id'),
         // Older schemas may use "body" instead of "description"
-        ('news_id, title, body, created_at, author, category, source', 'news_id'),
+        (
+          'news_id, title, body, created_at, author, category, source',
+          'news_id',
+        ),
         ('id, title, body, created_at, author, category, source', 'id'),
         // Minimal schema
         ('news_id, title, description, created_at', 'news_id'),
@@ -795,7 +1375,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           final res = await _client
               .from('home_news')
               .select(select)
-              .order('created_at', ascending: false);
+              .order('created_at', ascending: false)
+              .timeout(_loadTimeout);
           rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
           idField = candidateId;
           break;
@@ -825,17 +1406,110 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         final category = _categoryFromDb(r['category']);
         final visibleUntil = _parseVisibleUntil(r['visible_until']);
         if (!_isVisibleNow(visibleUntil)) continue;
-        list.add(NewsItem(
-          id: idStr,
-          title: title,
-          body: body,
-          date: date,
-          author: author.isNotEmpty ? author : 'Bestuur',
-          category: category,
-          visibleUntil: visibleUntil,
-        ));
+        final rawImages = r['image_urls'];
+        final imageUrls = <String>[];
+        if (rawImages is List) {
+          for (final e in rawImages) {
+            final s = (e is String) ? e : e?.toString();
+            if (s != null && s.trim().isNotEmpty) imageUrls.add(s.trim());
+          }
+        }
+        final rawLinks = r['links'];
+        final links = <NewsLink>[];
+        if (rawLinks is List) {
+          for (final e in rawLinks) {
+            if (e is! Map) continue;
+            final m = Map<String, dynamic>.from(e);
+            _addNewsLinkIfValid(
+              links,
+              url: (m['url'] ?? '').toString(),
+              label: (m['label'] ?? '').toString(),
+            );
+          }
+        } else if (rawLinks is Map) {
+          final m = Map<String, dynamic>.from(rawLinks);
+          _addNewsLinkIfValid(
+            links,
+            url: (m['url'] ?? '').toString(),
+            label: (m['label'] ?? '').toString(),
+          );
+        } else if (rawLinks is String) {
+          final s = rawLinks.trim();
+          if (s.isNotEmpty) {
+            if (s.startsWith('[') || s.startsWith('{')) {
+              try {
+                final decoded = jsonDecode(s);
+                if (decoded is List) {
+                  for (final e in decoded) {
+                    if (e is! Map) continue;
+                    final m = Map<String, dynamic>.from(e);
+                    _addNewsLinkIfValid(
+                      links,
+                      url: (m['url'] ?? '').toString(),
+                      label: (m['label'] ?? '').toString(),
+                    );
+                  }
+                } else if (decoded is Map) {
+                  final m = Map<String, dynamic>.from(decoded);
+                  _addNewsLinkIfValid(
+                    links,
+                    url: (m['url'] ?? '').toString(),
+                    label: (m['label'] ?? '').toString(),
+                  );
+                }
+              } catch (_) {
+                _addNewsLinkIfValid(links, url: s);
+              }
+            } else {
+              _addNewsLinkIfValid(links, url: s);
+            }
+          }
+        }
+        final rowLabel = (r['link_label'] ?? r['label'] ?? '').toString().trim();
+        final fallbackLabel = rowLabel.isNotEmpty ? rowLabel : null;
+        _addNewsLinkIfValid(
+          links,
+          url: (r['link_url'] ?? '').toString(),
+          label: fallbackLabel,
+        );
+        _addNewsLinkIfValid(
+          links,
+          url: (r['link'] ?? '').toString(),
+          label: fallbackLabel,
+        );
+        _addNewsLinkIfValid(
+          links,
+          url: (r['url'] ?? '').toString(),
+          label: fallbackLabel,
+        );
+        _addNewsLinkIfValid(
+          links,
+          url: (r['website'] ?? '').toString(),
+          label: fallbackLabel,
+        );
+        final sourceUrl = (r['source'] ?? '').toString().trim();
+        _addNewsLinkIfValid(links, url: sourceUrl, label: fallbackLabel);
+        if (links.isEmpty) {
+          for (final url in _extractUrlsFromText('$title\n$body')) {
+            links.add(NewsLink(url: url));
+          }
+        }
+        list.add(
+          NewsItem(
+            id: idStr,
+            title: title,
+            body: body,
+            date: date,
+            author: author.isNotEmpty ? author : 'Bestuur',
+            category: category,
+            visibleUntil: visibleUntil,
+            imageUrls: imageUrls,
+            links: links,
+          ),
+        );
       }
 
+      if (!mounted) return;
       setState(() {
         _newsIdField = idField;
         // If the DB table exists but has no rows yet, show an empty state (not mock data),
@@ -845,6 +1519,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         _loadingNews = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _newsItems = mockNews;
         _newsFromSupabase = false;
@@ -872,7 +1547,190 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     return '${two(d.hour)}:${two(d.minute)}';
   }
 
-  Future<void> _toggleAgendaRsvp(_AgendaItem item) async {
+  String _formatMatchdayLabel(DateTime dt) {
+    final d = dt.toLocal();
+    const weekdays = [
+      'Maandag',
+      'Dinsdag',
+      'Woensdag',
+      'Donderdag',
+      'Vrijdag',
+      'Zaterdag',
+      'Zondag',
+    ];
+    final dayName = weekdays[d.weekday - 1];
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '$dayName ${two(d.day)}-${two(d.month)}-${d.year}';
+  }
+
+  String _normalizeTeamCode(String raw) {
+    final normalized = raw.trim().toUpperCase().replaceAll(' ', '');
+    if (normalized.startsWith('XR')) return 'MR${normalized.substring(2)}';
+    return normalized;
+  }
+
+  String? _extractCodeFromSummarySide(String side) {
+    final m = RegExp(
+      r'\b(HS|DS|JA|JB|JC|JD|MA|MB|MC|MD|MR|XR)\s*(\d+)\b',
+      caseSensitive: false,
+    ).firstMatch(side);
+    if (m == null) return null;
+    final prefix = (m.group(1) ?? '').toUpperCase();
+    final number = m.group(2) ?? '';
+    if (prefix.isEmpty || number.isEmpty) return null;
+    return _normalizeTeamCode('$prefix$number');
+  }
+
+  bool _isInternalMinervaMatch(String summary) {
+    final parts = summary.split('-');
+    if (parts.length < 2) return false;
+    final left = parts.first.toLowerCase();
+    final right = parts.sublist(1).join('-').toLowerCase();
+    return left.contains('minerva') && right.contains('minerva');
+  }
+
+  /// Parse summary "Thuis - Uit" → (Minerva teamCode, isHome) of null als geen Minerva.
+  ({String teamCode, bool isHome})? _parseMinervaSideFromSummary(String summary) {
+    final parts = summary.split(RegExp(r'\s+-\s+'));
+    if (parts.length < 2) return null;
+    final first = parts[0].trim();
+    final second = parts.sublist(1).join(' - ').trim();
+    if (first.toLowerCase().contains('minerva')) {
+      final code = _extractCodeFromSummarySide(first);
+      if (code != null && code.isNotEmpty) return (teamCode: _normalizeTeamCode(code), isHome: true);
+    }
+    if (second.toLowerCase().contains('minerva')) {
+      final code = _extractCodeFromSummarySide(second);
+      if (code != null && code.isNotEmpty) return (teamCode: _normalizeTeamCode(code), isHome: false);
+    }
+    return null;
+  }
+
+  String _matchTitle(_HomeUpcomingMatch m) {
+    final summary = m.summary.trim();
+    if (summary.isNotEmpty) return NevoboApi.displayTeamName(summary);
+    final code = m.teamCode.trim();
+    if (code.isNotEmpty) return NevoboApi.displayTeamCode(code);
+    return 'Wedstrijd';
+  }
+
+  bool _homeSegmentMatchesTeamCode(String segment, String teamCode) {
+    final s = segment.trim();
+    if (s.isEmpty || !s.toLowerCase().contains('minerva')) return false;
+    final extracted = NevoboApi.extractCodeFromTeamName(s);
+    if (extracted == null || extracted.isEmpty) return false;
+    final a = extracted.trim().toUpperCase();
+    final b = teamCode.trim().toUpperCase();
+    if (a.startsWith('XR') && b.startsWith('MR') && a.substring(2) == b.substring(2)) return true;
+    if (b.startsWith('XR') && a.startsWith('MR') && b.substring(2) == a.substring(2)) return true;
+    return a == b;
+  }
+
+  Widget _buildHomeMatchTitleText(_HomeUpcomingMatch m, {TextStyle? style}) {
+    final summary = m.summary.trim();
+    final base = style ??
+        const TextStyle(
+          color: AppColors.onBackground,
+          fontWeight: FontWeight.w800,
+        );
+    if (summary.isEmpty) return Text(_matchTitle(m), style: base);
+
+    const sep = ' - ';
+    final parts = summary.split(sep);
+    if (parts.length < 2) return Text(NevoboApi.displayTeamName(summary), style: base);
+    final minervaSegmentCount = parts
+        .where((p) => p.toLowerCase().contains('minerva'))
+        .length;
+    final isInternalMinervaMatch = minervaSegmentCount >= 2;
+
+    final spans = <InlineSpan>[];
+    var anyExactMatch = false;
+    for (var i = 0; i < parts.length; i++) {
+      if (i > 0) spans.add(TextSpan(text: sep, style: base));
+      final part = NevoboApi.displayTeamName(parts[i]);
+      final highlight = _homeSegmentMatchesTeamCode(parts[i], m.teamCode) ||
+          (isInternalMinervaMatch && parts[i].toLowerCase().contains('minerva'));
+      if (highlight) anyExactMatch = true;
+      spans.add(
+        TextSpan(
+          text: part,
+          style: highlight
+              ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)
+              : base,
+        ),
+      );
+    }
+    if (!anyExactMatch) {
+      spans.clear();
+      var highlighted = false;
+      for (var i = 0; i < parts.length; i++) {
+        if (i > 0) spans.add(TextSpan(text: sep, style: base));
+        final raw = NevoboApi.displayTeamName(parts[i]);
+        final isMinervaSegment =
+            !highlighted && parts[i].toLowerCase().contains('minerva');
+        if (isMinervaSegment) highlighted = true;
+        spans.add(
+          TextSpan(
+            text: raw,
+            style: isMinervaSegment
+                ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)
+                : base,
+          ),
+        );
+      }
+    }
+    return RichText(
+      text: TextSpan(style: base, children: spans),
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+    );
+  }
+
+  /// Optionen voor "Aanmelden voor". Alleen ouders krijgen multi-select (zelf + kinderen); anderen alleen "Zelf".
+  List<({String profileId, String displayName})> _agendaRsvpOptions(AppUserContext ctx) {
+    final options = <({String profileId, String displayName})>[
+      (profileId: ctx.loggedInProfileId, displayName: 'Zelf'),
+    ];
+    if (ctx.linkedChildProfiles.isNotEmpty) {
+      options.addAll(
+        ctx.linkedChildProfiles.map(
+          (c) => (profileId: c.profileId, displayName: c.displayName.trim().isEmpty ? 'Gekoppeld kind' : c.displayName),
+        ),
+      );
+    }
+    return options;
+  }
+
+  /// Namen van aangemelde personen voor dit agendapunt (voor knoptekst).
+  String? _rsvpNamesLabel(int? agendaId) {
+    if (agendaId == null) return null;
+    final ids = _rsvpProfileIdsByAgendaId[agendaId];
+    if (ids == null || ids.isEmpty) return null;
+    final ctx = AppUserContext.of(context);
+    final names = <String>[];
+    for (final pid in ids) {
+      if (pid == ctx.loggedInProfileId) {
+        names.add('Zelf');
+      } else {
+        final child = ctx.linkedChildProfiles.where((c) => c.profileId == pid).firstOrNull;
+        names.add(child?.displayName.trim().isEmpty == true ? 'Gekoppeld kind' : (child?.displayName ?? '?'));
+      }
+    }
+    names.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return names.join(', ');
+  }
+
+  Future<void> _showAgendaRsvpDialog(_AgendaItem item) async {
+    final ctx = AppUserContext.of(context);
+    if (ctx.profileId.trim().isEmpty) {
+      if (!mounted) return;
+      showTopMessage(
+        context,
+        'Log in met je eigen account om je aan te melden.',
+        isError: true,
+      );
+      return;
+    }
     final user = _client.auth.currentUser;
     if (user == null) {
       if (!mounted) return;
@@ -880,31 +1738,120 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       return;
     }
     if (item.id == null) return;
+    final options = _agendaRsvpOptions(ctx);
+    if (options.isEmpty) return;
 
-    final isSignedUp = _myRsvpAgendaIds.contains(item.id);
+    final current = _rsvpProfileIdsByAgendaId[item.id] ?? {};
+    final selected = Set<String>.from(current);
+
+    final result = await showDialog<Set<String>>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Aanmelden voor'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item.title,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    ...options.map((opt) => CheckboxListTile(
+                          value: selected.contains(opt.profileId),
+                          onChanged: (v) {
+                            setDialogState(() {
+                              if (v == true) {
+                                selected.add(opt.profileId);
+                              } else {
+                                selected.remove(opt.profileId);
+                              }
+                            });
+                          },
+                          title: Text(opt.displayName),
+                          controlAffinity: ListTileControlAffinity.leading,
+                          contentPadding: EdgeInsets.zero,
+                        )),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Annuleren'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(Set<String>.from(selected)),
+                  child: const Text('Opslaan'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null || !mounted) return;
+
+    final toAdd = result.difference(current);
+    final toRemove = current.difference(result);
+
+    if (toRemove.isNotEmpty) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Afmelden bevestigen'),
+          content: const Text(
+            'Weet je zeker dat je je wilt afmelden voor deze activiteit?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Annuleren'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: AppColors.background,
+              ),
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Afmelden'),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true || !mounted) return;
+    }
+
     try {
-      if (isSignedUp) {
+      for (final pid in toRemove) {
         await _client
             .from('home_agenda_rsvps')
             .delete()
             .eq('agenda_id', item.id!)
-            .eq('profile_id', user.id);
-      } else {
+            .eq('profile_id', pid);
+      }
+      for (final pid in toAdd) {
         await _client.from('home_agenda_rsvps').insert({
           'agenda_id': item.id,
-          'profile_id': user.id,
+          'profile_id': pid,
         });
       }
 
+      if (!mounted) return;
       setState(() {
-        final next = {..._myRsvpAgendaIds};
-        if (isSignedUp) {
-          next.remove(item.id);
-        } else {
-          next.add(item.id!);
-        }
-        _myRsvpAgendaIds = next;
+        final nextMap = Map<int, Set<String>>.from(_rsvpProfileIdsByAgendaId);
+        nextMap[item.id!] = Set<String>.from(result);
+        _rsvpProfileIdsByAgendaId = nextMap;
       });
+      showTopMessage(context, 'Aanmelding bijgewerkt.');
     } catch (e) {
       if (!mounted) return;
       showTopMessage(context, 'Aanmelding mislukt: $e', isError: true);
@@ -912,7 +1859,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   }
 
   void _showAgendaDetail(_AgendaItem item) {
-    final hasAny = item.description != null ||
+    final hasAny =
+        item.description != null ||
         item.dateLabel != null ||
         item.endDateLabel != null ||
         item.timeLabel != null ||
@@ -930,17 +1878,25 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               if (item.description != null && item.description!.isNotEmpty) ...[
                 Text(
                   item.description!,
-                  style: const TextStyle(color: AppColors.onBackground, height: 1.4),
+                  style: const TextStyle(
+                    color: AppColors.onBackground,
+                    height: 1.4,
+                  ),
                 ),
                 const SizedBox(height: 16),
               ],
               if (item.dateLabel != null) ...[
                 Row(
                   children: [
-                    Icon(Icons.calendar_today, size: 18, color: AppColors.textSecondary),
+                    Icon(
+                      Icons.calendar_today,
+                      size: 18,
+                      color: AppColors.textSecondary,
+                    ),
                     const SizedBox(width: 8),
                     Text(
-                      item.endDateLabel != null && item.endDateLabel != item.dateLabel
+                      item.endDateLabel != null &&
+                              item.endDateLabel != item.dateLabel
                           ? '${item.dateLabel!} t/m ${item.endDateLabel!}'
                           : item.dateLabel!,
                       style: const TextStyle(color: AppColors.textSecondary),
@@ -952,10 +1908,15 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               if (item.timeLabel != null) ...[
                 Row(
                   children: [
-                    Icon(Icons.schedule, size: 18, color: AppColors.textSecondary),
+                    Icon(
+                      Icons.schedule,
+                      size: 18,
+                      color: AppColors.textSecondary,
+                    ),
                     const SizedBox(width: 8),
                     Text(
-                      item.endTimeLabel != null && item.endTimeLabel != item.timeLabel
+                      item.endTimeLabel != null &&
+                              item.endTimeLabel != item.timeLabel
                           ? '${item.timeLabel!} – ${item.endTimeLabel!}'
                           : item.timeLabel!,
                       style: const TextStyle(color: AppColors.textSecondary),
@@ -979,7 +1940,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   ],
                 ),
               if (!hasAny)
-                const Text('Geen extra informatie.', style: TextStyle(color: AppColors.textSecondary)),
+                const Text(
+                  'Geen extra informatie.',
+                  style: TextStyle(color: AppColors.textSecondary),
+                ),
             ],
           ),
         ),
@@ -999,9 +1963,81 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       builder: (context) => AlertDialog(
         title: Text(item.title),
         content: SingleChildScrollView(
-          child: Text(
-            item.body,
-            style: const TextStyle(color: AppColors.onBackground, height: 1.4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (item.body.trim().isNotEmpty)
+                Text(
+                  item.body,
+                  style: const TextStyle(
+                    color: AppColors.onBackground,
+                    height: 1.4,
+                  ),
+                ),
+              if (item.imageUrls.isNotEmpty) ...[
+                if (item.body.trim().isNotEmpty) const SizedBox(height: 16),
+                ...item.imageUrls.map(
+                  (url) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: _buildNewsImage(url, fit: BoxFit.contain),
+                    ),
+                  ),
+                ),
+              ],
+              if (item.links.isNotEmpty) ...[
+                if (item.body.trim().isNotEmpty || item.imageUrls.isNotEmpty)
+                  const SizedBox(height: 16),
+                const Text(
+                  'Links',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ...item.links.map(
+                  (link) => Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: InkWell(
+                      onTap: () => _openUrl(link.url),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 10,
+                          horizontal: 12,
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.link,
+                              size: 20,
+                              color: AppColors.primary,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                link.displayLabel,
+                                style: TextStyle(
+                                  color: AppColors.primary,
+                                  decoration: TextDecoration.underline,
+                                  decorationColor: AppColors.primary,
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
         actions: [
@@ -1010,6 +2046,78 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             child: const Text('Sluiten'),
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _openUrl(String url) async {
+    var candidate = url.trim();
+    if (candidate.toLowerCase().startsWith('www.')) {
+      candidate = 'https://$candidate';
+    }
+    final uri = Uri.tryParse(candidate);
+    if (uri == null) return;
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  /// Bouwt een Image-widget voor een URL of data-URL (base64); alleen weergave in de app.
+  Widget _buildNewsImage(
+    String urlOrDataUrl, {
+    double? height,
+    BoxFit fit = BoxFit.contain,
+  }) {
+    final isDataUrl = urlOrDataUrl.startsWith('data:');
+    if (isDataUrl) {
+      try {
+        final base64Data =
+            urlOrDataUrl.contains(',') ? urlOrDataUrl.split(',').last : '';
+        final bytes = base64Decode(base64Data);
+        return Image.memory(
+          bytes,
+          fit: fit,
+          height: height,
+          errorBuilder: (_, _, _) => _buildNewsImagePlaceholder(height: height),
+        );
+      } catch (_) {
+        return _buildNewsImagePlaceholder(height: height);
+      }
+    }
+    return Image.network(
+      urlOrDataUrl,
+      fit: fit,
+      height: height,
+      loadingBuilder: (context, child, progress) {
+        if (progress == null) return child;
+        return SizedBox(
+          height: height ?? 120,
+          child: Center(
+            child: CircularProgressIndicator(
+              value: progress.expectedTotalBytes != null
+                  ? progress.cumulativeBytesLoaded /
+                      (progress.expectedTotalBytes ?? 1)
+                  : null,
+            ),
+          ),
+        );
+      },
+      errorBuilder: (_, _, _) => _buildNewsImagePlaceholder(height: height),
+    );
+  }
+
+  Widget _buildNewsImagePlaceholder({double? height}) {
+    return Container(
+      height: height ?? 100,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: AppColors.textSecondary.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Icon(
+        Icons.broken_image_outlined,
+        size: 40,
+        color: AppColors.textSecondary,
       ),
     );
   }
@@ -1026,7 +2134,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
             children: [
               Text(
                 item.subtitle,
-                style: const TextStyle(color: AppColors.onBackground, height: 1.4),
+                style: const TextStyle(
+                  color: AppColors.onBackground,
+                  height: 1.4,
+                ),
               ),
               if (item.visibleUntil != null) ...[
                 const SizedBox(height: 12),
@@ -1048,6 +2159,295 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     );
   }
 
+  List<Widget> _buildImagePickerSection({
+    required List<String> imageUrls,
+    required bool uploadingImage,
+    required String uploadingStatus,
+    required void Function(void Function()) setLocalState,
+    required void Function(List<String>) onImagesChanged,
+    required void Function(bool) onUploadingChanged,
+    required void Function(String) onStatusChanged,
+  }) {
+    void safeLocalState(void Function() fn) {
+      try {
+        setLocalState(fn);
+      } catch (_) {
+        // Dialog can already be closed when async callbacks finish.
+      }
+    }
+
+    return [
+      if (imageUrls.isNotEmpty)
+        ...imageUrls.asMap().entries.map((entry) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Builder(
+                builder: (context) {
+                  final screenWidth = MediaQuery.of(context).size.width;
+                  final previewWidth =
+                      (screenWidth - 80).clamp(220.0, 500.0);
+                  return SizedBox(
+                    width: previewWidth,
+                    height: 140,
+                    child: Stack(
+                      alignment: Alignment.topRight,
+                      children: [
+                        Positioned.fill(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.network(
+                              entry.value,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, _, _) => Container(
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: AppColors.textSecondary
+                                      .withValues(alpha: 0.2),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Icon(
+                                  Icons.broken_image_outlined,
+                                  size: 40,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.all(4),
+                          child: IconButton(
+                            icon: const Icon(
+                              Icons.close,
+                              color: Colors.white,
+                              size: 22,
+                            ),
+                            style: IconButton.styleFrom(
+                              backgroundColor: Colors.black54,
+                              padding: const EdgeInsets.all(4),
+                              minimumSize: const Size(28, 28),
+                            ),
+                            onPressed: () {
+                              safeLocalState(() {
+                                final updated = [...imageUrls]
+                                  ..removeAt(entry.key);
+                                onImagesChanged(updated);
+                              });
+                            },
+                            tooltip: 'Verwijderen',
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            )),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: uploadingImage
+            ? Padding(
+                padding: const EdgeInsets.all(8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      uploadingStatus.isEmpty ? 'Bezig...' : uploadingStatus,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            : TextButton.icon(
+                onPressed: () async {
+                  if (uploadingImage) return;
+                  try {
+                    final file = await _pickNewsImageFile();
+                    if (file == null) return;
+                    safeLocalState(() {
+                      onUploadingChanged(true);
+                      onStatusChanged('Foto voorbereiden...');
+                    });
+                    await WidgetsBinding.instance.endOfFrame;
+                    final url = await _uploadNewsImage(
+                      file,
+                      onStatus: (status) {
+                        safeLocalState(() => onStatusChanged(status));
+                      },
+                    );
+                    if (url != null) {
+                      safeLocalState(() {
+                        onImagesChanged([...imageUrls, url]);
+                      });
+                    }
+                  } catch (e, st) {
+                    debugPrint('[news-image] onPressed error: $e\n$st');
+                    if (mounted) {
+                      showTopMessage(
+                        context,
+                        'Afbeelding kiezen mislukt: $e',
+                        isError: true,
+                      );
+                    }
+                  } finally {
+                    safeLocalState(() {
+                      onUploadingChanged(false);
+                      onStatusChanged('');
+                    });
+                  }
+                },
+                icon: const Icon(Icons.add_photo_alternate_outlined, size: 18),
+                label: const Text('Afbeelding toevoegen'),
+              ),
+      ),
+    ];
+  }
+
+  Future<XFile?> _pickNewsImageFile() async {
+    try {
+      FocusManager.instance.primaryFocus?.unfocus();
+      final picker = ImagePicker();
+      final file = await picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1600,
+        imageQuality: 85,
+        requestFullMetadata: false,
+      );
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+      }
+      return file;
+    } catch (e) {
+      if (mounted) {
+        showTopMessage(
+          context,
+          'Afbeelding kiezen mislukt: $e',
+          isError: true,
+        );
+      }
+      return null;
+    }
+  }
+
+  Future<String?> _uploadNewsImage(
+    XFile file, {
+    void Function(String status)? onStatus,
+  }) async {
+    void report(String s) {
+      debugPrint('[news-image] $s');
+      onStatus?.call(s);
+    }
+
+    report('Controleren inlog...');
+    final session = _client.auth.currentSession;
+    if (session == null) {
+      if (mounted) {
+        showTopMessage(
+          context,
+          'Niet ingelogd: foto\'s uploaden kan alleen als je bent ingelogd.',
+          isError: true,
+        );
+      }
+      return null;
+    }
+
+    final rawExt = file.name.contains('.')
+        ? file.name.split('.').last.toLowerCase()
+        : '';
+    // image_picker op iOS/Android levert na imageQuality-compressie altijd JPEG.
+    // Forceer daarom jpeg wanneer de extensie onbekend of heic/heif is, want de
+    // storage-bucket staat alleen jpeg/png/webp/gif toe.
+    final normalizedExt = (rawExt.isEmpty || rawExt == 'heic' || rawExt == 'heif')
+        ? 'jpg'
+        : rawExt;
+    final mimeByExt = <String, String>{
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'webp': 'image/webp',
+      'gif': 'image/gif',
+    };
+    final contentType = mimeByExt[normalizedExt] ?? 'image/jpeg';
+    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final fileName = '$stamp.$normalizedExt';
+    final userId = session.user.id;
+    final path = '$userId/news/$fileName';
+    debugPrint(
+      '[news-image] prepared path=$path, contentType=$contentType, rawExt=$rawExt',
+    );
+    try {
+      report('Foto inlezen...');
+      final bytes = await file.readAsBytes().timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => throw TimeoutException(
+          'Foto inlezen duurde te lang.',
+        ),
+      );
+      debugPrint('[news-image] bytes read: ${bytes.lengthInBytes}');
+      if (bytes.lengthInBytes > 5 * 1024 * 1024) {
+        if (mounted) {
+          showTopMessage(
+            context,
+            'Foto is te groot (${(bytes.lengthInBytes / (1024 * 1024)).toStringAsFixed(1)} MB, max 5 MB). Kies een kleinere foto.',
+            isError: true,
+          );
+        }
+        return null;
+      }
+      report('Uploaden naar server (0s)...');
+      final uploadStart = DateTime.now();
+      final tickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        final elapsed = DateTime.now().difference(uploadStart).inSeconds;
+        report('Uploaden naar server (${elapsed}s)...');
+      });
+      try {
+        await _client.storage.from('news-images').uploadBinary(
+          path,
+          bytes,
+          fileOptions: FileOptions(contentType: contentType),
+        ).timeout(
+          const Duration(seconds: 20),
+          onTimeout: () => throw TimeoutException(
+            'Upload duurde te lang (20s). Controleer de verbinding, RLS-policies en of de bucket "news-images" bestaat.',
+          ),
+        );
+      } finally {
+        tickTimer.cancel();
+      }
+      debugPrint('[news-image] upload complete');
+      report('Link ophalen...');
+      final url = _client.storage.from('news-images').getPublicUrl(path);
+      debugPrint('[news-image] public url: $url');
+      return url;
+    } on StorageException catch (e, st) {
+      debugPrint('[news-image] StorageException: ${e.message}\n$st');
+      if (!mounted) return null;
+      showTopMessage(
+        context,
+        'Upload geweigerd door server: ${e.message}',
+        isError: true,
+      );
+      return null;
+    } on TimeoutException catch (e, st) {
+      debugPrint('[news-image] TimeoutException: ${e.message}\n$st');
+      if (!mounted) return null;
+      showTopMessage(context, e.message ?? 'Upload timeout', isError: true);
+      return null;
+    } catch (e, st) {
+      debugPrint('[news-image] error: $e\n$st');
+      if (!mounted) return null;
+      showTopMessage(context, 'Afbeelding uploaden mislukt: $e', isError: true);
+      return null;
+    }
+  }
+
   Future<void> _openAddNewsDialog() async {
     final authorName = (() {
       try {
@@ -1061,7 +2461,13 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 
     final titleController = TextEditingController();
     final descriptionController = TextEditingController();
+    final linkUrlController = TextEditingController();
+    final linkLabelController = TextEditingController();
     DateTime? visibleUntil;
+    List<NewsLink> links = [];
+    List<String> imageUrls = [];
+    bool uploadingImage = false;
+    String uploadingStatus = '';
 
     final ok = await showDialog<bool>(
       context: context,
@@ -1090,6 +2496,105 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   alignLabelWithHint: true,
                 ),
               ),
+              const SizedBox(height: 16),
+              const Text(
+                'Afbeeldingen',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.onBackground,
+                ),
+              ),
+              const SizedBox(height: 6),
+              ..._buildImagePickerSection(
+                imageUrls: imageUrls,
+                uploadingImage: uploadingImage,
+                uploadingStatus: uploadingStatus,
+                setLocalState: setLocalState,
+                onImagesChanged: (urls) => imageUrls = urls,
+                onUploadingChanged: (v) => uploadingImage = v,
+                onStatusChanged: (s) => uploadingStatus = s,
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Links',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.onBackground,
+                ),
+              ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: linkUrlController,
+                decoration: const InputDecoration(
+                  labelText: 'Link-URL',
+                  hintText: 'https://...',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: linkLabelController,
+                decoration: const InputDecoration(
+                  labelText: 'Label (optioneel)',
+                  hintText: 'bijv. Meer info',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () {
+                    final url = linkUrlController.text.trim();
+                    if (url.isEmpty) return;
+                    setLocalState(() {
+                      links = [
+                        ...links,
+                        NewsLink(
+                          url: url,
+                          label: linkLabelController.text.trim().isEmpty
+                              ? null
+                              : linkLabelController.text.trim(),
+                        ),
+                      ];
+                      linkUrlController.clear();
+                      linkLabelController.clear();
+                    });
+                  },
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('Link toevoegen'),
+                ),
+              ),
+              ...links.map((link) => Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            link.displayLabel,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textSecondary,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 20),
+                          onPressed: () {
+                            setLocalState(() {
+                              links = links
+                                  .where((e) =>
+                                      e.url != link.url || e.label != link.label)
+                                  .toList();
+                            });
+                          },
+                          tooltip: 'Verwijderen',
+                        ),
+                      ],
+                    ),
+                  )),
               const SizedBox(height: 14),
               Row(
                 children: [
@@ -1105,7 +2610,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                       setLocalState(() => visibleUntil = next);
                     },
                     child: Text(
-                      visibleUntil == null ? 'Geen' : _formatDate(visibleUntil!),
+                      visibleUntil == null
+                          ? 'Geen'
+                          : _formatDate(visibleUntil!),
                     ),
                   ),
                   if (visibleUntil != null)
@@ -1125,10 +2632,12 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               child: const Text('Annuleren'),
             ),
             ElevatedButton(
-              onPressed: () {
-                if (titleController.text.trim().isEmpty) return;
-                Navigator.of(context).pop(true);
-              },
+              onPressed: uploadingImage
+                  ? null
+                  : () {
+                      if (titleController.text.trim().isEmpty) return;
+                      Navigator.of(context).pop(true);
+                    },
               child: const Text('Opslaan'),
             ),
           ],
@@ -1139,6 +2648,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       titleController.dispose();
       descriptionController.dispose();
+      linkUrlController.dispose();
+      linkLabelController.dispose();
     });
 
     if (ok != true) return;
@@ -1147,32 +2658,57 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (title.isEmpty) return;
 
     try {
+      final firstLinkUrl = links.isNotEmpty ? links.first.url.trim() : '';
+      final sourceValue = firstLinkUrl.isNotEmpty ? firstLinkUrl : 'app';
+      final descriptionWithFallbackLink = links.isEmpty
+          ? descriptionController.text.trim()
+          : '${descriptionController.text.trim()}\n\nLink: $firstLinkUrl';
       final payload = {
         'title': title,
         'description': descriptionController.text.trim(),
         'author': authorName,
         'category': 'bestuur',
         'visible_until': visibleUntil?.toUtc().toIso8601String(),
+        'image_urls': imageUrls,
+        'links': links
+            .map((e) => {'url': e.url, 'label': e.label ?? ''})
+            .toList(),
       };
-      // Some DB schemas require non-null `source` / `author` / `category` columns.
+      bool usedFallbackWithoutMedia = false;
       try {
-        await _client.from('home_news').insert({...payload, 'source': 'app'});
+        await _client.from('home_news').insert({...payload, 'source': sourceValue});
       } on PostgrestException catch (e) {
-        // Missing column -> retry without optional `visible_until`, then fallback minimal.
         if (e.code == 'PGRST204' ||
             (e.message.contains("Could not find the '") &&
                 e.message.contains("column"))) {
+          final hadMedia = links.isNotEmpty || imageUrls.isNotEmpty;
+          final fallbackKeepLinks = {...payload, 'source': sourceValue}
+            ..remove('visible_until');
+          final fallbackWithoutMedia = {...fallbackKeepLinks}
+            ..remove('links')
+            ..remove('image_urls');
           try {
-            final retry = {...payload, 'source': 'app'}..remove('visible_until');
-            await _client.from('home_news').insert(retry);
+            await _client.from('home_news').insert(fallbackKeepLinks);
           } on PostgrestException catch (e2) {
             if (e2.code == 'PGRST204' ||
                 (e2.message.contains("Could not find the '") &&
                     e2.message.contains("column"))) {
-              await _client.from('home_news').insert({
-                'title': title,
-                'description': descriptionController.text.trim(),
-              });
+              try {
+                await _client.from('home_news').insert(fallbackWithoutMedia);
+                if (hadMedia) usedFallbackWithoutMedia = true;
+              } on PostgrestException catch (e3) {
+                if (e3.code == 'PGRST204' ||
+                    (e3.message.contains("Could not find the '") &&
+                        e3.message.contains("column"))) {
+                  await _client.from('home_news').insert({
+                    'title': title,
+                    'description': descriptionWithFallbackLink,
+                  });
+                  if (hadMedia) usedFallbackWithoutMedia = true;
+                } else {
+                  rethrow;
+                }
+              }
             } else {
               rethrow;
             }
@@ -1182,8 +2718,21 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
         }
       }
       await _loadNews();
+      await NotificationService.sendBroadcastUpdate(
+        title: 'Nieuw nieuwsbericht',
+        body: title,
+      );
       if (!mounted) return;
-      showTopMessage(context, 'Nieuwsbericht toegevoegd.');
+      if (usedFallbackWithoutMedia) {
+        showTopMessage(
+          context,
+          'Nieuwsbericht opgeslagen. Afbeeldingen/linkjes zijn niet opgeslagen: '
+          'voer in Supabase → SQL Editor het script home_news_photos_links.sql uit.',
+          isError: true,
+        );
+      } else {
+        showTopMessage(context, 'Nieuwsbericht toegevoegd.');
+      }
     } catch (e) {
       if (!mounted) return;
       showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
@@ -1206,7 +2755,13 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 
     final titleController = TextEditingController(text: existing.title);
     final descriptionController = TextEditingController(text: existing.body);
+    final linkUrlController = TextEditingController();
+    final linkLabelController = TextEditingController();
     DateTime? visibleUntil = existing.visibleUntil;
+    List<NewsLink> links = List<NewsLink>.from(existing.links);
+    List<String> imageUrls = List<String>.from(existing.imageUrls);
+    bool uploadingImage = false;
+    String uploadingStatus = '';
 
     final ok = await showDialog<bool>(
       context: context,
@@ -1235,6 +2790,105 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                   alignLabelWithHint: true,
                 ),
               ),
+              const SizedBox(height: 16),
+              const Text(
+                'Afbeeldingen',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.onBackground,
+                ),
+              ),
+              const SizedBox(height: 6),
+              ..._buildImagePickerSection(
+                imageUrls: imageUrls,
+                uploadingImage: uploadingImage,
+                uploadingStatus: uploadingStatus,
+                setLocalState: setLocalState,
+                onImagesChanged: (urls) => imageUrls = urls,
+                onUploadingChanged: (v) => uploadingImage = v,
+                onStatusChanged: (s) => uploadingStatus = s,
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Links',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.onBackground,
+                ),
+              ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: linkUrlController,
+                decoration: const InputDecoration(
+                  labelText: 'Link-URL',
+                  hintText: 'https://...',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: linkLabelController,
+                decoration: const InputDecoration(
+                  labelText: 'Label (optioneel)',
+                  hintText: 'bijv. Meer info',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () {
+                    final url = linkUrlController.text.trim();
+                    if (url.isEmpty) return;
+                    setLocalState(() {
+                      links = [
+                        ...links,
+                        NewsLink(
+                          url: url,
+                          label: linkLabelController.text.trim().isEmpty
+                              ? null
+                              : linkLabelController.text.trim(),
+                        ),
+                      ];
+                      linkUrlController.clear();
+                      linkLabelController.clear();
+                    });
+                  },
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('Link toevoegen'),
+                ),
+              ),
+              ...links.map((link) => Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            link.displayLabel,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textSecondary,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 20),
+                          onPressed: () {
+                            setLocalState(() {
+                              links = links
+                                  .where((e) =>
+                                      e.url != link.url || e.label != link.label)
+                                  .toList();
+                            });
+                          },
+                          tooltip: 'Verwijderen',
+                        ),
+                      ],
+                    ),
+                  )),
               const SizedBox(height: 14),
               Row(
                 children: [
@@ -1250,7 +2904,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                       setLocalState(() => visibleUntil = next);
                     },
                     child: Text(
-                      visibleUntil == null ? 'Geen' : _formatDate(visibleUntil!),
+                      visibleUntil == null
+                          ? 'Geen'
+                          : _formatDate(visibleUntil!),
                     ),
                   ),
                   if (visibleUntil != null)
@@ -1270,10 +2926,12 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
               child: const Text('Annuleren'),
             ),
             ElevatedButton(
-              onPressed: () {
-                if (titleController.text.trim().isEmpty) return;
-                Navigator.of(context).pop(true);
-              },
+              onPressed: uploadingImage
+                  ? null
+                  : () {
+                      if (titleController.text.trim().isEmpty) return;
+                      Navigator.of(context).pop(true);
+                    },
               child: const Text('Opslaan'),
             ),
           ],
@@ -1284,6 +2942,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       titleController.dispose();
       descriptionController.dispose();
+      linkUrlController.dispose();
+      linkLabelController.dispose();
     });
 
     if (ok != true) return;
@@ -1292,35 +2952,66 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (title.isEmpty) return;
 
     try {
+      final firstLinkUrl = links.isNotEmpty ? links.first.url.trim() : '';
+      final sourceValue = firstLinkUrl.isNotEmpty ? firstLinkUrl : 'app';
+      final descriptionWithFallbackLink = links.isEmpty
+          ? descriptionController.text.trim()
+          : '${descriptionController.text.trim()}\n\nLink: $firstLinkUrl';
       final payload = {
         'title': title,
         'description': descriptionController.text.trim(),
         'author': authorName,
         'category': existing.category.label.toLowerCase(),
         'visible_until': visibleUntil?.toUtc().toIso8601String(),
+        'image_urls': imageUrls,
+        'links': links
+            .map((e) => {'url': e.url, 'label': e.label ?? ''})
+            .toList(),
       };
-      // Some DB schemas require non-null `source` / `author` / `category` columns.
+      bool usedFallbackWithoutMedia = false;
       try {
         await _client
             .from('home_news')
-            .update({...payload, 'source': 'app'})
+            .update({...payload, 'source': sourceValue})
             .eq(_newsIdField, idValue);
       } on PostgrestException catch (e) {
-        // Missing column -> retry without optional `visible_until`, then fallback minimal.
         if (e.code == 'PGRST204' ||
             (e.message.contains("Could not find the '") &&
                 e.message.contains("column"))) {
+          final hadMedia = links.isNotEmpty || imageUrls.isNotEmpty;
+          final fallbackKeepLinks = {...payload, 'source': sourceValue}
+            ..remove('visible_until');
+          final fallbackWithoutMedia = {...fallbackKeepLinks}
+            ..remove('links')
+            ..remove('image_urls');
           try {
-            final retry = {...payload, 'source': 'app'}..remove('visible_until');
-            await _client.from('home_news').update(retry).eq(_newsIdField, idValue);
+            await _client
+                .from('home_news')
+                .update(fallbackKeepLinks)
+                .eq(_newsIdField, idValue);
           } on PostgrestException catch (e2) {
             if (e2.code == 'PGRST204' ||
                 (e2.message.contains("Could not find the '") &&
                     e2.message.contains("column"))) {
-              await _client.from('home_news').update({
-                'title': title,
-                'description': descriptionController.text.trim(),
-              }).eq(_newsIdField, idValue);
+              try {
+                await _client
+                    .from('home_news')
+                    .update(fallbackWithoutMedia)
+                    .eq(_newsIdField, idValue);
+                if (hadMedia) usedFallbackWithoutMedia = true;
+              } on PostgrestException catch (e3) {
+                if (e3.code == 'PGRST204' ||
+                    (e3.message.contains("Could not find the '") &&
+                        e3.message.contains("column"))) {
+                  await _client.from('home_news').update({
+                    'title': title,
+                    'description': descriptionWithFallbackLink,
+                  }).eq(_newsIdField, idValue);
+                  if (hadMedia) usedFallbackWithoutMedia = true;
+                } else {
+                  rethrow;
+                }
+              }
             } else {
               rethrow;
             }
@@ -1331,7 +3022,16 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       }
       await _loadNews();
       if (!mounted) return;
-      showTopMessage(context, 'Nieuwsbericht aangepast.');
+      if (usedFallbackWithoutMedia) {
+        showTopMessage(
+          context,
+          'Nieuwsbericht opgeslagen. Afbeeldingen/linkjes zijn niet opgeslagen: '
+          'voer in Supabase → SQL Editor het script home_news_photos_links.sql uit.',
+          isError: true,
+        );
+      } else {
+        showTopMessage(context, 'Nieuwsbericht aangepast.');
+      }
     } catch (e) {
       if (!mounted) return;
       showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
@@ -1346,9 +3046,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Nieuwsbericht verwijderen'),
-        content: Text(
-          'Weet je zeker dat je "${item.title}" wilt verwijderen?',
-        ),
+        content: Text('Weet je zeker dat je "${item.title}" wilt verwijderen?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -1380,9 +3078,12 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     final titleController = TextEditingController();
     final descriptionController = TextEditingController();
     final locationController = TextEditingController();
+    final rsvpLabelController = TextEditingController();
+    final rsvpTeamIdsController = TextEditingController();
     DateTime? pickedDateTime;
     DateTime? pickedEndDateTime;
     bool canRsvp = false;
+    List<String> rsvpCommittees = [];
 
     final ok = await showDialog<bool>(
       context: context,
@@ -1428,9 +3129,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Begindatum', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Begindatum',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(dateStr(pickedDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              dateStr(pickedDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1439,6 +3151,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final now = DateTime.now();
                           final d = await showDatePicker(
                             context: context,
+                            locale: const Locale('nl', 'NL'),
                             initialDate: pickedDateTime ?? now,
                             firstDate: now.subtract(const Duration(days: 365)),
                             lastDate: now.add(const Duration(days: 365 * 2)),
@@ -1446,8 +3159,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           if (d == null) return;
                           setState(() {
                             pickedDateTime = DateTime(
-                              d.year, d.month, d.day,
-                              pickedDateTime?.hour ?? 0, pickedDateTime?.minute ?? 0,
+                              d.year,
+                              d.month,
+                              d.day,
+                              pickedDateTime?.hour ?? 0,
+                              pickedDateTime?.minute ?? 0,
                             );
                           });
                         },
@@ -1462,9 +3178,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Begintijd', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Begintijd',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(timeStr(pickedDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              timeStr(pickedDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1473,7 +3200,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final t = await showTimePicker(
                             context: context,
                             initialTime: pickedDateTime != null
-                                ? TimeOfDay(hour: pickedDateTime!.hour, minute: pickedDateTime!.minute)
+                                ? TimeOfDay(
+                                    hour: pickedDateTime!.hour,
+                                    minute: pickedDateTime!.minute,
+                                  )
                                 : const TimeOfDay(hour: 20, minute: 0),
                           );
                           if (t == null) return;
@@ -1482,7 +3212,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               pickedDateTime?.year ?? DateTime.now().year,
                               pickedDateTime?.month ?? DateTime.now().month,
                               pickedDateTime?.day ?? DateTime.now().day,
-                              t.hour, t.minute,
+                              t.hour,
+                              t.minute,
                             );
                           });
                         },
@@ -1497,9 +3228,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Einddatum', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Einddatum',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(dateStr(pickedEndDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              dateStr(pickedEndDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1509,15 +3251,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final startOrNow = pickedDateTime ?? now;
                           final d = await showDatePicker(
                             context: context,
-                            initialDate: pickedEndDateTime ?? pickedDateTime ?? now,
+                            locale: const Locale('nl', 'NL'),
+                            initialDate:
+                                pickedEndDateTime ?? pickedDateTime ?? now,
                             firstDate: startOrNow,
                             lastDate: now.add(const Duration(days: 365 * 2)),
                           );
                           if (d == null) return;
                           setState(() {
                             pickedEndDateTime = DateTime(
-                              d.year, d.month, d.day,
-                              pickedEndDateTime?.hour ?? 23, pickedEndDateTime?.minute ?? 59,
+                              d.year,
+                              d.month,
+                              d.day,
+                              pickedEndDateTime?.hour ?? 23,
+                              pickedEndDateTime?.minute ?? 59,
                             );
                           });
                         },
@@ -1532,9 +3279,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Eindtijd', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Eindtijd',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(timeStr(pickedEndDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              timeStr(pickedEndDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1543,7 +3301,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final t = await showTimePicker(
                             context: context,
                             initialTime: pickedEndDateTime != null
-                                ? TimeOfDay(hour: pickedEndDateTime!.hour, minute: pickedEndDateTime!.minute)
+                                ? TimeOfDay(
+                                    hour: pickedEndDateTime!.hour,
+                                    minute: pickedEndDateTime!.minute,
+                                  )
                                 : const TimeOfDay(hour: 22, minute: 0),
                           );
                           if (t == null) return;
@@ -1552,7 +3313,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               pickedEndDateTime?.year ?? DateTime.now().year,
                               pickedEndDateTime?.month ?? DateTime.now().month,
                               pickedEndDateTime?.day ?? DateTime.now().day,
-                              t.hour, t.minute,
+                              t.hour,
+                              t.minute,
                             );
                           });
                         },
@@ -1576,6 +3338,103 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                     contentPadding: EdgeInsets.zero,
                     controlAffinity: ListTileControlAffinity.leading,
                   ),
+                  if (canRsvp) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: rsvpLabelController,
+                      decoration: const InputDecoration(
+                        labelText: 'Titel aanmeldknop',
+                        hintText: 'bijv. Lunch deelnemen (leeg = Aanmelden)',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Beperk tot (leeg = iedereen mag aanmelden):',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        FilterChip(
+                          label: const Text('Bestuur'),
+                          selected: rsvpCommittees.contains('bestuur'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [...rsvpCommittees, 'bestuur'];
+                            } else {
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'bestuur')
+                                  .toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('TC'),
+                          selected: rsvpCommittees.contains(
+                            'technische-commissie',
+                          ),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'technische-commissie',
+                              ];
+                            } else {
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'technische-commissie')
+                                  .toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('Communicatie'),
+                          selected: rsvpCommittees.contains('communicatie'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'communicatie',
+                              ];
+                            } else {
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'communicatie')
+                                  .toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('Wedstrijdzaken'),
+                          selected: rsvpCommittees.contains('wedstrijdzaken'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'wedstrijdzaken',
+                              ];
+                            } else {
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'wedstrijdzaken')
+                                  .toList();
+                            }
+                          }),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: rsvpTeamIdsController,
+                      decoration: const InputDecoration(
+                        labelText: 'Team-IDs (komma-gescheiden, optioneel)',
+                        hintText: 'bijv. 1, 2, 3',
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                  ],
                 ],
               ),
               actions: [
@@ -1601,28 +3460,107 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       titleController.dispose();
       descriptionController.dispose();
       locationController.dispose();
+      rsvpLabelController.dispose();
+      rsvpTeamIdsController.dispose();
     });
 
     if (ok != true) return;
 
     final title = titleController.text.trim();
     if (title.isEmpty) return;
+    if (pickedDateTime == null) {
+      if (!mounted) return;
+      showTopMessage(context, 'Kies een begindatum en -tijd.', isError: true);
+      return;
+    }
+
+    final rsvpLabelVal = rsvpLabelController.text.trim();
+    List<int>? teamIdsVal;
+    final teamIdsStr = rsvpTeamIdsController.text.trim();
+    if (teamIdsStr.isNotEmpty) {
+      teamIdsVal = teamIdsStr
+          .split(RegExp(r'[,\s]+'))
+          .map((s) => int.tryParse(s.trim()))
+          .whereType<int>()
+          .toList();
+      if (teamIdsVal.isEmpty) teamIdsVal = null;
+    }
 
     try {
+      String two(int v) => v.toString().padLeft(2, '0');
+      String toSqlDate(DateTime dt) {
+        final d = dt.toLocal();
+        return '${d.year}-${two(d.month)}-${two(d.day)}';
+      }
+
+      String toSqlTime(DateTime dt) {
+        final d = dt.toLocal();
+        return '${two(d.hour)}:${two(d.minute)}:00';
+      }
+
+      final startLocal = pickedDateTime!;
+      final endLocal = pickedEndDateTime;
       final payload = <String, dynamic>{
         'title': title,
-        'description': descriptionController.text.trim().isEmpty ? null : descriptionController.text.trim(),
-        'location': locationController.text.trim().isEmpty ? null : locationController.text.trim(),
+        'description': descriptionController.text.trim().isEmpty
+            ? null
+            : descriptionController.text.trim(),
+        'location': locationController.text.trim(),
         'can_rsvp': canRsvp,
+        // Legacy schema compat (home_agenda_schema.sql)
+        'event_date': toSqlDate(startLocal),
+        'event_time': toSqlTime(startLocal),
+        'end_date': endLocal != null ? toSqlDate(endLocal) : null,
+        'end_time': endLocal != null ? toSqlTime(endLocal) : null,
       };
-      if (pickedDateTime != null) {
-        payload['start_datetime'] = pickedDateTime!.toUtc().toIso8601String();
+      if (canRsvp) {
+        payload['rsvp_label'] = rsvpLabelVal.isEmpty ? null : rsvpLabelVal;
+        payload['rsvp_allowed_team_ids'] = teamIdsVal;
+        payload['rsvp_allowed_committee_keys'] = rsvpCommittees.isEmpty
+            ? null
+            : rsvpCommittees;
+      } else {
+        payload['rsvp_label'] = null;
+        payload['rsvp_allowed_team_ids'] = null;
+        payload['rsvp_allowed_committee_keys'] = null;
       }
-      if (pickedEndDateTime != null) {
-        payload['end_datetime'] = pickedEndDateTime!.toUtc().toIso8601String();
+      payload['start_datetime'] = startLocal.toUtc().toIso8601String();
+      if (endLocal != null) {
+        payload['end_datetime'] = endLocal.toUtc().toIso8601String();
       }
-      await _client.from('home_agenda').insert(payload);
+      try {
+        await _client.from('home_agenda').insert(payload);
+      } on PostgrestException catch (e) {
+        if (e.code == 'PGRST204') {
+          // Stap 1: schema zonder RSVP-kolommen (maar met legacy event_*).
+          final noRsvp = <String, dynamic>{...payload}
+            ..remove('rsvp_label')
+            ..remove('rsvp_allowed_team_ids')
+            ..remove('rsvp_allowed_committee_keys');
+          try {
+            await _client.from('home_agenda').insert(noRsvp);
+          } on PostgrestException catch (e2) {
+            if (e2.code == 'PGRST204') {
+              // Stap 2: schema zonder legacy event_* (nieuw schema).
+              final noLegacy = <String, dynamic>{...noRsvp}
+                ..remove('event_date')
+                ..remove('event_time')
+                ..remove('end_date')
+                ..remove('end_time');
+              await _client.from('home_agenda').insert(noLegacy);
+            } else {
+              rethrow;
+            }
+          }
+        } else {
+          rethrow;
+        }
+      }
       await _loadAgenda();
+      await NotificationService.sendBroadcastUpdate(
+        title: 'Nieuw agendapunt',
+        body: title,
+      );
       if (!mounted) return;
       showTopMessage(context, 'Activiteit toegevoegd.');
     } catch (e) {
@@ -1635,11 +3573,22 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (existing.id == null) return;
 
     final titleController = TextEditingController(text: existing.title);
-    final descriptionController = TextEditingController(text: existing.description ?? '');
+    final descriptionController = TextEditingController(
+      text: existing.description ?? '',
+    );
     final locationController = TextEditingController(text: existing.where);
+    final rsvpLabelController = TextEditingController(
+      text: existing.rsvpLabel ?? '',
+    );
+    final rsvpTeamIdsController = TextEditingController(
+      text: existing.allowedTeamIds?.join(', ') ?? '',
+    );
     DateTime? pickedDateTime = existing.startDatetime?.toLocal();
     DateTime? pickedEndDateTime = existing.endDatetime?.toLocal();
     bool canRsvp = existing.canRsvp;
+    List<String> rsvpCommittees = List.from(
+      existing.allowedCommitteeKeys ?? [],
+    );
 
     final ok = await showDialog<bool>(
       context: context,
@@ -1685,9 +3634,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Begindatum', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Begindatum',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(dateStr(pickedDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              dateStr(pickedDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1696,6 +3656,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final now = DateTime.now();
                           final d = await showDatePicker(
                             context: context,
+                            locale: const Locale('nl', 'NL'),
                             initialDate: pickedDateTime ?? now,
                             firstDate: now.subtract(const Duration(days: 365)),
                             lastDate: now.add(const Duration(days: 365 * 2)),
@@ -1703,8 +3664,11 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           if (d == null) return;
                           setState(() {
                             pickedDateTime = DateTime(
-                              d.year, d.month, d.day,
-                              pickedDateTime?.hour ?? 0, pickedDateTime?.minute ?? 0,
+                              d.year,
+                              d.month,
+                              d.day,
+                              pickedDateTime?.hour ?? 0,
+                              pickedDateTime?.minute ?? 0,
                             );
                           });
                         },
@@ -1719,9 +3683,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Begintijd', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Begintijd',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(timeStr(pickedDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              timeStr(pickedDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1730,7 +3705,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final t = await showTimePicker(
                             context: context,
                             initialTime: pickedDateTime != null
-                                ? TimeOfDay(hour: pickedDateTime!.hour, minute: pickedDateTime!.minute)
+                                ? TimeOfDay(
+                                    hour: pickedDateTime!.hour,
+                                    minute: pickedDateTime!.minute,
+                                  )
                                 : const TimeOfDay(hour: 20, minute: 0),
                           );
                           if (t == null) return;
@@ -1739,7 +3717,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               pickedDateTime?.year ?? DateTime.now().year,
                               pickedDateTime?.month ?? DateTime.now().month,
                               pickedDateTime?.day ?? DateTime.now().day,
-                              t.hour, t.minute,
+                              t.hour,
+                              t.minute,
                             );
                           });
                         },
@@ -1754,9 +3733,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Einddatum', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Einddatum',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(dateStr(pickedEndDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              dateStr(pickedEndDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1765,15 +3755,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final now = DateTime.now();
                           final d = await showDatePicker(
                             context: context,
-                            initialDate: pickedEndDateTime ?? pickedDateTime ?? now,
+                            locale: const Locale('nl', 'NL'),
+                            initialDate:
+                                pickedEndDateTime ?? pickedDateTime ?? now,
                             firstDate: now.subtract(const Duration(days: 365)),
                             lastDate: now.add(const Duration(days: 365 * 2)),
                           );
                           if (d == null) return;
                           setState(() {
                             pickedEndDateTime = DateTime(
-                              d.year, d.month, d.day,
-                              pickedEndDateTime?.hour ?? 23, pickedEndDateTime?.minute ?? 59,
+                              d.year,
+                              d.month,
+                              d.day,
+                              pickedEndDateTime?.hour ?? 23,
+                              pickedEndDateTime?.minute ?? 59,
                             );
                           });
                         },
@@ -1788,9 +3783,20 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Eindtijd', style: TextStyle(fontSize: 12, color: Theme.of(context).hintColor)),
+                            Text(
+                              'Eindtijd',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).hintColor,
+                              ),
+                            ),
                             const SizedBox(height: 4),
-                            Text(timeStr(pickedEndDateTime), style: const TextStyle(color: AppColors.textSecondary)),
+                            Text(
+                              timeStr(pickedEndDateTime),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1799,7 +3805,10 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           final t = await showTimePicker(
                             context: context,
                             initialTime: pickedEndDateTime != null
-                                ? TimeOfDay(hour: pickedEndDateTime!.hour, minute: pickedEndDateTime!.minute)
+                                ? TimeOfDay(
+                                    hour: pickedEndDateTime!.hour,
+                                    minute: pickedEndDateTime!.minute,
+                                  )
                                 : const TimeOfDay(hour: 22, minute: 0),
                           );
                           if (t == null) return;
@@ -1808,7 +3817,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               pickedEndDateTime?.year ?? DateTime.now().year,
                               pickedEndDateTime?.month ?? DateTime.now().month,
                               pickedEndDateTime?.day ?? DateTime.now().day,
-                              t.hour, t.minute,
+                              t.hour,
+                              t.minute,
                             );
                           });
                         },
@@ -1832,6 +3842,103 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                     contentPadding: EdgeInsets.zero,
                     controlAffinity: ListTileControlAffinity.leading,
                   ),
+                  if (canRsvp) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: rsvpLabelController,
+                      decoration: const InputDecoration(
+                        labelText: 'Titel aanmeldknop',
+                        hintText: 'bijv. Lunch deelnemen (leeg = Aanmelden)',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Beperk tot (leeg = iedereen mag aanmelden):',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        FilterChip(
+                          label: const Text('Bestuur'),
+                          selected: rsvpCommittees.contains('bestuur'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [...rsvpCommittees, 'bestuur'];
+                            } else {
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'bestuur')
+                                  .toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('TC'),
+                          selected: rsvpCommittees.contains(
+                            'technische-commissie',
+                          ),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'technische-commissie',
+                              ];
+                            } else {
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'technische-commissie')
+                                  .toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('Communicatie'),
+                          selected: rsvpCommittees.contains('communicatie'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'communicatie',
+                              ];
+                            } else {
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'communicatie')
+                                  .toList();
+                            }
+                          }),
+                        ),
+                        FilterChip(
+                          label: const Text('Wedstrijdzaken'),
+                          selected: rsvpCommittees.contains('wedstrijdzaken'),
+                          onSelected: (v) => setState(() {
+                            if (v) {
+                              rsvpCommittees = [
+                                ...rsvpCommittees,
+                                'wedstrijdzaken',
+                              ];
+                            } else {
+                              rsvpCommittees = rsvpCommittees
+                                  .where((c) => c != 'wedstrijdzaken')
+                                  .toList();
+                            }
+                          }),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: rsvpTeamIdsController,
+                      decoration: const InputDecoration(
+                        labelText: 'Team-IDs (komma-gescheiden, optioneel)',
+                        hintText: 'bijv. 1, 2, 3',
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                  ],
                 ],
               ),
               actions: [
@@ -1857,29 +3964,113 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       titleController.dispose();
       descriptionController.dispose();
       locationController.dispose();
+      rsvpLabelController.dispose();
+      rsvpTeamIdsController.dispose();
     });
 
     if (ok != true) return;
 
     final title = titleController.text.trim();
     if (title.isEmpty) return;
+    if (pickedDateTime == null) {
+      if (!mounted) return;
+      showTopMessage(context, 'Kies een begindatum en -tijd.', isError: true);
+      return;
+    }
+
+    final rsvpLabelVal = rsvpLabelController.text.trim();
+    List<int>? teamIdsVal;
+    final teamIdsStr = rsvpTeamIdsController.text.trim();
+    if (teamIdsStr.isNotEmpty) {
+      teamIdsVal = teamIdsStr
+          .split(RegExp(r'[,\s]+'))
+          .map((s) => int.tryParse(s.trim()))
+          .whereType<int>()
+          .toList();
+      if (teamIdsVal.isEmpty) teamIdsVal = null;
+    }
 
     try {
+      String two(int v) => v.toString().padLeft(2, '0');
+      String toSqlDate(DateTime dt) {
+        final d = dt.toLocal();
+        return '${d.year}-${two(d.month)}-${two(d.day)}';
+      }
+
+      String toSqlTime(DateTime dt) {
+        final d = dt.toLocal();
+        return '${two(d.hour)}:${two(d.minute)}:00';
+      }
+
+      final startLocal = pickedDateTime!;
+      final endLocal = pickedEndDateTime;
       final payload = <String, dynamic>{
         'title': title,
-        'description': descriptionController.text.trim().isEmpty ? null : descriptionController.text.trim(),
-        'location': locationController.text.trim().isEmpty ? null : locationController.text.trim(),
+        'description': descriptionController.text.trim().isEmpty
+            ? null
+            : descriptionController.text.trim(),
+        'location': locationController.text.trim(),
         'can_rsvp': canRsvp,
+        // Legacy schema compat (home_agenda_schema.sql)
+        'event_date': toSqlDate(startLocal),
+        'event_time': toSqlTime(startLocal),
+        'end_date': endLocal != null ? toSqlDate(endLocal) : null,
+        'end_time': endLocal != null ? toSqlTime(endLocal) : null,
       };
-      if (pickedDateTime != null) {
-        payload['start_datetime'] = pickedDateTime!.toUtc().toIso8601String();
+      if (canRsvp) {
+        payload['rsvp_label'] = rsvpLabelVal.isEmpty ? null : rsvpLabelVal;
+        payload['rsvp_allowed_team_ids'] = teamIdsVal;
+        payload['rsvp_allowed_committee_keys'] = rsvpCommittees.isEmpty
+            ? null
+            : rsvpCommittees;
+      } else {
+        payload['rsvp_label'] = null;
+        payload['rsvp_allowed_team_ids'] = null;
+        payload['rsvp_allowed_committee_keys'] = null;
       }
-      if (pickedEndDateTime != null) {
-        payload['end_datetime'] = pickedEndDateTime!.toUtc().toIso8601String();
+      payload['start_datetime'] = startLocal.toUtc().toIso8601String();
+      if (endLocal != null) {
+        payload['end_datetime'] = endLocal.toUtc().toIso8601String();
       } else {
         payload['end_datetime'] = null;
       }
-      await _client.from('home_agenda').update(payload).eq('agenda_id', existing.id!);
+      try {
+        await _client
+            .from('home_agenda')
+            .update(payload)
+            .eq('agenda_id', existing.id!);
+      } on PostgrestException catch (e) {
+        if (e.code == 'PGRST204') {
+          // Stap 1: schema zonder RSVP-kolommen (maar met legacy event_*).
+          final noRsvp = <String, dynamic>{...payload}
+            ..remove('rsvp_label')
+            ..remove('rsvp_allowed_team_ids')
+            ..remove('rsvp_allowed_committee_keys');
+          try {
+            await _client
+                .from('home_agenda')
+                .update(noRsvp)
+                .eq('agenda_id', existing.id!);
+          } on PostgrestException catch (e2) {
+            if (e2.code == 'PGRST204') {
+              // Stap 2: schema zonder legacy event_* (nieuw schema).
+              final noLegacy = <String, dynamic>{...noRsvp}
+                ..remove('event_date')
+                ..remove('event_time')
+                ..remove('end_date')
+                ..remove('end_time');
+              await _client
+                  .from('home_agenda')
+                  .update(noLegacy)
+                  .eq('agenda_id', existing.id!);
+            } else {
+              rethrow;
+            }
+          }
+        } else {
+          rethrow;
+        }
+      }
       await _loadAgenda();
       if (!mounted) return;
       showTopMessage(context, 'Activiteit aangepast.');
@@ -1896,9 +4087,7 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Activiteit verwijderen'),
-        content: Text(
-          'Weet je zeker dat je "${item.title}" wilt verwijderen?',
-        ),
+        content: Text('Weet je zeker dat je "${item.title}" wilt verwijderen?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -2021,8 +4210,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
     if (!canManage) return;
 
     final titleController = TextEditingController(text: existing?.title ?? '');
-    final subtitleController =
-        TextEditingController(text: existing?.subtitle ?? '');
+    final subtitleController = TextEditingController(
+      text: existing?.subtitle ?? '',
+    );
     DateTime? visibleUntil = existing?.visibleUntil;
 
     final result = await showDialog<_HighlightEditResult>(
@@ -2071,13 +4261,16 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         setLocalState(() => visibleUntil = next);
                       },
                       child: Text(
-                        visibleUntil == null ? 'Geen' : _formatDate(visibleUntil!),
+                        visibleUntil == null
+                            ? 'Geen'
+                            : _formatDate(visibleUntil!),
                       ),
                     ),
                     if (visibleUntil != null)
                       IconButton(
                         tooltip: 'Wissen',
-                        onPressed: () => setLocalState(() => visibleUntil = null),
+                        onPressed: () =>
+                            setLocalState(() => visibleUntil = null),
                         icon: const Icon(Icons.close, size: 18),
                         color: AppColors.textSecondary,
                       ),
@@ -2124,8 +4317,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
           id: existing?.id,
           title: title,
           subtitle: result.subtitle ?? '',
-          iconText:
-              (result.iconText?.isNotEmpty == true) ? result.iconText! : '🏐',
+          iconText: (result.iconText?.isNotEmpty == true)
+              ? result.iconText!
+              : '🏐',
           visibleUntil: result.visibleUntil,
         );
       }
@@ -2139,184 +4333,327 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     final userContext = AppUserContext.of(context);
-    final canManageHighlights = userContext.canManageHighlights;
     final canManageAgenda = userContext.canManageAgenda;
     final canManageNews = userContext.canManageNews;
     final canViewAgendaRsvps = userContext.canViewAgendaRsvps;
 
+    // Keep legacy highlight symbols referenced while Home now focuses on wedstrijden/agenda/nieuws.
+    assert(() {
+      final keepFields = (_loadingHighlights, _highlightsError, _highlights);
+      final keepMethods = (
+        _showHighlightDetail,
+        _confirmDeleteHighlight,
+        _openEditHighlightDialog,
+      );
+      final keepWidget = _HighlightCard(
+        item: _mockHighlights().first,
+        canManage: false,
+        onMore: () {},
+        onEdit: () {},
+        onDelete: () {},
+      );
+      return keepFields.hashCode ^ keepMethods.hashCode ^ keepWidget.hashCode !=
+          -1;
+    }());
+
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: SafeArea(
-        top: true,
+        top: false,
         bottom: false,
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.darkBlue,
-                  borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Welkom bij VV Minerva',
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w800,
-                          ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Updates, agenda en nieuws vanuit de vereniging.',
-                      style: TextStyle(
-                        color: AppColors.primary.withValues(alpha: 0.9),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: GlassCard(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                showBorder: false,
-                showShadow: false,
-                child: TabBar(
-                  controller: _tabController,
-                  dividerColor: Colors.transparent,
-                  indicator: BoxDecoration(
-                    color: AppColors.darkBlue,
-                    borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                  ),
-                  indicatorSize: TabBarIndicatorSize.tab,
-                  tabs: const [
-                    Tab(text: 'Uitgelicht'),
-                    Tab(text: 'Agenda'),
-                    Tab(text: 'Nieuws'),
-                  ],
-                ),
-              ),
-            ),
-            Expanded(
-              child: TabBarView(
-                controller: _tabController,
+            TabPageHeader(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Uitgelicht
-                  RefreshIndicator(
-                    color: AppColors.primary,
-                    onRefresh: _refreshHome,
-                    child: ListView(
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      padding: EdgeInsets.fromLTRB(
-                        16,
-                        0,
-                        16,
-                        24 + MediaQuery.paddingOf(context).bottom,
-                      ),
-                      children: [
-                        _HomeTabHeader(
-                          title: 'Uitgelicht',
-                          trailing: canManageHighlights
-                              ? IconButton(
-                                  tooltip: 'Punt toevoegen',
-                                  icon: const Icon(Icons.add_circle_outline),
-                                  color: AppColors.primary,
-                                  onPressed: () => _openEditHighlightDialog(
-                                    canManage: true,
-                                    existing: null,
-                                  ),
-                                )
-                              : (_loadingHighlights
-                                  ? const SizedBox(
-                                      height: 18,
-                                      width: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: AppColors.primary,
-                                      ),
-                                    )
-                                  : null),
-                        ),
-                        const SizedBox(height: 12),
-                        if (_highlightsError != null && canManageHighlights)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: Text(
-                              'Let op: highlights tabel niet beschikbaar.\n'
-                              'Voer supabase/home_highlights_minimal.sql uit in Supabase → SQL Editor.\n'
-                              'Details: $_highlightsError',
-                              style: const TextStyle(color: AppColors.textSecondary),
-                            ),
-                          ),
-                        const Text(
-                          'Korte, belangrijke mededelingen en acties.',
-                          style: TextStyle(color: AppColors.textSecondary),
-                        ),
-                        const SizedBox(height: 12),
-                        if (_highlights.isEmpty)
-                          const Text(
-                            'Geen uitgelichte items.',
-                            style: TextStyle(color: AppColors.textSecondary),
-                          )
-                        else
-                          ..._highlights.map((h) {
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 12),
-                              child: _HighlightCard(
-                                item: h,
-                                canManage: canManageHighlights,
-                                onMore: () => _showHighlightDetail(h),
-                                onEdit: () => _openEditHighlightDialog(
-                                  canManage: canManageHighlights,
-                                  existing: h,
-                                ),
-                                onDelete: h.id != null
-                                    ? () => _confirmDeleteHighlight(h)
-                                    : null,
-                              ),
-                            );
-                          }),
-                      ],
+                  Text(
+                    'Welkom bij VV Minerva',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
-
-                  // Agenda
-                  Column(
-                    children: [
-                      if (canViewAgendaRsvps)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                          child: GlassCard(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                            child: SegmentedButton<int>(
-                              segments: const [
-                                ButtonSegment(value: 0, label: Text('Agenda')),
-                                ButtonSegment(value: 1, label: Text('Aanmeldingen')),
-                              ],
-                              selected: {_agendaMode},
-                              onSelectionChanged: (set) {
-                                final next = set.first;
-                                setState(() => _agendaMode = next);
-                                if (next == 1) {
-                                  // ignore: unawaited_futures
-                                  _loadAgendaRsvps();
-                                }
-                              },
+                  const SizedBox(height: 4),
+                  Text(
+                    widget.showOnlyHighlightsAndNews
+                        ? 'Nieuws en aankomende wedstrijden vanuit de vereniging.'
+                        : 'Nieuws, agenda en wedstrijden vanuit de vereniging.',
+                    style: TextStyle(
+                      color: AppColors.primary.withValues(alpha: 0.9),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: AppColors.tabContentPadding,
+              child: _HomeTabSwitcher(
+                controller: _tabController,
+                tabs: widget.showOnlyHighlightsAndNews
+                    ? const [Tab(text: 'Nieuws'), Tab(text: 'Wedstrijden')]
+                    : const [
+                        Tab(text: 'Nieuws'),
+                        Tab(text: 'Agenda'),
+                        Tab(text: 'Wedstrijden'),
+                      ],
+              ),
+            ),
+            if (widget.showOnlyHighlightsAndNews)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: _showGuestAccountHint
+                    ? GlassCard(
+                        padding: const EdgeInsets.all(12),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              color: AppColors.warning,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Ben je lid van VV Minerva en wil je gekoppeld worden aan je team? '
+                                'Maak dan een eigen account aan via Profiel. Na koppeling kun je je team, '
+                                'trainingen, wedstrijden en taken bekijken.',
+                                style: TextStyle(
+                                  color: AppColors.onBackground
+                                      .withValues(alpha: 0.92),
+                                  fontSize: 13,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Sluiten',
+                              onPressed: () =>
+                                  setState(() => _showGuestAccountHint = false),
+                              icon: const Icon(Icons.close, size: 18),
+                              color: AppColors.textSecondary,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          ],
+                        ),
+                      )
+                    : Align(
+                        alignment: Alignment.centerLeft,
+                        child: Tooltip(
+                          message: 'Accountinformatie tonen',
+                          child: Semantics(
+                            label: 'Accountinformatie tonen',
+                            button: true,
+                            child: IconButton(
+                              onPressed: () =>
+                                  setState(() => _showGuestAccountHint = true),
+                              icon: const Icon(Icons.info_outline),
+                              color: AppColors.warning,
+                              iconSize: 22,
+                              padding: const EdgeInsets.all(8),
+                              constraints: const BoxConstraints(
+                                minWidth: 40,
+                                minHeight: 40,
+                              ),
+                              visualDensity: VisualDensity.compact,
                             ),
                           ),
                         ),
+                      ),
+              ),
+            Expanded(
+              child: IndexedStack(
+                index: _contentIndexForSelectedTab(_tabController.index),
+                children: [
+                  // Wedstrijden: sub-tabs Aankomende wedstrijden | Standen
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                        child: _HomeTabSwitcher(
+                          controller: _wedstrijdenSubTabController,
+                          isScrollable: true,
+                          tabAlignment: TabAlignment.center,
+                          tabs: const [
+                            Tab(text: 'Aankomende wedstrijden'),
+                            Tab(text: 'Standen'),
+                          ],
+                        ),
+                      ),
                       Expanded(
-                        child: _agendaMode == 1 && canViewAgendaRsvps
-                            ? _buildAgendaRsvpsView()
-                            : _buildAgendaListView(canManageAgenda: canManageAgenda),
+                        child: IndexedStack(
+                          index: _wedstrijdenSubTabController.index,
+                          children: [
+                            RefreshIndicator(
+                              color: AppColors.primary,
+                              onRefresh: _refreshHome,
+                              child: ListView(
+                                physics:
+                                    const AlwaysScrollableScrollPhysics(),
+                                padding: EdgeInsets.fromLTRB(
+                                  16,
+                                  0,
+                                  16,
+                                  24 +
+                                      MediaQuery.paddingOf(context).bottom,
+                                ),
+                                children: [
+                                  _HomeTabHeader(
+                                    title: 'Aankomende wedstrijden',
+                                    trailing:
+                                        _loadingUpcomingMatches
+                                            ? const SizedBox(
+                                                height: 18,
+                                                width: 18,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                  strokeWidth: 2,
+                                                  color: AppColors.primary,
+                                                ),
+                                              )
+                                            : null,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  const Text(
+                                    'Overzicht van de komende 14 dagen.',
+                                    style: TextStyle(
+                                        color: AppColors.textSecondary),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  if (_upcomingMatchesError != null)
+                                    Padding(
+                                      padding: const EdgeInsets.only(
+                                          bottom: 12),
+                                      child: Text(
+                                        'Kon aankomende wedstrijden nu niet laden. Probeer straks opnieuw.',
+                                        style: const TextStyle(
+                                          color: AppColors.textSecondary,
+                                        ),
+                                      ),
+                                    ),
+                                  if (_upcomingMatches.isEmpty)
+                                    const Text(
+                                      'Geen aankomende wedstrijden in de komende 14 dagen.',
+                                      style: TextStyle(
+                                          color: AppColors.textSecondary),
+                                    )
+                                  else
+                                    ...(() {
+                                      String? currentDayKey;
+                                      final out = <Widget>[];
+                                      for (final m in _upcomingMatches) {
+                                        final dt =
+                                            m.startsAt.toLocal();
+                                        final dayKey =
+                                            '${dt.year}-${dt.month}-${dt.day}';
+                                        if (currentDayKey != dayKey) {
+                                          currentDayKey = dayKey;
+                                          out.add(
+                                            Padding(
+                                              padding: const EdgeInsets
+                                                  .only(
+                                                top: 4,
+                                                bottom: 8,
+                                              ),
+                                              child: Text(
+                                                _formatMatchdayLabel(
+                                                    m.startsAt),
+                                                style: const TextStyle(
+                                                  color:
+                                                      AppColors.darkBlue,
+                                                  fontWeight:
+                                                      FontWeight.w800,
+                                                  fontSize: 18,
+                                                ),
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                        out.add(
+                                          Padding(
+                                            padding: const EdgeInsets
+                                                .only(bottom: 12),
+                                            child: _CardBox(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment
+                                                        .start,
+                                                children: [
+                                                  _buildHomeMatchTitleText(
+                                                    m,
+                                                    style: Theme.of(
+                                                      context,
+                                                    ).textTheme
+                                                        .titleMedium
+                                                        ?.copyWith(
+                                                          color: AppColors
+                                                              .onBackground,
+                                                          fontWeight:
+                                                              FontWeight
+                                                                  .w800,
+                                                        ),
+                                                  ),
+                                                  const SizedBox(
+                                                      height: 4),
+                                                  Text(
+                                                    '${_formatTime(dt)} • ${m.isHome ? 'Thuis' : 'Uit'} • ${m.location.trim().isEmpty ? 'Locatie onbekend' : m.location.trim()}',
+                                                    style: const TextStyle(
+                                                      color: AppColors
+                                                          .textSecondary,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                      return out;
+                                    })(),
+                                ],
+                              ),
+                            ),
+                            const NevoboStandenTab(),
+                          ],
+                        ),
                       ),
                     ],
                   ),
+
+                  // Agenda (niet tonen wanneer alleen Uitgelicht + Nieuws)
+                  if (!widget.showOnlyHighlightsAndNews)
+                    Column(
+                      children: [
+                        if (canViewAgendaRsvps)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                            child: _HomeTabSwitcher(
+                              controller: _agendaSubTabController,
+                              tabs: const [
+                                Tab(text: 'Agenda'),
+                                Tab(text: 'Aanmeldingen'),
+                              ],
+                            ),
+                          ),
+                        Expanded(
+                          child: _agendaMode == 1 && canViewAgendaRsvps
+                              ? _buildAgendaRsvpsView(
+                                  canExportRsvps:
+                                      userContext.canExportAgendaRsvps,
+                                )
+                              : _buildAgendaListView(
+                                  canManageAgenda: canManageAgenda,
+                                ),
+                        ),
+                      ],
+                    ),
 
                   // Nieuws
                   RefreshIndicator(
@@ -2330,7 +4667,8 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                         16,
                         24 + MediaQuery.paddingOf(context).bottom,
                       ),
-                      itemCount: 1 + (_newsItems.isEmpty ? 1 : _newsItems.length),
+                      itemCount:
+                          1 + (_newsItems.isEmpty ? 1 : _newsItems.length),
                       separatorBuilder: (_, _) => const SizedBox(height: 12),
                       itemBuilder: (context, i) {
                         if (i == 0) {
@@ -2342,27 +4680,24 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                                 trailing: canManageNews
                                     ? IconButton(
                                         tooltip: 'Nieuwsbericht toevoegen',
-                                        icon: const Icon(Icons.add_circle_outline),
+                                        icon: const Icon(
+                                          Icons.add_circle_outline,
+                                        ),
                                         color: AppColors.primary,
                                         onPressed: () => _openAddNewsDialog(),
                                       )
                                     : (_loadingNews
-                                        ? const SizedBox(
-                                            height: 18,
-                                            width: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: AppColors.primary,
-                                            ),
-                                          )
-                                        : null),
+                                          ? const SizedBox(
+                                              height: 18,
+                                              width: 18,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: AppColors.primary,
+                                              ),
+                                            )
+                                          : null),
                               ),
                               const SizedBox(height: 12),
-                              const Text(
-                                'Berichten met wat meer context. '
-                                'Tip: stel optioneel “Tonen tot” in zodat een bericht automatisch verdwijnt.',
-                                style: TextStyle(color: AppColors.textSecondary),
-                              ),
                             ],
                           );
                         }
@@ -2373,7 +4708,9 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                               'Let op: nieuwstabel niet beschikbaar. '
                               'Voer supabase/home_news_minimal.sql uit in Supabase → SQL Editor.\n'
                               'Details: $_newsError',
-                              style: const TextStyle(color: AppColors.textSecondary),
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
                             );
                           }
                           return const Text(
@@ -2387,8 +4724,14 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
                           item: n,
                           canManage: canManageNews,
                           onReadMore: () => _showNewsDetail(n),
-                          onEdit: _newsFromSupabase ? () => _openEditNewsDialog(n) : null,
-                          onDelete: _newsFromSupabase ? () => _deleteNewsItem(n) : null,
+                          onEdit: _newsFromSupabase
+                              ? () => _openEditNewsDialog(n)
+                              : null,
+                          onDelete: _newsFromSupabase
+                              ? () => _deleteNewsItem(n)
+                              : null,
+                          onOpenUrl: _openUrl,
+                          imageBuilder: _buildNewsImage,
                         );
                       },
                     ),
@@ -2404,6 +4747,46 @@ class _HomeTabState extends State<HomeTab> with SingleTickerProviderStateMixin {
 }
 
 /* ----------------------- SECTIE-TITEL ----------------------- */
+
+class _HomeTabSwitcher extends StatelessWidget {
+  final TabController controller;
+  final List<Widget> tabs;
+  final bool isScrollable;
+  final TabAlignment? tabAlignment;
+
+  const _HomeTabSwitcher({
+    required this.controller,
+    required this.tabs,
+    this.isScrollable = false,
+    this.tabAlignment,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassCard(
+      padding: const EdgeInsets.symmetric(
+        horizontal: 10,
+        vertical: 6,
+      ),
+      showBorder: false,
+      showShadow: false,
+      child: TabBar(
+        controller: controller,
+        isScrollable: isScrollable,
+        tabAlignment: tabAlignment,
+        dividerColor: Colors.transparent,
+        indicator: BoxDecoration(
+          color: AppColors.darkBlue,
+          borderRadius: BorderRadius.circular(AppColors.cardRadius),
+        ),
+        indicatorSize: TabBarIndicatorSize.tab,
+        labelColor: AppColors.primary,
+        unselectedLabelColor: AppColors.textSecondary,
+        tabs: tabs,
+      ),
+    );
+  }
+}
 
 class _HomeTabHeader extends StatelessWidget {
   final String title;
@@ -2424,12 +4807,12 @@ class _HomeTabHeader extends StatelessWidget {
           Text(
             title,
             style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: AppColors.primary,
-                  fontWeight: FontWeight.w900,
-                ),
+              color: AppColors.primary,
+              fontWeight: FontWeight.w900,
+            ),
           ),
           const Spacer(),
-          if (trailing != null) trailing!,
+          if (trailing case final Widget w) w,
         ],
       ),
     );
@@ -2443,11 +4826,7 @@ class _CardBox extends StatelessWidget {
   final EdgeInsetsGeometry? padding;
   final EdgeInsetsGeometry? margin;
 
-  const _CardBox({
-    required this.child,
-    this.padding,
-    this.margin,
-  });
+  const _CardBox({required this.child, this.padding, this.margin});
 
   @override
   Widget build(BuildContext context) {
@@ -2515,9 +4894,9 @@ class _HighlightCard extends StatelessWidget {
                 Text(
                   item.title,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: AppColors.onBackground,
-                        fontWeight: FontWeight.w800,
-                      ),
+                    color: AppColors.onBackground,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 Text(
@@ -2572,7 +4951,11 @@ class _HighlightCard extends StatelessWidget {
                     value: 'edit',
                     child: Row(
                       children: [
-                        Icon(Icons.edit, size: 20, color: AppColors.textSecondary),
+                        Icon(
+                          Icons.edit,
+                          size: 20,
+                          color: AppColors.textSecondary,
+                        ),
                         SizedBox(width: 8),
                         Text('Bewerken'),
                       ],
@@ -2583,9 +4966,16 @@ class _HighlightCard extends StatelessWidget {
                     value: 'delete',
                     child: Row(
                       children: [
-                        Icon(Icons.delete_outline, size: 20, color: AppColors.error),
+                        Icon(
+                          Icons.delete_outline,
+                          size: 20,
+                          color: AppColors.error,
+                        ),
                         SizedBox(width: 8),
-                        Text('Verwijderen', style: TextStyle(color: AppColors.error)),
+                        Text(
+                          'Verwijderen',
+                          style: TextStyle(color: AppColors.error),
+                        ),
                       ],
                     ),
                   ),
@@ -2618,37 +5008,83 @@ class _HighlightEditResult {
     String iconText,
     DateTime? visibleUntil,
   ) : this._(
-          isSave: true,
-          title: title,
-          subtitle: subtitle,
-          iconText: iconText,
-          visibleUntil: visibleUntil,
-        );
+        isSave: true,
+        title: title,
+        subtitle: subtitle,
+        iconText: iconText,
+        visibleUntil: visibleUntil,
+      );
+}
+
+class _HomeUpcomingMatch {
+  final String matchKey;
+  final String teamCode;
+  final DateTime startsAt;
+  final String summary;
+  final String location;
+  final int? fluitenTaskId;
+  final int? tellenTaskId;
+  final List<String> fluitenNames;
+  final List<String> tellenNames;
+  /// Thuiswedstrijd (uit DB) of uitwedstrijd (uit Nevobo API).
+  final bool isHome;
+
+  const _HomeUpcomingMatch({
+    required this.matchKey,
+    required this.teamCode,
+    required this.startsAt,
+    required this.summary,
+    required this.location,
+    required this.fluitenTaskId,
+    required this.tellenTaskId,
+    required this.fluitenNames,
+    required this.tellenNames,
+    this.isHome = true,
+  });
+
+  _HomeUpcomingMatch copyWith({
+    List<String>? fluitenNames,
+    List<String>? tellenNames,
+    bool? isHome,
+  }) {
+    return _HomeUpcomingMatch(
+      matchKey: matchKey,
+      teamCode: teamCode,
+      startsAt: startsAt,
+      summary: summary,
+      location: location,
+      fluitenTaskId: fluitenTaskId,
+      tellenTaskId: tellenTaskId,
+      fluitenNames: fluitenNames ?? this.fluitenNames,
+      tellenNames: tellenNames ?? this.tellenNames,
+      isHome: isHome ?? this.isHome,
+    );
+  }
 }
 
 List<_Highlight> _mockHighlights() => const [
-      _Highlight(
-        id: null,
-        iconText: '📌',
-        title: 'Seizoensstart',
-        subtitle: 'Belangrijke clubafspraken en planning',
-        visibleUntil: null,
-      ),
-      _Highlight(
-        id: null,
-        iconText: '🏆',
-        title: 'Toernooi',
-        subtitle: 'Inschrijving geopend (jeugd & senioren)',
-        visibleUntil: null,
-      ),
-      _Highlight(
-        id: null,
-        iconText: '🤝',
-        title: 'Vrijwilligers gezocht',
-        subtitle: 'Tafelaars en scheidsrechters nodig',
-        visibleUntil: null,
-      ),
-    ];
+  _Highlight(
+    id: null,
+    iconText: '📌',
+    title: 'Seizoensstart',
+    subtitle: 'Belangrijke clubafspraken en planning',
+    visibleUntil: null,
+  ),
+  _Highlight(
+    id: null,
+    iconText: '🏆',
+    title: 'Toernooi',
+    subtitle: 'Inschrijving geopend (jeugd & senioren)',
+    visibleUntil: null,
+  ),
+  _Highlight(
+    id: null,
+    iconText: '🤝',
+    title: 'Vrijwilligers gezocht',
+    subtitle: 'Tafelaars en scheidsrechters nodig',
+    visibleUntil: null,
+  ),
+];
 
 /* ----------------------- AGENDA ----------------------- */
 
@@ -2659,6 +5095,9 @@ class _AgendaItem {
   final String when;
   final String where;
   final bool canRsvp;
+  final String? rsvpLabel;
+  final List<int>? allowedTeamIds;
+  final List<String>? allowedCommitteeKeys;
   final DateTime? startDatetime;
   final DateTime? endDatetime;
   final String? dateLabel;
@@ -2673,6 +5112,9 @@ class _AgendaItem {
     required this.when,
     required this.where,
     required this.canRsvp,
+    this.rsvpLabel,
+    this.allowedTeamIds,
+    this.allowedCommitteeKeys,
     this.startDatetime,
     this.endDatetime,
     this.dateLabel,
@@ -2680,6 +5122,42 @@ class _AgendaItem {
     this.endDateLabel,
     this.endTimeLabel,
   });
+
+  /// Gebruiker mag aanmelden als: geen restricties, of in toegestaan team/commissie.
+  bool canUserSignUp(AppUserContext ctx) {
+    if (!canRsvp) return false;
+    // Gast/toeschouwer zonder echt profiel mag niet aanmelden.
+    if (ctx.profileId.trim().isEmpty) return false;
+    final hasTeamRestrict =
+        allowedTeamIds != null && allowedTeamIds!.isNotEmpty;
+    final hasCommitteeRestrict =
+        allowedCommitteeKeys != null && allowedCommitteeKeys!.isNotEmpty;
+    if (!hasTeamRestrict && !hasCommitteeRestrict) return true;
+    if (hasTeamRestrict &&
+        ctx.memberships.any((m) => allowedTeamIds!.contains(m.teamId))) {
+      return true;
+    }
+    if (hasCommitteeRestrict) {
+      final keys = allowedCommitteeKeys!
+          .map((k) => k.trim().toLowerCase())
+          .toSet();
+      final userCommittees = ctx.committees
+          .map((c) => c.trim().toLowerCase())
+          .toSet();
+      if (userCommittees.any(
+        (uc) =>
+            keys.contains(uc) ||
+            keys.any((k) => uc == k || uc.contains(k) || k.contains(uc)),
+      )) {
+        return true;
+      }
+      if (ctx.hasFullAdminRights && keys.contains('admin')) return true;
+    }
+    return false;
+  }
+
+  String get signupButtonLabel =>
+      (rsvpLabel?.trim().isNotEmpty == true) ? rsvpLabel! : 'Aanmelden';
 }
 
 class _AgendaSignup {
@@ -2701,7 +5179,10 @@ class _AgendaSignup {
 class _AgendaCard extends StatelessWidget {
   final _AgendaItem item;
   final bool signedUp;
+  /// Bij aanmelding: "Zelf, Jan" voor knoptekst "Aangemeld (Zelf, Jan)".
+  final String? signedUpLabel;
   final bool enabled;
+  final bool showSignupButton;
   final bool canManage;
   final VoidCallback onToggleRsvp;
   final VoidCallback onReadMore;
@@ -2711,7 +5192,9 @@ class _AgendaCard extends StatelessWidget {
   const _AgendaCard({
     required this.item,
     required this.signedUp,
+    this.signedUpLabel,
     required this.enabled,
+    this.showSignupButton = true,
     required this.canManage,
     required this.onToggleRsvp,
     required this.onReadMore,
@@ -2725,21 +5208,21 @@ class _AgendaCard extends StatelessWidget {
     // Geen einddatum → niet weergeven;zelfde dag → alleen begindatum, geen "t/m".
     final dateLine = item.dateLabel != null
         ? (item.endDateLabel != null && item.endDateLabel != item.dateLabel
-            ? '${item.dateLabel!} t/m ${item.endDateLabel!}'
-            : item.dateLabel!)
+              ? '${item.dateLabel!} t/m ${item.endDateLabel!}'
+              : item.dateLabel!)
         : null;
     final timeRange = item.timeLabel != null
         ? (item.endTimeLabel != null && item.endTimeLabel != item.timeLabel
-            ? '${item.timeLabel!} – ${item.endTimeLabel!}'
-            : item.timeLabel!)
+              ? '${item.timeLabel!} – ${item.endTimeLabel!}'
+              : item.timeLabel!)
         : null;
     final timeLocation = timeRange != null
         ? [timeRange, item.where].where((s) => s.isNotEmpty).join(' • ')
         : [item.when, item.where].where((s) => s.isNotEmpty).join(' • ');
     final showMenu = canManage && (onEdit != null || onDelete != null);
-    final secondaryStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
-          color: AppColors.textSecondary,
-        );
+    final secondaryStyle = Theme.of(
+      context,
+    ).textTheme.bodySmall?.copyWith(color: AppColors.textSecondary);
 
     return _CardBox(
       child: Column(
@@ -2755,15 +5238,19 @@ class _AgendaCard extends StatelessWidget {
                     Text(
                       item.title,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: AppColors.onBackground,
-                            fontWeight: FontWeight.w700,
-                          ),
+                        color: AppColors.onBackground,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     if (dateLine != null) ...[
                       const SizedBox(height: 6),
                       Row(
                         children: [
-                          Icon(Icons.calendar_today, size: 14, color: AppColors.textSecondary),
+                          Icon(
+                            Icons.calendar_today,
+                            size: 14,
+                            color: AppColors.textSecondary,
+                          ),
                           const SizedBox(width: 6),
                           Text(dateLine, style: secondaryStyle),
                         ],
@@ -2773,7 +5260,11 @@ class _AgendaCard extends StatelessWidget {
                       const SizedBox(height: 4),
                       Row(
                         children: [
-                          Icon(Icons.schedule, size: 14, color: AppColors.textSecondary),
+                          Icon(
+                            Icons.schedule,
+                            size: 14,
+                            color: AppColors.textSecondary,
+                          ),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(timeLocation, style: secondaryStyle),
@@ -2786,7 +5277,10 @@ class _AgendaCard extends StatelessWidget {
               ),
               if (showMenu)
                 PopupMenuButton<String>(
-                  icon: const Icon(Icons.more_vert, color: AppColors.textSecondary),
+                  icon: const Icon(
+                    Icons.more_vert,
+                    color: AppColors.textSecondary,
+                  ),
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 1),
                   tooltip: 'Meer opties',
@@ -2800,7 +5294,11 @@ class _AgendaCard extends StatelessWidget {
                         value: 'edit',
                         child: Row(
                           children: [
-                            Icon(Icons.edit, size: 20, color: AppColors.textSecondary),
+                            Icon(
+                              Icons.edit,
+                              size: 20,
+                              color: AppColors.textSecondary,
+                            ),
                             SizedBox(width: 8),
                             Text('Bewerken'),
                           ],
@@ -2811,9 +5309,16 @@ class _AgendaCard extends StatelessWidget {
                         value: 'delete',
                         child: Row(
                           children: [
-                            Icon(Icons.delete_outline, size: 20, color: AppColors.error),
+                            Icon(
+                              Icons.delete_outline,
+                              size: 20,
+                              color: AppColors.error,
+                            ),
                             SizedBox(width: 8),
-                            Text('Verwijderen', style: TextStyle(color: AppColors.error)),
+                            Text(
+                              'Verwijderen',
+                              style: TextStyle(color: AppColors.error),
+                            ),
                           ],
                         ),
                       ),
@@ -2824,21 +5329,51 @@ class _AgendaCard extends StatelessWidget {
           const SizedBox(height: 12),
           Row(
             children: [
-              if (item.canRsvp) ...[
-                SizedBox(
-                  height: 36,
-                  child: OutlinedButton(
-                    onPressed: enabled ? onToggleRsvp : null,
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    child: Text(signedUp ? 'Afmelden' : 'Aanmelden'),
+              if (showSignupButton) ...[
+                Expanded(
+                  child: SizedBox(
+                    height: 36,
+                    child: signedUp
+                        ? Tooltip(
+                            message: 'Tik om aanmelding te wijzigen',
+                            child: FilledButton.icon(
+                              onPressed: enabled ? onToggleRsvp : null,
+                              style: FilledButton.styleFrom(
+                                backgroundColor: AppColors.success,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                ),
+                                minimumSize: Size.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              icon: const Icon(Icons.check_circle, size: 18),
+                              label: Text(
+                                (signedUpLabel ?? '').trim().isNotEmpty
+                                    ? 'Aangemeld ($signedUpLabel)'
+                                    : 'Aangemeld',
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                              ),
+                            ),
+                          )
+                        : OutlinedButton(
+                            onPressed: enabled ? onToggleRsvp : null,
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: Text(
+                              item.signupButtonLabel,
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            ),
+                          ),
                   ),
                 ),
               ],
-              const Spacer(),
+              const SizedBox(width: 8),
               TextButton(
                 onPressed: onReadMore,
                 style: TextButton.styleFrom(
@@ -2856,37 +5391,6 @@ class _AgendaCard extends StatelessWidget {
     );
   }
 }
-
-List<_AgendaItem> _mockAgenda() => const [
-      _AgendaItem(
-        id: null,
-        title: 'Algemene ledenvergadering',
-        description: 'Jaarlijkse ALV met stemming over het jaarverslag.',
-        when: 'Ma 15 jan • 20:00',
-        where: 'Kantine',
-        canRsvp: false,
-        startDatetime: null,
-        endDatetime: null,
-        dateLabel: '15-01-2025',
-        timeLabel: '20:00',
-        endDateLabel: null,
-        endTimeLabel: null,
-      ),
-      _AgendaItem(
-        id: null,
-        title: 'Clubdag',
-        description: 'Sportieve dag voor jeugd en senioren.',
-        when: 'Za 10 feb • 10:00',
-        where: 'Sporthal',
-        canRsvp: true,
-        startDatetime: null,
-        endDatetime: null,
-        dateLabel: '10-02-2025',
-        timeLabel: '10:00',
-        endDateLabel: null,
-        endTimeLabel: null,
-      ),
-    ];
 
 /* ----------------------- NIEUWS ----------------------- */
 
@@ -2908,6 +5412,8 @@ class _NewsCard extends StatelessWidget {
   final VoidCallback? onReadMore;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
+  final Future<void> Function(String url)? onOpenUrl;
+  final Widget Function(String url, {double? height, BoxFit fit})? imageBuilder;
 
   const _NewsCard({
     required this.item,
@@ -2915,13 +5421,38 @@ class _NewsCard extends StatelessWidget {
     this.onReadMore,
     this.onEdit,
     this.onDelete,
+    this.onOpenUrl,
+    this.imageBuilder,
   });
+
+  static List<NewsLink> _fallbackLinksFromText(String text) {
+    final re = RegExp(r'(https?:\/\/[^\s)]+|www\.[^\s)]+)', caseSensitive: false);
+    final urls = <String>{};
+    for (final m in re.allMatches(text)) {
+      final raw = m.group(0)?.trim() ?? '';
+      if (raw.isEmpty) continue;
+      var cleaned = raw.replaceAll(RegExp(r'[.,;!?]+$'), '');
+      if (cleaned.toLowerCase().startsWith('www.')) {
+        cleaned = 'https://$cleaned';
+      }
+      final uri = Uri.tryParse(cleaned);
+      if (uri != null &&
+          uri.hasScheme &&
+          (uri.scheme == 'http' || uri.scheme == 'https')) {
+        urls.add(cleaned);
+      }
+    }
+    return urls.map((u) => NewsLink(url: u)).toList();
+  }
 
   @override
   Widget build(BuildContext context) {
     final showMenu = canManage;
     final canEdit = onEdit != null;
     final canDelete = onDelete != null;
+    final visibleLinks = item.links.isNotEmpty
+        ? item.links
+        : _fallbackLinksFromText('${item.title}\n${item.body}');
 
     return _CardBox(
       margin: const EdgeInsets.only(bottom: 12),
@@ -2933,7 +5464,6 @@ class _NewsCard extends StatelessWidget {
             spacing: 8,
             runSpacing: 8,
             children: [
-              _Pill(item.category.label),
               _Pill(item.author),
               Text(
                 _newsDateLabel(item.date),
@@ -2954,17 +5484,44 @@ class _NewsCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
-                child: Text(
-                  item.title,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item.title,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: AppColors.onBackground,
                         fontWeight: FontWeight.w800,
                       ),
+                    ),
+                    if (item.imageUrls.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: imageBuilder != null
+                            ? imageBuilder!(
+                                item.imageUrls.first,
+                                height: 100,
+                                fit: BoxFit.cover,
+                              )
+                            : Image.network(
+                                item.imageUrls.first,
+                                height: 100,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) =>
+                                    const SizedBox.shrink(),
+                              ),
+                      ),
+                    ],
+                  ],
                 ),
               ),
               if (showMenu)
                 PopupMenuButton<String>(
-                  icon: const Icon(Icons.more_vert, color: AppColors.textSecondary),
+                  icon: const Icon(
+                    Icons.more_vert,
+                    color: AppColors.textSecondary,
+                  ),
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 1),
                   tooltip: 'Meer opties',
@@ -2978,7 +5535,15 @@ class _NewsCard extends StatelessWidget {
                       enabled: canEdit,
                       child: Row(
                         children: [
-                          Icon(Icons.edit, size: 20, color: canEdit ? AppColors.textSecondary : AppColors.textSecondary.withValues(alpha: 0.5)),
+                          Icon(
+                            Icons.edit,
+                            size: 20,
+                            color: canEdit
+                                ? AppColors.textSecondary
+                                : AppColors.textSecondary.withValues(
+                                    alpha: 0.5,
+                                  ),
+                          ),
                           const SizedBox(width: 8),
                           Text('Bewerken'),
                         ],
@@ -2989,9 +5554,22 @@ class _NewsCard extends StatelessWidget {
                       enabled: canDelete,
                       child: Row(
                         children: [
-                          Icon(Icons.delete_outline, size: 20, color: canDelete ? AppColors.error : AppColors.error.withValues(alpha: 0.5)),
+                          Icon(
+                            Icons.delete_outline,
+                            size: 20,
+                            color: canDelete
+                                ? AppColors.error
+                                : AppColors.error.withValues(alpha: 0.5),
+                          ),
                           const SizedBox(width: 8),
-                          Text('Verwijderen', style: TextStyle(color: canDelete ? AppColors.error : AppColors.error.withValues(alpha: 0.5))),
+                          Text(
+                            'Verwijderen',
+                            style: TextStyle(
+                              color: canDelete
+                                  ? AppColors.error
+                                  : AppColors.error.withValues(alpha: 0.5),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -3006,6 +5584,43 @@ class _NewsCard extends StatelessWidget {
             overflow: onReadMore != null ? TextOverflow.ellipsis : null,
             style: const TextStyle(color: AppColors.textSecondary),
           ),
+          if (visibleLinks.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: () => onOpenUrl?.call(visibleLinks.first.url),
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    const Icon(Icons.link, size: 16, color: AppColors.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        visibleLinks.first.displayLabel,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: AppColors.primary,
+                          decoration: TextDecoration.underline,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (visibleLinks.length > 1)
+                      Text(
+                        '+${visibleLinks.length - 1}',
+                        style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           if (onReadMore != null) ...[
             const SizedBox(height: 10),
             Align(
@@ -3048,9 +5663,9 @@ class _Pill extends StatelessWidget {
       child: Text(
         text,
         style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: AppColors.onBackground,
-              fontWeight: FontWeight.w700,
-            ),
+          color: AppColors.onBackground,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }

@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("kotlin-android")
+    id("com.google.gms.google-services")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
@@ -22,9 +23,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "nl.minerva.clubapp"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        applicationId = "nl.minerva.clubapp.v2"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
@@ -37,14 +36,19 @@ android {
         keystoreProperties.load(keystorePropertiesFile.inputStream())
     }
 
+    val keystoreFile = run {
+        if (!keystorePropertiesFile.exists()) null
+        else {
+            val path = keystoreProperties["storeFile"]?.toString()
+            if (path.isNullOrBlank()) null
+            else rootProject.file(path).takeIf { it.exists() }
+        }
+    }
+
     signingConfigs {
-        // Uses android/key.properties if present (recommended for Play Store uploads).
-        if (keystorePropertiesFile.exists()) {
+        if (keystoreFile != null) {
             create("release") {
-                val storeFilePath = keystoreProperties["storeFile"]?.toString()
-                if (!storeFilePath.isNullOrBlank()) {
-                    storeFile = file(storeFilePath)
-                }
+                storeFile = keystoreFile
                 storePassword = keystoreProperties["storePassword"]?.toString()
                 keyAlias = keystoreProperties["keyAlias"]?.toString()
                 keyPassword = keystoreProperties["keyPassword"]?.toString()
@@ -54,13 +58,23 @@ android {
 
     buildTypes {
         release {
-            // If android/key.properties exists we sign with release; otherwise fall back to debug.
-            signingConfig = if (keystorePropertiesFile.exists())
+            // Gebruik release signing alleen als key.properties én keystore bestaan; anders debug.
+            signingConfig = if (keystoreFile != null)
                 signingConfigs.getByName("release")
             else
                 signingConfigs.getByName("debug")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
+}
+
+dependencies {
+    implementation("androidx.activity:activity-ktx:1.9.3")
 }
 
 flutter {

@@ -1,10 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/committees/committee_normalization.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:minerva_app/ui/notifications/notification_service.dart';
 
 /// Wrapt jouw app met AppUserContext.
@@ -30,6 +34,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
   bool _suppressOuderKindReload = false;
 
   bool _loading = true;
+  bool _initialLoadComplete = false;
   bool _isGlobalAdmin = false;
 
   String _profileId = '';
@@ -39,6 +44,19 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
 
   List<TeamMembership> _memberships = const [];
   List<String> _committees = const [];
+
+  bool _isAnonymousAuthUser(User? user) {
+    if (user == null) return false;
+    final appMeta = user.appMetadata;
+    final userMeta = user.userMetadata ?? const <String, dynamic>{};
+    final provider = (appMeta['provider'] ?? '').toString().toLowerCase();
+    final guestEmail = (dotenv.env['GUEST_EMAIL'] ?? '').trim().toLowerCase();
+    final userEmail = (user.email ?? '').trim().toLowerCase();
+    final isAnonymousFlag = (appMeta['is_anonymous'] == true) ||
+        (userMeta['is_anonymous'] == true);
+    final isGuestEmail = guestEmail.isNotEmpty && userEmail == guestEmail;
+    return isAnonymousFlag || provider == 'anonymous' || isGuestEmail;
+  }
 
   @override
   void initState() {
@@ -53,6 +71,10 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       _reload();
     });
     _reload();
+    // Voorkom eindeloze freeze: als een Supabase-call blijft hangen, na 15s toch UI tonen.
+    Future.delayed(const Duration(seconds: 15), () {
+      if (mounted && _loading) setState(() => _loading = false);
+    });
   }
 
   void _onOuderKindChanged() {
@@ -71,7 +93,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     setState(() => _loading = true);
 
     final user = _client.auth.currentUser;
-    if (user == null) {
+    if (user == null || _isAnonymousAuthUser(user)) {
       _suppressOuderKindReload = true;
       try {
         _ouderKindNotifier.setViewingAs(null, null);
@@ -88,10 +110,10 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
         _memberships = const [];
         _committees = const [];
         _loading = false;
+        _initialLoadComplete = false;
       });
       return;
     }
-
     // If the logged-in user changes, clear any "view as child" state immediately.
     final prevLoggedIn = _loggedInProfileId;
     _loggedInProfileId = user.id;
@@ -116,9 +138,9 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
             final m = e as Map<String, dynamic>?;
             if (m == null) return null;
             final id = m['profile_id']?.toString();
-            final name = m['display_name']?.toString() ?? m['profile_id']?.toString() ?? '';
+            final name = (m['display_name']?.toString() ?? '').trim();
             if (id == null || id.isEmpty) return null;
-            return LinkedChild(profileId: id, displayName: name.trim().isEmpty ? 'Kind' : name);
+            return LinkedChild(profileId: id, displayName: name.isEmpty ? 'Kind' : name);
           })
           .whereType<LinkedChild>()
           .toList() ??
@@ -181,21 +203,44 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       if (!teamIds.contains(teamId)) teamIds.add(teamId);
     }
 
-    // 3) Teamnamen ophalen zonder join (dus geen FK nodig).
-    // We don't know your exact teams column names, so we try a few common options.
-    final teamNamesById = await _loadTeamNames(teamIds: teamIds);
+    // 3) Teamnamen (+ nevobo_code) ophalen. Eerst directe tabel, dan RPC-fallback (zelfde als Profiel).
+    Map<int, String> teamNamesById = await _loadTeamNames(teamIds: teamIds);
+    final nevoboCodeById = <int, String>{};
+    if (teamIds.isNotEmpty) {
+      try {
+        final rpc = await _client.rpc(
+          'get_team_names_for_app',
+          params: {'p_team_ids': teamIds},
+        );
+        final rows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+        for (final r in rows) {
+          final tid = (r['team_id'] as num?)?.toInt();
+          if (tid == null) continue;
+          final name = (r['team_name'] as String?) ?? '';
+          if (name.trim().isNotEmpty && (teamNamesById[tid] ?? '').trim().isEmpty) {
+            teamNamesById = {...teamNamesById, tid: name.trim()};
+          }
+          final code = (r['nevobo_code'] as String?)?.trim();
+          if (code != null && code.isNotEmpty) nevoboCodeById[tid] = code;
+        }
+      } catch (_) {}
+    }
 
     // 4) Bouw memberships
     final memberships = <TeamMembership>[];
+    final membershipTeamIds = <int>{};
 
     // Own roles (player/trainer)
     for (final row in ownTmRows) {
       final m = row as Map<String, dynamic>;
       final teamId = (m['team_id'] as num).toInt();
+      membershipTeamIds.add(teamId);
       final roleRaw = (m['role'] as String?) ?? 'player';
       final role = _normalizeRole(roleRaw);
-      final teamName = teamNamesById[teamId] ?? '';
-      memberships.add(TeamMembership(teamId: teamId, role: role, teamName: teamName));
+      final raw = teamNamesById[teamId] ?? '';
+      final teamName = raw.isEmpty ? raw : NevoboApi.displayTeamName(raw);
+      final nevoboCode = nevoboCodeById[teamId];
+      memberships.add(TeamMembership(teamId: teamId, role: role, teamName: teamName, nevoboCode: nevoboCode));
     }
 
     // Guardian roles (ouder/verzorger): include teams where ANY linked account is a player.
@@ -205,14 +250,88 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     for (final row in linkedTmRows) {
       final m = row as Map<String, dynamic>;
       final teamId = (m['team_id'] as num).toInt();
+      final profileId = (m['profile_id']?.toString() ?? '').trim();
       final roleRaw = (m['role'] as String?) ?? 'player';
       final normalized = _normalizeRole(roleRaw);
       if (normalized != 'player') continue;
-      final teamName = teamNamesById[teamId] ?? '';
+      final raw = teamNamesById[teamId] ?? '';
+      final teamName = raw.isEmpty ? raw : NevoboApi.displayTeamName(raw);
+      final nevoboCode = nevoboCodeById[teamId];
+      final linkedChildName = profileId.isEmpty
+          ? null
+          : _ouderKindNotifier.linkedChildren
+              .where((c) => c.profileId == profileId)
+              .map((c) => c.displayName.trim())
+              .where((s) => s.isNotEmpty)
+              .firstOrNull;
       final key = '$teamId:guardian';
       if (seen.add(key)) {
-        memberships.add(TeamMembership(teamId: teamId, role: 'guardian', teamName: teamName));
+        membershipTeamIds.add(teamId);
+        memberships.add(TeamMembership(
+          teamId: teamId,
+          role: 'guardian',
+          teamName: teamName,
+          nevoboCode: nevoboCode,
+          linkedChildDisplayName: linkedChildName,
+        ));
       }
+    }
+
+    // Global admin: voeg alle overige teams toe als role 'admin' (toegang tot alles).
+    if (isGlobalAdmin) {
+      try {
+        final allTeamsRes = await _client.rpc(
+          'get_all_teams_for_app',
+          params: {'p_include_training_only': true},
+        );
+        final allTeamsRows = (allTeamsRes as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+        final allTeamIds = allTeamsRows
+            .map((r) => (r['team_id'] as num?)?.toInt())
+            .whereType<int>()
+            .where((tid) => !membershipTeamIds.contains(tid))
+            .toSet()
+            .toList()
+          ..sort();
+        if (allTeamIds.isNotEmpty) {
+          Map<int, String> allNames = {};
+          final byId = <int, String>{};
+          for (final r in allTeamsRows) {
+            final tid = (r['team_id'] as num?)?.toInt();
+            if (tid == null) continue;
+            final name = (r['team_name'] as String?)?.toString().trim() ?? '';
+            if (name.isNotEmpty) byId[tid] = name;
+          }
+          allNames = byId;
+          final nevoboById = <int, String>{};
+          try {
+            final rpc = await _client.rpc(
+              'get_team_names_for_app',
+              params: {'p_team_ids': allTeamIds},
+            );
+            final nameRows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+            for (final r in nameRows) {
+              final tid = (r['team_id'] as num?)?.toInt();
+              if (tid == null) continue;
+              final code = (r['nevobo_code'] as String?)?.trim();
+              if (code != null && code.isNotEmpty) nevoboById[tid] = code;
+              if ((allNames[tid] ?? '').trim().isEmpty && (r['team_name'] as String?)?.trim().isNotEmpty == true) {
+                allNames = {...allNames, tid: (r['team_name'] as String).trim()};
+              }
+            }
+          } catch (_) {}
+          for (final tid in allTeamIds) {
+            final name = allNames[tid]?.trim().isNotEmpty == true
+                ? NevoboApi.displayTeamName(allNames[tid]!)
+                : 'Team $tid';
+            memberships.add(TeamMembership(
+              teamId: tid,
+              role: 'admin',
+              teamName: name,
+              nevoboCode: nevoboById[tid],
+            ));
+          }
+        }
+      } catch (_) {}
     }
 
     // 5) Commissies altijd voor de ingelogde user (ouder/verzorger behoudt eigen commissies).
@@ -245,6 +364,9 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
 
     displayName = applyDisplayNameOverrides(displayName);
 
+    // Algemeen admin: toon altijd "Admin" als weergavenaam.
+    if (isGlobalAdmin) displayName = 'Admin';
+
     // If this user only has the ouder/verzorger role (no own team memberships),
     // show a clearer label: "Naam (ouder/verzorger 'Gekoppeld account')".
     if (ownTmRows.isEmpty && _ouderKindNotifier.linkedChildren.isNotEmpty) {
@@ -256,27 +378,26 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       displayName = "$displayName (ouder/verzorger '$suffix')";
     }
 
+    if (!mounted) return;
     setState(() {
       _isGlobalAdmin = isGlobalAdmin;
       _memberships = memberships;
       _committees = committees;
       _displayName = displayName;
       _loading = false;
+      _initialLoadComplete = true;
     });
 
-    // Best-effort OneSignal user sync (no-op if not supported / not initialized yet).
-    // We schedule it post-frame so it can run after OneSignal initialize in main().
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      NotificationService.syncUser(
-        profileId: _profileId,
-        email: _email,
-        isGlobalAdmin: _isGlobalAdmin,
-        memberships: _memberships,
-        committees: _committees,
-      );
+    // FCM: token en standaardvoorkeur registreren na inloggen.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await NotificationService.syncUser(profileId: _profileId);
+      } catch (_) {}
     });
   }
 
+  /// Normaliseert DB-rol naar waarde die TeamMembership gebruikt.
+  /// Speler-tab toont teams waar role in [player, speler, trainingslid, supporter, guardian] is.
   String _normalizeRole(String value) {
     final r = value.trim().toLowerCase();
     switch (r) {
@@ -285,8 +406,11 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
         return 'trainer';
       case 'trainingslid':
         return 'trainingslid';
+      case 'supporter':
+        return 'supporter';
       case 'speler':
       case 'player':
+      case 'lid': // soms gebruikt in UI/DB
       default:
         return 'player';
     }
@@ -335,62 +459,60 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
 
   Future<List<String>> _loadCommittees({required String profileId}) async {
     try {
+      final rpc = await _client.rpc('get_my_committees');
+      final rows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+      final set = <String>{};
+      for (final row in rows) {
+        final raw = row['committee_name']?.toString() ?? '';
+        final normalized = normalizeCommitteeKey(raw);
+        if (normalized.isNotEmpty) set.add(normalized);
+      }
+      if (set.isNotEmpty) return set.toList()..sort();
+    } catch (_) {}
+    try {
       final res = await _client
           .from('committee_members')
           .select('committee_name')
           .eq('profile_id', profileId);
-
       final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
       final set = <String>{};
       for (final row in rows) {
         final raw = row['committee_name']?.toString() ?? '';
-        final normalized = _normalizeCommittee(raw);
+        final normalized = normalizeCommitteeKey(raw);
         if (normalized.isNotEmpty) set.add(normalized);
       }
       return set.toList()..sort();
     } catch (_) {
-      // If table/column doesn't exist or RLS blocks it, just return empty.
       return const [];
     }
   }
 
-  String _normalizeCommittee(String value) {
-    final c = value.trim().toLowerCase();
-    if (c.isEmpty) return '';
-    // Accept common variations.
-    if (c == 'bestuur') return 'bestuur';
-    if (c == 'tc' || c.contains('technische')) return 'technische-commissie';
-    if (c == 'cc' || c.contains('communicatie')) return 'communicatie';
-    if (c == 'wz' || c.contains('wedstrijd')) return 'wedstrijdzaken';
-    return c;
-  }
 
   @override
   Widget build(BuildContext context) {
-    // Belangrijk:
-    // - We houden AppUserContext én de volledige Navigator (widget.child) altijd gemount.
-    // - Tijdens reload/auth events tonen we alleen een overlay bovenop de app.
-    //   Als je de Navigator vervangt (bijv. door een loading Scaffold), kan een open dialog
-    //   nog afhankelijk zijn van inherited widgets, wat kan leiden tot:
-    //   `Failed assertion: '_dependents.isEmpty'`.
-    final base = widget.child;
-
-    final child = Stack(
-      children: [
-        base,
-        if (_loading)
-          Positioned.fill(
-            child: IgnorePointer(
-              ignoring: false,
-              child: Container(
-                color: Colors.black.withValues(alpha: 0.25),
-                alignment: Alignment.center,
-                child: const CircularProgressIndicator(),
+    final hasSession = _client.auth.currentUser != null;
+    // Alleen volledig laadscherm bij eerste load; bij refresh blijft de huidige pagina zichtbaar.
+    final showApp = !hasSession || !_loading || _initialLoadComplete;
+    final content = showApp
+        ? widget.child
+        : Scaffold(
+            backgroundColor: Colors.transparent,
+            body: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: AppColors.primary),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Laden…',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                  ),
+                ],
               ),
             ),
-          ),
-      ],
-    );
+          );
 
     return AppUserContext(
       profileId: _profileId,
@@ -405,7 +527,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       viewingAsDisplayName: _ouderKindNotifier.viewingAsDisplayName,
       linkedChildProfiles: _ouderKindNotifier.linkedChildren,
       ouderKindNotifier: _ouderKindNotifier,
-      child: child,
+      child: content,
     );
   }
 }

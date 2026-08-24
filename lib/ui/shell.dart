@@ -1,10 +1,10 @@
 // lib/ui/shell.dart
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
-import 'package:minerva_app/ui/branded_background.dart';
 
 import 'package:minerva_app/ui/home/home_tab.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/trainingen_wedstrijden_tab.dart';
@@ -12,6 +12,40 @@ import 'package:minerva_app/ui/tasks/my_tasks_tab.dart';
 import 'package:minerva_app/ui/info/info_tab.dart';
 import 'package:minerva_app/profiel/profiel_tab.dart';
 import 'package:minerva_app/ui/commissies/commissies_tab.dart';
+
+/// Callbacks voor in-app navigatie (bijv. Commissie → Contact zonder nieuw scherm).
+class ShellNavigatorScope extends InheritedWidget {
+  final VoidCallback switchToContactTab;
+
+  const ShellNavigatorScope({
+    super.key,
+    required this.switchToContactTab,
+    required super.child,
+  });
+
+  static ShellNavigatorScope? of(BuildContext context) {
+    return context.dependOnInheritedWidgetOfExactType<ShellNavigatorScope>();
+  }
+
+  @override
+  bool updateShouldNotify(ShellNavigatorScope oldWidget) =>
+      switchToContactTab != oldWidget.switchToContactTab;
+
+  /// Statische fallback wanneer InheritedWidget niet bereikbaar is (bijv. in dialogs).
+  static VoidCallback? _switchToContactTab;
+
+  static void registerSwitchToContactTab(VoidCallback cb) {
+    _switchToContactTab = cb;
+  }
+
+  static void unregisterSwitchToContactTab() {
+    _switchToContactTab = null;
+  }
+
+  static void goToContactTab() {
+    _switchToContactTab?.call();
+  }
+}
 
 class Shell extends StatefulWidget {
   const Shell({super.key});
@@ -23,34 +57,118 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> {
   int _index = 0;
 
-  Widget _navIcon(IconData icon) => Container(
+  @override
+  void initState() {
+    super.initState();
+    ShellNavigatorScope.registerSwitchToContactTab(_switchToContactTab);
+  }
+
+  @override
+  void dispose() {
+    ShellNavigatorScope.unregisterSwitchToContactTab();
+    super.dispose();
+  }
+
+  void _switchToContactTab() {
+    final userContext = AppUserContext.of(context);
+    final hasTeam = userContext.memberships.isNotEmpty;
+    final hasCommittees = userContext.committees.isNotEmpty ||
+        userContext.hasFullAdminRights;
+    final manageableTeams = userContext.memberships
+        .where((m) => m.canManageTeam)
+        .toList();
+    final navItems = _buildNavItems(
+      manageableTeams: manageableTeams,
+      hasCommittees: hasCommittees,
+      hasTeam: hasTeam,
+      userContext: userContext,
+    );
+    int contactTabIndex = -1;
+    for (var i = 0; i < navItems.length; i++) {
+      if (navItems[i].page is InfoTab) {
+        contactTabIndex = i;
+        break;
+      }
+    }
+    if (contactTabIndex >= 0 && contactTabIndex != _index) {
+      setState(() => _index = contactTabIndex);
+    }
+  }
+
+  Widget _navIcon(IconData icon, {required bool selected}) => Container(
         padding: const EdgeInsets.all(6),
         decoration: BoxDecoration(
-          color: AppColors.darkBlue.withValues(alpha: 0.35),
+          color: AppColors.darkBlue.withValues(alpha: 0.5),
           borderRadius: BorderRadius.circular(8),
         ),
-        child: Icon(icon, size: 24, color: AppColors.primary),
+        child: Icon(
+          icon,
+          size: 24,
+          color: selected ? AppColors.primary : Colors.white,
+        ),
       );
 
   // Helper to keep nav structure in one place.
+  // Beperkte weergave alleen wanneer géén team én géén commissie. Met commissie (of admin) = volledige toegang.
   List<_NavItem> _buildNavItems({
     required List<TeamMembership> manageableTeams,
     required bool hasCommittees,
+    required bool hasTeam,
+    required AppUserContext userContext,
   }) {
+    final _ = userContext;
+
+    // Admin heeft altijd volledige toegang; anders: team of commissie nodig.
+    final hasFullAccess =
+        userContext.hasFullAdminRights || hasTeam || hasCommittees;
+    // Toeschouwer: geen rol → alleen Uitgelicht, Agenda, Nieuws, Standen, Contact, Profiel
+    if (!hasFullAccess) {
+      final isGuestViewer = userContext.profileId.trim().isEmpty;
+      return [
+        _NavItem(
+          page: HomeTab(
+            // Gastaccount: geen agenda-toegang.
+            showOnlyHighlightsAndNews: isGuestViewer,
+          ),
+          destination: NavigationDestination(
+            icon: _navIcon(Icons.home_outlined, selected: false),
+            selectedIcon: _navIcon(Icons.home, selected: true),
+            label: 'Home',
+          ),
+        ),
+        _NavItem(
+          page: const InfoTab(),
+          destination: NavigationDestination(
+            icon: _navIcon(Icons.mail_outline, selected: false),
+            selectedIcon: _navIcon(Icons.mail, selected: true),
+            label: 'Contact',
+          ),
+        ),
+        _NavItem(
+          page: const ProfielTab(),
+          destination: NavigationDestination(
+            icon: _navIcon(Icons.person_outline, selected: false),
+            selectedIcon: _navIcon(Icons.person, selected: true),
+            label: 'Profiel',
+          ),
+        ),
+      ];
+    }
+
     final items = <_NavItem>[
       _NavItem(
         page: const HomeTab(),
         destination: NavigationDestination(
-          icon: _navIcon(Icons.home_outlined),
-          selectedIcon: _navIcon(Icons.home),
+          icon: _navIcon(Icons.home_outlined, selected: false),
+          selectedIcon: _navIcon(Icons.home, selected: true),
           label: 'Home',
         ),
       ),
       _NavItem(
-        page: TrainingenWedstrijdenTab(manageableTeams: manageableTeams),
+        page: TrainingenWedstrijdenTab(manageableTeams: userContext.memberships),
         destination: NavigationDestination(
-          icon: _navIcon(Icons.emoji_events_outlined),
-          selectedIcon: _navIcon(Icons.emoji_events),
+          icon: _navIcon(Icons.emoji_events_outlined, selected: false),
+          selectedIcon: _navIcon(Icons.emoji_events, selected: true),
           label: 'Teams',
         ),
       ),
@@ -58,32 +176,32 @@ class _ShellState extends State<Shell> {
         _NavItem(
           page: const CommissiesTab(),
           destination: NavigationDestination(
-            icon: _navIcon(Icons.badge_outlined),
-            selectedIcon: _navIcon(Icons.badge),
+            icon: _navIcon(Icons.badge_outlined, selected: false),
+            selectedIcon: _navIcon(Icons.badge, selected: true),
             label: 'Commissie',
           ),
         ),
       _NavItem(
         page: const MyTasksTab(),
         destination: NavigationDestination(
-          icon: _navIcon(Icons.checklist_outlined),
-          selectedIcon: _navIcon(Icons.checklist),
+          icon: _navIcon(Icons.task_alt_outlined, selected: false),
+          selectedIcon: _navIcon(Icons.task_alt, selected: true),
           label: 'Taken',
         ),
       ),
       _NavItem(
         page: const InfoTab(),
         destination: NavigationDestination(
-          icon: _navIcon(Icons.mail_outline),
-          selectedIcon: _navIcon(Icons.mail),
+          icon: _navIcon(Icons.mail_outline, selected: false),
+          selectedIcon: _navIcon(Icons.mail, selected: true),
           label: 'Contact',
         ),
       ),
       _NavItem(
         page: const ProfielTab(),
         destination: NavigationDestination(
-          icon: _navIcon(Icons.person_outline),
-          selectedIcon: _navIcon(Icons.person),
+          icon: _navIcon(Icons.person_outline, selected: false),
+          selectedIcon: _navIcon(Icons.person, selected: true),
           label: 'Profiel',
         ),
       ),
@@ -95,54 +213,86 @@ class _ShellState extends State<Shell> {
   @override
   Widget build(BuildContext context) {
     final userContext = AppUserContext.of(context);
-    
+    final hasTeam = userContext.memberships.isNotEmpty;
+    final hasCommittees = userContext.committees.isNotEmpty ||
+        userContext.hasFullAdminRights;
+
     // Filter to only teams the user can manage
     final manageableTeams = userContext.memberships
         .where((m) => m.canManageTeam)
         .toList();
 
-    final hasCommittees = userContext.committees.isNotEmpty ||
-        userContext.hasFullAdminRights;
     final navItems = _buildNavItems(
       manageableTeams: manageableTeams,
       hasCommittees: hasCommittees,
+      hasTeam: hasTeam,
+      userContext: userContext,
     );
 
     final selectedIndex = _index.clamp(0, navItems.length - 1);
     final pages = navItems.map((i) => i.page).toList();
     final destinations = navItems.map((i) => i.destination).toList();
 
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.dark,
-        systemNavigationBarColor: Colors.transparent,
-        systemNavigationBarDividerColor: Colors.transparent,
-        systemNavigationBarIconBrightness: Brightness.light,
-      ),
-      child: Scaffold(
+    // Android 15+: statusBarColor/navigationBarColor/navigationBarDividerColor zijn beëindigd.
+    // Op Android alleen brightness; op iOS wel kleuren.
+    final overlayStyle = defaultTargetPlatform == TargetPlatform.android
+        ? const SystemUiOverlayStyle(
+            statusBarIconBrightness: Brightness.light,
+            statusBarBrightness: Brightness.dark,
+            systemNavigationBarIconBrightness: Brightness.light,
+          )
+        : SystemUiOverlayStyle(
+            statusBarColor: AppColors.darkBlue,
+            statusBarIconBrightness: Brightness.light,
+            systemNavigationBarColor: Colors.transparent,
+            systemNavigationBarDividerColor: Colors.transparent,
+            systemNavigationBarIconBrightness: Brightness.light,
+          );
+
+    return ShellNavigatorScope(
+      switchToContactTab: _switchToContactTab,
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: overlayStyle,
+        child: Scaffold(
         backgroundColor: Colors.transparent,
-        extendBody: true,
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            BrandedBackground(child: const SizedBox.shrink()),
-            SafeArea(
-              top: true,
-              bottom: false,
-              child: IndexedStack(
-                index: selectedIndex,
-                children: pages,
-              ),
-            ),
-          ],
+        extendBody: false,
+        body: SafeArea(
+          top: false,
+          bottom: false,
+          child: Builder(
+            builder: (context) {
+              // Donkerblauwe strook bovenin (statusbalk): overlay zodat tab-inhoud niet verschuift; min. 44 als fallback.
+              final topInset = MediaQuery.paddingOf(context).top;
+              final statusBarHeight = topInset > 0 ? topInset : 44.0;
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  IndexedStack(
+                    index: selectedIndex,
+                    children: pages,
+                  ),
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: ColoredBox(
+                        color: AppColors.darkBlue,
+                        child: SizedBox(height: statusBarHeight),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
         ),
         bottomNavigationBar: Theme(
           data: Theme.of(context).copyWith(
             navigationBarTheme: NavigationBarTheme.of(context).copyWith(
               iconTheme: WidgetStateProperty.resolveWith((states) {
                 return IconThemeData(
-                  color: Colors.white,
+                  color: AppColors.primary,
                   size: 24,
                 );
               }),
@@ -150,15 +300,17 @@ class _ShellState extends State<Shell> {
                 return TextStyle(
                   fontSize: 11,
                   fontWeight: states.contains(WidgetState.selected)
-                      ? FontWeight.w600
+                      ? FontWeight.w700
                       : FontWeight.w500,
-                  color: AppColors.primary,
+                  color: states.contains(WidgetState.selected)
+                      ? AppColors.primary
+                      : Colors.white,
                 );
               }),
             ),
           ),
           child: ColoredBox(
-            color: Colors.transparent,
+            color: AppColors.darkBlue,
             child: SafeArea(
               top: false,
               child: NavigationBar(
@@ -176,6 +328,7 @@ class _ShellState extends State<Shell> {
           ),
         ),
       ),
+    ),
     );
   }
 }

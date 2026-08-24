@@ -3,9 +3,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
+import 'package:minerva_app/ui/committees/committee_normalization.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
-import 'package:minerva_app/ui/display_name_overrides.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/commissies/commissies_tab.dart'
+    show CommitteeAgendaRsvpsView;
+import 'package:minerva_app/ui/notifications/notification_service.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/match_travel.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
 class BestuurTab extends StatefulWidget {
@@ -21,13 +26,19 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
+    _tabController.addListener(_onTabChanged);
   }
 
   @override
   void dispose() {
+    _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     super.dispose();
+  }
+
+  void _onTabChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -51,39 +62,45 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: SafeArea(
-        top: true,
+        top: false,
         bottom: false,
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              padding: AppColors.tabContentPadding,
               child: GlassCard(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 showBorder: false,
                 showShadow: false,
                 child: TabBar(
                   controller: _tabController,
+                  isScrollable: true,
+                  tabAlignment: TabAlignment.center,
                   dividerColor: Colors.transparent,
                   indicator: BoxDecoration(
                     color: AppColors.darkBlue,
                     borderRadius: BorderRadius.circular(AppColors.cardRadius),
                   ),
                   indicatorSize: TabBarIndicatorSize.tab,
+                  labelColor: AppColors.primary,
+                  unselectedLabelColor: AppColors.textSecondary,
                   tabs: const [
+                    Tab(text: 'Commissies'),
                     Tab(text: 'Trainingen'),
                     Tab(text: 'Wedstrijden'),
-                    Tab(text: 'Commissies'),
+                    Tab(text: 'Aanmeldingen'),
                   ],
                 ),
               ),
             ),
             Expanded(
-              child: TabBarView(
-                controller: _tabController,
+              child: IndexedStack(
+                index: _tabController.index,
                 children: const [
+                  _BestuurCommissiesView(),
                   _BestuurTrainingenView(),
                   _BestuurWedstrijdenView(),
-                  _BestuurCommissiesView(),
+                  CommitteeAgendaRsvpsView(),
                 ],
               ),
             ),
@@ -188,6 +205,7 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
     final now = DateTime.now();
     final picked = await showDatePicker(
       context: context,
+      locale: const Locale('nl', 'NL'),
       initialDate: _fromDateLocal ?? now,
       firstDate: DateTime(now.year - 2, 1, 1),
       lastDate: DateTime(now.year + 5, 12, 31),
@@ -226,10 +244,29 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
             .gte('start_datetime', fromLocal.toUtc().toIso8601String())
             .order('start_datetime', ascending: true);
       } else {
-        res = await query.order('start_datetime', ascending: false).limit(500);
+        res = await query.order('start_datetime', ascending: true).limit(500);
       }
 
       final rows = res.cast<Map<String, dynamic>>();
+      if (_fromDateLocal == null) {
+        // Sorteer: eerst volgende datum bovenaan, verst onderaan.
+        rows.sort((a, b) {
+          final rawA = a['start_datetime'] ?? a['start_timestamp'];
+          final rawB = b['start_datetime'] ?? b['start_timestamp'];
+          final startA = rawA is DateTime ? rawA : DateTime.tryParse(rawA?.toString() ?? '');
+          final startB = rawB is DateTime ? rawB : DateTime.tryParse(rawB?.toString() ?? '');
+          if (startA == null && startB == null) return 0;
+          if (startA == null) return 1;
+          if (startB == null) return -1;
+          final now = DateTime.now();
+          final aFuture = startA.isAfter(now);
+          final bFuture = startB.isAfter(now);
+          if (aFuture && !bFuture) return -1;
+          if (!aFuture && bFuture) return 1;
+          if (aFuture && bFuture) return startA.compareTo(startB);
+          return startB.compareTo(startA);
+        });
+      }
       final teamIds = rows
           .map((r) => (r['team_id'] as num?)?.toInt())
           .whereType<int>()
@@ -257,12 +294,23 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
   Future<void> _setCancelled({
     required int sessionId,
     required bool cancelled,
+    required String trainingLabel,
+    int? teamId,
   }) async {
     try {
       await _client
           .from('sessions')
           .update({'is_cancelled': cancelled})
           .eq('session_id', sessionId);
+      if (cancelled && teamId != null) {
+        await NotificationService.sendTeamUpdate(
+          title: 'Training geannuleerd',
+          body: 'Training geannuleerd: $trainingLabel',
+          teamId: teamId,
+          dedupeKey: 'training-cancelled:$sessionId',
+          cooldownSeconds: 300,
+        );
+      }
       if (!mounted) return;
       await _load();
       if (!mounted) return;
@@ -283,7 +331,7 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
         padding: const EdgeInsets.all(12),
         children: [
           GlassCard(
-            padding: const EdgeInsets.all(14),
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -294,12 +342,12 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
                     fontWeight: FontWeight.w900,
                   ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 const Text(
                   'Annuleer trainingen (vakantie/feestdagen) en filter op datum.',
                   style: TextStyle(color: AppColors.textSecondary),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(
@@ -327,7 +375,7 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
               ],
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           if (_loading)
             const Center(
               child: Padding(
@@ -337,22 +385,34 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
             )
           else if (_error != null)
             Text(_error!, style: const TextStyle(color: AppColors.error))
-          else if (_sessions.isEmpty)
-            Text(
-              _fromDateLocal == null
-                  ? 'Geen trainingen gevonden.'
-                  : 'Geen trainingen gevonden vanaf ${_formatDate(_fromDateLocal!)}.',
-              style: const TextStyle(color: AppColors.textSecondary),
-            )
-          else
-            ..._sessions.map((s) {
+          else ...[
+            Builder(
+              builder: (context) {
+                final now = DateTime.now();
+                final visible = _sessions.where((s) {
+                  final start = _parseDate(s['start_datetime'] ?? s['start_timestamp']);
+                  final end = _parseDate(s['end_timestamp']);
+                  final einde = end ?? start?.add(const Duration(hours: 2));
+                  return einde != null && einde.isAfter(now);
+                }).toList();
+                if (visible.isEmpty) {
+                  return Text(
+                    _fromDateLocal == null
+                        ? 'Geen trainingen gevonden.'
+                        : 'Geen trainingen gevonden vanaf ${_formatDate(_fromDateLocal!)}.',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  );
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: visible.map((s) {
               final id = (s['session_id'] as num).toInt();
               final teamId = (s['team_id'] as num?)?.toInt();
               final teamLabel = teamId == null
                   ? 'Team'
                   : (_teamNameById[teamId]?.trim().isNotEmpty == true
-                      ? _teamNameById[teamId]!.trim()
-                      : 'Team $teamId');
+                      ? NevoboApi.displayTeamName(_teamNameById[teamId]!.trim())
+                      : '(naam ontbreekt)');
               final title = (s['title'] ?? 'Training').toString().trim();
               final loc = (s['location'] ?? '').toString().trim();
               final start = _parseDate(s['start_datetime'] ?? s['start_timestamp']);
@@ -360,7 +420,7 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
               final cancelled = s['is_cancelled'] == true;
 
               return GlassCard(
-                margin: const EdgeInsets.only(bottom: 10),
+                margin: const EdgeInsets.only(bottom: 8),
                 padding: const EdgeInsets.all(12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -433,6 +493,8 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
                             onPressed: () => _setCancelled(
                               sessionId: id,
                               cancelled: !cancelled,
+                              trainingLabel: '$teamLabel - $title',
+                              teamId: teamId,
                             ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: cancelled ? AppColors.card : AppColors.error,
@@ -450,7 +512,11 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
                   ],
                 ),
               );
-            }),
+            }).toList(),
+                );
+              },
+            ),
+          ],
         ],
       ),
     );
@@ -472,6 +538,7 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
   bool _loadingTeams = true;
   String? _error;
   List<NevoboTeam> _teams = const [];
+  final Map<String, int> _teamIdByCode = {};
 
   String? _expandedTeamCode;
   final Map<String, bool> _loadingMatchesByTeam = {};
@@ -486,12 +553,6 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
   void initState() {
     super.initState();
     _loadTeams();
-  }
-
-  String _displayTeamCode(String code) {
-    final normalized = code.trim().toUpperCase();
-    if (normalized.startsWith('MR')) return 'XR${normalized.substring(2)}';
-    return normalized;
   }
 
   String _formatDateTime(DateTime dt) {
@@ -510,10 +571,24 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
       _error = null;
     });
     try {
-      final teams = await NevoboApi.loadTeamsFromSupabase(client: _client);
+      // Alle teams uit de tabel (zelfde bron als TC/Standen), inclusief training-only.
+      final withIds = await NevoboApi.loadTeamsFromSupabaseWithIds(
+        client: _client,
+        excludeTrainingOnly: false,
+      );
       if (!mounted) return;
+      final teamIdByCode = <String, int>{};
+      for (final e in withIds) {
+        final id = e.teamId;
+        if (id != null) {
+          teamIdByCode[e.team.code.trim().toUpperCase()] = id;
+        }
+      }
       setState(() {
-        _teams = teams;
+        _teams = withIds.map((e) => e.team).toList();
+        _teamIdByCode
+          ..clear()
+          ..addAll(teamIdByCode);
         _loadingTeams = false;
       });
     } catch (e) {
@@ -653,6 +728,33 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
         },
         onConflict: 'match_key',
       );
+      if (cancelled) {
+        final matchName = NevoboApi.displayTeamName(match.summary);
+        final pushBody = reason != null && reason.trim().isNotEmpty
+            ? 'Wedstrijd geannuleerd: $matchName\nReden: ${reason.trim()}'
+            : matchName;
+        final teamId = _teamIdByCode[team.code.trim().toUpperCase()];
+        if (teamId != null) {
+          await NotificationService.sendTeamUpdate(
+            title: 'Wedstrijd geannuleerd',
+            body: pushBody,
+            teamId: teamId,
+            dedupeKey: 'match-cancelled:$key',
+            cooldownSeconds: 300,
+          );
+        } else {
+          debugPrint(
+            'Bestuur: geen teamId gevonden voor wedstrijdpush teamCode=${team.code}',
+          );
+          await NotificationService.sendTeamUpdateByNevoboCode(
+            title: 'Wedstrijd geannuleerd',
+            body: pushBody,
+            teamCode: team.code,
+            dedupeKey: 'match-cancelled:$key',
+            cooldownSeconds: 300,
+          );
+        }
+      }
 
       if (!mounted) return;
       setState(() {
@@ -742,7 +844,7 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                             borderRadius: BorderRadius.circular(AppColors.cardRadius),
                           ),
                           child: Text(
-                            _displayTeamCode(team.code),
+                            NevoboApi.displayTeamCode(team.code),
                             style: Theme.of(context).textTheme.titleLarge?.copyWith(
                                   color: AppColors.primary,
                                   fontWeight: FontWeight.w900,
@@ -821,7 +923,7 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                m.summary,
+                                NevoboApi.displayTeamName(m.summary),
                                 style: TextStyle(
                                   color: AppColors.onBackground,
                                   fontWeight: FontWeight.w800,
@@ -836,6 +938,10 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                                     color: AppColors.textSecondary,
                                     decoration: cancelled ? TextDecoration.lineThrough : TextDecoration.none,
                                   ),
+                                ),
+                                MatchTravelRow(
+                                  location: m.location,
+                                  textDecoration: cancelled ? TextDecoration.lineThrough : null,
                                 ),
                               ],
                               if (cancelled && reason != null && reason.trim().isNotEmpty) ...[
@@ -896,38 +1002,17 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
 
   final List<String> _committees = [];
   final Map<String, List<_CommitteeMember>> _membersByCommittee = {};
+  final Map<String, _CommitteeContactSettings> _committeeContactSettings = {};
 
   List<_ProfileOption> _allProfiles = const [];
   bool _loadingProfiles = false;
-
-  static const _manageableCommittees = [
-    'bestuur',
-    'technische-commissie',
-    'communicatie',
-    'wedstrijdzaken',
-  ];
+  bool _savingOrder = false;
 
   @override
   void initState() {
     super.initState();
     _loadCommittees();
     _loadAllProfilesForManagement();
-  }
-
-  String _shortId(String value) {
-    if (value.isEmpty) return '-';
-    if (value.length <= 8) return value;
-    return '${value.substring(0, 4)}…${value.substring(value.length - 4)}';
-  }
-
-  String _normalizeCommittee(String value) {
-    final c = value.trim().toLowerCase();
-    if (c.isEmpty) return '';
-    if (c == 'bestuur') return 'bestuur';
-    if (c == 'tc' || c.contains('technische')) return 'technische-commissie';
-    if (c.contains('communicatie')) return 'communicatie';
-    if (c.contains('wedstrijd')) return 'wedstrijdzaken';
-    return c;
   }
 
   String _committeeLabel(String value) {
@@ -940,8 +1025,425 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
         return 'Communicatie commissie';
       case 'wedstrijdzaken':
         return 'Wedstrijdzaken';
+      case 'evenementen':
+        return 'Evenementen commissie';
+      case 'jeugdcommissie':
+        return 'Jeugdcommissie';
+      case 'scheidsrechters-tellers':
+        return 'Scheidsrechters/Tellers';
+      case 'vrijwilligers':
+        return 'Vrijwilligers';
       default:
-        return value;
+        return value
+            .replaceAll('-', ' ')
+            .split(' ')
+            .where((part) => part.isNotEmpty)
+            .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
+            .join(' ');
+    }
+  }
+
+  bool _isMissingColumnError(PostgrestException e) {
+    final msg = e.message.toLowerCase();
+    return e.code == 'PGRST204' ||
+        (msg.contains('column') && msg.contains('could not find'));
+  }
+
+  List<String> _parseEmails(dynamic raw) {
+    if (raw == null) return const [];
+    final out = <String>{};
+    if (raw is List) {
+      for (final item in raw) {
+        final value = item.toString().trim();
+        if (value.contains('@')) out.add(value);
+      }
+      return out.toList();
+    }
+    final text = raw.toString();
+    for (final chunk in text.split(RegExp(r'[,;\n]'))) {
+      final value = chunk.trim();
+      if (value.contains('@')) out.add(value);
+    }
+    return out.toList();
+  }
+
+  bool _parseShowInContact(dynamic raw) {
+    if (raw is bool) return raw;
+    if (raw == null) return true;
+    final value = raw.toString().trim().toLowerCase();
+    if (value.isEmpty) return true;
+    return value == 'true' || value == '1' || value == 'yes' || value == 'ja';
+  }
+
+  int? _parseSortOrder(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    return int.tryParse(raw.toString().trim());
+  }
+
+  Future<Map<String, _CommitteeContactSettings>> _loadCommitteeContactSettings() async {
+    List<Map<String, dynamic>> rows = const [];
+    for (final select in const [
+      'committee_key, display_name, show_in_contact, contact_emails, sort_order',
+      'committee_key, display_name, show_in_contact, sort_order',
+      'committee_key, display_name, sort_order',
+      'committee_key, show_in_contact, contact_emails, sort_order',
+      'committee_key, show_in_contact, sort_order',
+      'committee_key, sort_order',
+      'committee_key',
+    ]) {
+      try {
+        final res = await _client.from('committee_contact_settings').select(select);
+        rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        break;
+      } on PostgrestException catch (e) {
+        if (_isMissingColumnError(e)) continue;
+      } catch (_) {
+        break;
+      }
+    }
+
+    final settings = <String, _CommitteeContactSettings>{};
+    for (final row in rows) {
+      final rawName = (row['committee_key'] ?? row['display_name'] ?? '')
+          .toString()
+          .trim();
+      if (rawName.isEmpty) continue;
+      final key = normalizeCommitteeKey(rawName);
+      if (key.isEmpty) continue;
+
+      final emails = <String>{
+        ..._parseEmails(row['contact_emails']),
+      }.toList()
+        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+      settings[key] = _CommitteeContactSettings(
+        showInContact: _parseShowInContact(row['show_in_contact']),
+        emails: emails,
+        sortOrder: _parseSortOrder(row['sort_order']),
+      );
+    }
+    return settings;
+  }
+
+  Future<String?> _persistCommitteeSettings(
+    String committeeKey, {
+    required bool showInContact,
+    required List<String> emails,
+    int? sortOrder,
+  }) async {
+    try {
+      await _client.from('committee_contact_settings').upsert({
+        'committee_key': committeeKey,
+        'display_name': _committeeLabel(committeeKey),
+        'show_in_contact': showInContact,
+        'contact_emails': emails,
+        'sort_order': ?sortOrder,
+      });
+      return null;
+    } on PostgrestException catch (e) {
+      return '${e.code ?? 'PGRST'}: ${e.message}';
+    } catch (e) {
+      return e.toString();
+    }
+  }
+
+  Future<void> _persistCommitteeDisplayName(String committeeKey, String label) async {
+    if (label.trim().isEmpty) return;
+    await _client.from('committee_contact_settings').upsert({
+      'committee_key': committeeKey,
+      'display_name': label.trim(),
+      'sort_order': _committeeContactSettings[committeeKey]?.sortOrder,
+    });
+  }
+
+  Future<void> _persistCommitteeOrder(List<String> orderedKeys) async {
+    for (var i = 0; i < orderedKeys.length; i++) {
+      final key = orderedKeys[i];
+      await _client.from('committee_contact_settings').upsert({
+        'committee_key': key,
+        'display_name': _committeeLabel(key),
+        'show_in_contact': _committeeContactSettings[key]?.showInContact ?? true,
+        'contact_emails': _committeeContactSettings[key]?.emails ?? const <String>[],
+        'sort_order': i,
+      });
+    }
+  }
+
+  Future<void> _reorderCommittees(int oldIndex, int newIndex) async {
+    if (_savingOrder) return;
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (oldIndex == newIndex) return;
+
+    final reordered = [..._committees];
+    final item = reordered.removeAt(oldIndex);
+    reordered.insert(newIndex, item);
+
+    setState(() {
+      _committees
+        ..clear()
+        ..addAll(reordered);
+      _savingOrder = true;
+    });
+
+    try {
+      await _persistCommitteeOrder(reordered);
+      if (!mounted) return;
+      showTopMessage(context, 'Volgorde bijgewerkt.');
+      setState(() => _savingOrder = false);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _savingOrder = false);
+      showTopMessage(context, 'Volgorde opslaan mislukt: $e', isError: true);
+      await _loadCommittees();
+    }
+  }
+
+  Future<void> _openCommitteeContactSettingsDialog(String committeeKey) async {
+    final existing = _committeeContactSettings[committeeKey];
+    var showInContact = existing?.showInContact ?? true;
+    final controller = TextEditingController(text: (existing?.emails ?? const []).join('\n'));
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Contact-instellingen: ${_committeeLabel(committeeKey)}'),
+          content: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.22),
+                width: 1.1,
+              ),
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Tonen bij Contacten'),
+                  subtitle: const Text(
+                    'Zet uit om deze commissie te verbergen in het Contact-tabblad.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  value: showInContact,
+                  onChanged: (value) => setDialogState(() => showInContact = value),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: controller,
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                    labelText: 'Te tonen e-mailadressen',
+                    hintText: 'Een e-mailadres per regel',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Annuleren'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Opslaan'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved != true) return;
+
+    final emails = controller.text
+        .split(RegExp(r'[\n,;]'))
+        .map((e) => e.trim())
+        .where((e) => e.contains('@'))
+        .toSet()
+        .toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+    try {
+      final error = await _persistCommitteeSettings(
+        committeeKey,
+        showInContact: showInContact,
+        emails: emails,
+        sortOrder: existing?.sortOrder,
+      );
+      if (!mounted) return;
+      if (error != null) {
+        showTopMessage(
+          context,
+          'Opslaan mislukt: $error',
+          isError: true,
+        );
+        return;
+      }
+      showTopMessage(context, 'Contact-instellingen opgeslagen.');
+      await _loadCommittees();
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
+    }
+  }
+
+  Future<void> _addCommittee() async {
+    final controller = TextEditingController();
+    final labelController = TextEditingController();
+    final create = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Commissie toevoegen'),
+        content: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+            border: Border.all(
+              color: AppColors.primary.withValues(alpha: 0.22),
+              width: 1.1,
+            ),
+          ),
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: controller,
+                decoration: const InputDecoration(
+                  labelText: 'Commissie sleutel',
+                  hintText: 'bijv. sponsorcommissie',
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: labelController,
+                decoration: const InputDecoration(
+                  labelText: 'Naam (optioneel)',
+                  hintText: 'bijv. Sponsorcommissie',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Toevoegen'),
+          ),
+        ],
+      ),
+    );
+    if (create != true) return;
+    if (!mounted) return;
+    final raw = controller.text.trim();
+    if (raw.isEmpty) {
+      showTopMessage(context, 'Voer een commissie-naam in.', isError: true);
+      return;
+    }
+    final key = normalizeCommitteeKey(raw);
+    final label = labelController.text.trim();
+    try {
+      final error = await _persistCommitteeSettings(
+        key,
+        showInContact: true,
+        emails: const [],
+        sortOrder: _committees.length,
+      );
+      if (error != null) {
+        if (!mounted) return;
+        showTopMessage(
+          context,
+          'Toevoegen mislukt: $error',
+          isError: true,
+        );
+        return;
+      }
+      if (label.isNotEmpty) {
+        await _persistCommitteeDisplayName(key, label);
+      }
+      if (!mounted) return;
+      showTopMessage(context, 'Commissie toegevoegd.');
+      await _loadCommittees();
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Toevoegen mislukt: $e', isError: true);
+    }
+  }
+
+  List<String> _committeeAliasesForDelete(String committeeKey) {
+    switch (committeeKey) {
+      case 'technische-commissie':
+        return const ['technische-commissie', 'tc'];
+      case 'jeugdcommissie':
+        return const ['jeugdcommissie', 'jeugd'];
+      case 'scheidsrechters-tellers':
+        return const ['scheidsrechters-tellers', 'scheidsrechters/tellers'];
+      default:
+        return [committeeKey];
+    }
+  }
+
+  Future<void> _deleteCommittee(String committeeKey) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Commissie verwijderen: ${_committeeLabel(committeeKey)}'),
+        content: const Text(
+          'Deze actie verwijdert alle leden uit deze commissie en verwijdert de '
+          'contact-instellingen. Dit kan niet ongedaan worden gemaakt.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text(
+              'Verwijderen',
+              style: TextStyle(color: AppColors.error),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      final aliases = _committeeAliasesForDelete(committeeKey);
+      await _client
+          .from('committee_members')
+          .delete()
+          .inFilter('committee_name', aliases);
+
+      for (final key in aliases) {
+        await _client
+            .from('committee_contact_settings')
+            .delete()
+            .eq('committee_key', key);
+      }
+
+      // Best effort cleanup for legacy table(s); ignore schema variations.
+      for (final key in aliases) {
+        for (final col in const ['committee_name', 'name', 'naam']) {
+          try {
+            await _client.from('committees').delete().eq(col, key);
+          } catch (_) {}
+        }
+      }
+
+      if (!mounted) return;
+      showTopMessage(context, 'Commissie verwijderd.');
+      await _loadCommittees();
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(context, 'Verwijderen mislukt: $e', isError: true);
     }
   }
 
@@ -967,35 +1469,61 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
 
   Future<void> _loadAllProfilesForManagement() async {
     setState(() => _loadingProfiles = true);
-    List<Map<String, dynamic>> raw = const [];
-    for (final select in const [
-      'id, display_name, full_name, email',
-      'id, display_name, email',
-      'id, full_name, email',
-      'id, name, email',
-      'id, email',
+    List<_ProfileOption> list = [];
+    List<_ProfileOption> normalizeRows(List<dynamic>? rawRows) {
+      final rows = rawRows?.cast<Map<String, dynamic>>() ?? const <Map<String, dynamic>>[];
+      final out = <_ProfileOption>[];
+      for (final p in rows) {
+        final id = (p['profile_id'] ?? p['id'])?.toString() ?? '';
+        if (id.isEmpty) continue;
+        final rawName = (p['display_name'] ?? p['full_name'] ?? p['name'] ?? '').toString().trim();
+        final name = applyDisplayNameOverrides(rawName);
+        final email = (p['email'] ?? '').toString().trim();
+        out.add(_ProfileOption(
+          profileId: id,
+          name: name.isNotEmpty ? name : (email.isNotEmpty ? email : unknownUserName),
+          email: email.isNotEmpty ? email : null,
+        ));
+      }
+      out.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      return out;
+    }
+
+    // 1) Preferred for bestuur
+    for (final rpc in const [
+      'list_profiles_for_committee_management',
+      // Extra fallbacks (same shape) in case one RPC is missing/broken in DB.
+      'admin_list_profiles',
+      'get_profiles_for_tc',
     ]) {
       try {
-        final res = await _client.from('profiles').select(select);
-        raw = (res as List<dynamic>).cast<Map<String, dynamic>>();
-        break;
+        final res = await _client.rpc(rpc);
+        final parsed = normalizeRows(res as List<dynamic>?);
+        if (parsed.isNotEmpty) {
+          list = parsed;
+          break;
+        }
       } catch (_) {}
     }
-    final list = <_ProfileOption>[];
-    for (final p in raw) {
-      final id = p['id']?.toString() ?? '';
-      if (id.isEmpty) continue;
-      final name = applyDisplayNameOverrides(
-        (p['display_name'] ?? p['full_name'] ?? p['name'] ?? '').toString().trim(),
-      );
-      final email = (p['email'] ?? '').toString().trim();
-      list.add(_ProfileOption(
-        profileId: id,
-        name: name.isNotEmpty ? name : (email.isNotEmpty ? email : _shortId(id)),
-        email: email.isNotEmpty ? email : null,
-      ));
+
+    // 2) Last fallback: direct profiles select (werkt alleen als RLS het toelaat).
+    if (list.isEmpty) {
+      List<Map<String, dynamic>> raw = const [];
+      for (final select in const [
+        'id, display_name, full_name, email',
+        'id, display_name, email',
+        'id, full_name, email',
+        'id, name, email',
+        'id, email',
+      ]) {
+        try {
+          final res = await _client.from('profiles').select(select);
+          raw = (res as List<dynamic>).cast<Map<String, dynamic>>();
+          break;
+        } catch (_) {}
+      }
+      list = normalizeRows(raw);
     }
-    list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     if (!mounted) return;
     setState(() {
       _allProfiles = list;
@@ -1009,6 +1537,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       _committeeError = null;
       _committees.clear();
       _membersByCommittee.clear();
+      _committeeContactSettings.clear();
     });
 
     try {
@@ -1033,16 +1562,12 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
         }
       }
 
-      if (rows.isEmpty) {
-        if (!mounted) return;
-        setState(() => _loadingCommittees = false);
-        return;
-      }
+      final contactSettings = await _loadCommitteeContactSettings();
 
-      final committeeKeys = <String>{};
+      final committeeKeys = <String>{...contactSettings.keys};
       final profileIds = <String>{};
       for (final row in rows) {
-        final key = _normalizeCommittee(row['committee_name']?.toString() ?? '');
+        final key = normalizeCommitteeKey(row['committee_name']?.toString() ?? '');
         if (key.isEmpty) continue;
         committeeKeys.add(key);
         final pid = row['profile_id']?.toString() ?? '';
@@ -1052,7 +1577,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       final nameByProfileId = await _loadProfileNames(profileIds: profileIds.toList());
 
       for (final row in rows) {
-        final key = _normalizeCommittee(row['committee_name']?.toString() ?? '');
+        final key = normalizeCommitteeKey(row['committee_name']?.toString() ?? '');
         if (key.isEmpty) continue;
 
         final pid = row['profile_id']?.toString() ?? '';
@@ -1060,7 +1585,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
         final memberName = (displayNameFromRow?.isNotEmpty == true)
             ? applyDisplayNameOverrides(displayNameFromRow!)
             : applyDisplayNameOverrides((nameByProfileId[pid] ?? '').trim());
-        final displayName = memberName.isNotEmpty ? memberName : _shortId(pid);
+        final displayName = memberName.isNotEmpty ? memberName : unknownUserName;
 
         final function = (row['function'] ?? row['role'] ?? row['title'])?.toString();
         _membersByCommittee.putIfAbsent(key, () => []).add(
@@ -1072,7 +1597,17 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
             );
       }
 
-      final list = committeeKeys.toList()..sort();
+      final list = committeeKeys.toList();
+      list.sort((a, b) {
+        final sa = contactSettings[a]?.sortOrder;
+        final sb = contactSettings[b]?.sortOrder;
+        if (sa != null || sb != null) {
+          final va = sa ?? 999999;
+          final vb = sb ?? 999999;
+          if (va != vb) return va.compareTo(vb);
+        }
+        return _committeeLabel(a).toLowerCase().compareTo(_committeeLabel(b).toLowerCase());
+      });
       for (final k in list) {
         final members = _membersByCommittee[k] ?? [];
         members.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
@@ -1082,6 +1617,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       if (!mounted) return;
       setState(() {
         _committees.addAll(list);
+        _committeeContactSettings.addAll(contactSettings);
         _loadingCommittees = false;
       });
     } catch (e) {
@@ -1136,12 +1672,25 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
   }
 
   Future<void> _addMemberToCommittee(String committeeKey) async {
+    // Als de profielenlijst leeg is, eerst opnieuw laden (bijv. na eerdere fout).
+    if (_allProfiles.isEmpty) {
+      await _loadAllProfilesForManagement();
+      if (!mounted) return;
+    }
     final alreadyIn =
         (_membersByCommittee[committeeKey] ?? []).map((m) => m.profileId).toSet();
     final available =
         _allProfiles.where((p) => !alreadyIn.contains(p.profileId)).toList();
     if (available.isEmpty) {
-      showTopMessage(context, 'Iedereen zit al in deze commissie.', isError: true);
+      if (_allProfiles.isEmpty) {
+        showTopMessage(
+          context,
+          'Kon de ledenlijst niet laden. Trek omlaag om te vernieuwen en probeer het opnieuw.',
+          isError: true,
+        );
+      } else {
+        showTopMessage(context, 'Iedereen zit al in deze commissie.', isError: true);
+      }
       return;
     }
     var search = '';
@@ -1159,54 +1708,64 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
                   .toList();
           return AlertDialog(
             title: Text('Lid toevoegen aan ${_committeeLabel(committeeKey)}'),
-            content: SizedBox(
-              width: double.maxFinite,
-              height: 320,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      prefixIcon: Icon(Icons.search),
-                      labelText: 'Zoek op naam of e-mail',
+            content: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+                border: Border.all(
+                  color: AppColors.primary.withValues(alpha: 0.22),
+                  width: 1.1,
+                ),
+              ),
+              padding: const EdgeInsets.all(10),
+              child: SizedBox(
+                width: double.maxFinite,
+                height: 320,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        labelText: 'Zoek op naam of e-mail',
+                      ),
+                      onChanged: (v) => setDialogState(() => search = v),
                     ),
-                    onChanged: (v) => setDialogState(() => search = v),
-                  ),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: list.isEmpty
-                        ? const Center(
-                            child: Text(
-                              'Geen leden gevonden.',
-                              style: TextStyle(color: AppColors.textSecondary),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: list.isEmpty
+                          ? const Center(
+                              child: Text(
+                                'Geen leden gevonden.',
+                                style: TextStyle(color: AppColors.textSecondary),
+                              ),
+                            )
+                          : ListView.builder(
+                              itemCount: list.length,
+                              itemBuilder: (context, i) {
+                                final p = list[i];
+                                return ListTile(
+                                  dense: true,
+                                  title: Text(
+                                    p.name,
+                                    style: const TextStyle(fontWeight: FontWeight.w600),
+                                  ),
+                                  subtitle: p.email != null
+                                      ? Text(
+                                          p.email!,
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        )
+                                      : null,
+                                  onTap: () => Navigator.of(context).pop(p),
+                                );
+                              },
                             ),
-                          )
-                        : ListView.builder(
-                            itemCount: list.length,
-                            itemBuilder: (context, i) {
-                              final p = list[i];
-                              return ListTile(
-                                dense: true,
-                                title: Text(
-                                  p.name,
-                                  style: const TextStyle(fontWeight: FontWeight.w600),
-                                ),
-                                subtitle: p.email != null
-                                    ? Text(
-                                        p.email!,
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          color: AppColors.textSecondary,
-                                        ),
-                                      )
-                                    : null,
-                                onTap: () => Navigator.of(context).pop(p),
-                              );
-                            },
-                          ),
-                  ),
-                ],
+                    ),
+                  ],
+                ),
               ),
             ),
             actions: [
@@ -1228,26 +1787,36 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: const Text('Functie (optioneel)'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(chosen.name, style: const TextStyle(fontWeight: FontWeight.w800)),
-              if (chosen.email != null) ...[
-                const SizedBox(height: 4),
-                Text(
-                  chosen.email!,
-                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+          content: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.22),
+                width: 1.1,
+              ),
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(chosen.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                if (chosen.email != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    chosen.email!,
+                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                TextField(
+                  decoration: const InputDecoration(
+                    labelText: 'Functie of rol',
+                    hintText: 'bijv. Voorzitter',
+                  ),
+                  onChanged: (v) => function = v.trim(),
                 ),
               ],
-              const SizedBox(height: 16),
-              TextField(
-                decoration: const InputDecoration(
-                  labelText: 'Functie of rol',
-                  hintText: 'bijv. Voorzitter',
-                ),
-                onChanged: (v) => function = v.trim(),
-              ),
-            ],
+            ),
           ),
           actions: [
             TextButton(
@@ -1296,41 +1865,53 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     String committeeKey,
     _CommitteeMember member,
   ) async {
-    final controller = TextEditingController(text: member.function ?? '');
+    var draftFunction = member.function ?? '';
     final result = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Lid in ${_committeeLabel(committeeKey)}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(member.name, style: const TextStyle(fontWeight: FontWeight.w800)),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              decoration: const InputDecoration(labelText: 'Functie of rol'),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Lid in ${_committeeLabel(committeeKey)}'),
+          content: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.cardRadius - 6),
+              border: Border.all(
+                color: AppColors.primary.withValues(alpha: 0.22),
+                width: 1.1,
+              ),
+            ),
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(member.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                const SizedBox(height: 16),
+                TextFormField(
+                  initialValue: draftFunction,
+                  decoration: const InputDecoration(labelText: 'Functie of rol'),
+                  onChanged: (v) => setDialogState(() => draftFunction = v),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop('remove'),
+              child: Text('Uit commissie halen', style: TextStyle(color: AppColors.error)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: const Text('Annuleren'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop('save'),
+              child: const Text('Opslaan'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop('remove'),
-            child: Text('Uit commissie halen', style: TextStyle(color: AppColors.error)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(null),
-            child: const Text('Annuleren'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop('save'),
-            child: const Text('Opslaan'),
-          ),
-        ],
       ),
     );
-    final newFunction = controller.text.trim();
-    controller.dispose();
+    final newFunction = draftFunction.trim();
     if (result == null) return;
 
     if (result == 'remove') {
@@ -1373,11 +1954,170 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     }
   }
 
+  Future<void> _refreshCommitteesAndProfiles() async {
+    await Future.wait([_loadCommittees(), _loadAllProfilesForManagement()]);
+  }
+
+  Widget _buildCommitteeCard(
+    String c, {
+    required bool canManage,
+    int? dragIndex,
+  }) {
+    final members = _membersByCommittee[c] ?? const [];
+    return Padding(
+      key: ValueKey('committee-$c'),
+      padding: const EdgeInsets.only(bottom: 12),
+      child: GlassCard(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _committeeLabel(c),
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                  if (canManage && dragIndex != null)
+                    ReorderableDragStartListener(
+                      index: dragIndex,
+                      child: const Icon(
+                        Icons.drag_handle,
+                        color: AppColors.iconMuted,
+                        size: 20,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (canManage)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 6),
+                child: Text(
+                  'Sleep commissies om de volgorde in Contact te bepalen.',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            if (members.isEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 8, 16, 16),
+                child: Text(
+                  'Geen leden in deze commissie.',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                ),
+              )
+            else
+              ...members.map((m) {
+                final suffix = (m.function != null && m.function!.isNotEmpty)
+                    ? ' · ${m.function}'
+                    : '';
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(
+                    Icons.person_outline,
+                    color: AppColors.iconMuted,
+                    size: 22,
+                  ),
+                  title: Text(
+                    '${m.name}$suffix',
+                    style: const TextStyle(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                  trailing: Icon(
+                    Icons.edit_outlined,
+                    color: canManage ? AppColors.primary : AppColors.iconMuted,
+                    size: 20,
+                  ),
+                  onTap: canManage ? () => _editOrRemoveCommitteeMember(c, m) : null,
+                );
+              }),
+            if (canManage)
+              ListTile(
+                dense: true,
+                leading: Icon(
+                  Icons.contact_mail_outlined,
+                  color: (_committeeContactSettings[c]?.showInContact ?? true)
+                      ? AppColors.primary
+                      : AppColors.iconMuted,
+                  size: 22,
+                ),
+                title: const Text(
+                  'Contact-instellingen',
+                  style: TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                subtitle: Text(
+                  (_committeeContactSettings[c]?.showInContact ?? true)
+                      ? 'Zichtbaar in Contact-tabblad'
+                      : 'Verborgen in Contact-tabblad',
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+                onTap: () => _openCommitteeContactSettingsDialog(c),
+              ),
+            if (canManage)
+              ListTile(
+                dense: true,
+                leading: const Icon(
+                  Icons.delete_outline,
+                  color: AppColors.error,
+                  size: 22,
+                ),
+                title: const Text(
+                  'Commissie verwijderen',
+                  style: TextStyle(
+                    color: AppColors.error,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                onTap: () => _deleteCommittee(c),
+              ),
+            if (canManage)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.person_add_outlined, color: AppColors.primary, size: 22),
+                title: const Text(
+                  'Lid toevoegen aan deze commissie',
+                  style: TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                onTap: _loadingProfiles ? null : () => _addMemberToCommittee(c),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final canManage = AppUserContext.of(context).canManageBestuur;
     return RefreshIndicator(
       color: AppColors.primary,
-      onRefresh: _loadCommittees,
+      onRefresh: _refreshCommitteesAndProfiles,
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(12),
@@ -1396,11 +2136,22 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Voeg leden toe, pas functies aan of verwijder leden uit commissies.',
+                  'Voeg commissies en leden toe, beheer contact-zichtbaarheid en stel commissie-mails in.',
                   style: TextStyle(
                     color: AppColors.textSecondary.withValues(alpha: 0.9),
                   ),
                 ),
+                if (canManage) ...[
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton.icon(
+                      onPressed: _addCommittee,
+                      icon: const Icon(Icons.add_circle_outline, size: 18),
+                      label: const Text('Nieuwe commissie toevoegen'),
+                    ),
+                  ),
+                ],
                 if (_loadingProfiles) ...[
                   const SizedBox(height: 10),
                   const Text(
@@ -1426,86 +2177,28 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
               'Geen commissies gevonden.',
               style: TextStyle(color: AppColors.textSecondary),
             )
-          else
-            ..._manageableCommittees.map((c) {
-              final members = _membersByCommittee[c] ?? const [];
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: GlassCard(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                        child: Text(
-                          _committeeLabel(c),
-                          style: const TextStyle(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w800,
-                            fontSize: 16,
-                          ),
-                        ),
-                      ),
-                      if (members.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.fromLTRB(16, 8, 16, 16),
-                          child: Text(
-                            'Geen leden in deze commissie.',
-                            style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                          ),
-                        )
-                      else
-                        ...members.map((m) {
-                          final suffix = (m.function != null && m.function!.isNotEmpty)
-                              ? ' · ${m.function}'
-                              : '';
-                          return ListTile(
-                            dense: true,
-                            leading: const Icon(
-                              Icons.person_outline,
-                              color: AppColors.iconMuted,
-                              size: 22,
-                            ),
-                            title: Text(
-                              '${m.name}$suffix',
-                              style: const TextStyle(
-                                color: AppColors.onBackground,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 14,
-                              ),
-                            ),
-                            trailing: Icon(
-                              Icons.edit_outlined,
-                              color: AppUserContext.of(context).canManageBestuur
-                                  ? AppColors.primary
-                                  : AppColors.iconMuted,
-                              size: 20,
-                            ),
-                            onTap: AppUserContext.of(context).canManageBestuur
-                                ? () => _editOrRemoveCommitteeMember(c, m)
-                                : null,
-                          );
-                        }),
-                      if (AppUserContext.of(context).canManageBestuur)
-                        ListTile(
-                          dense: true,
-                          leading: const Icon(Icons.person_add_outlined, color: AppColors.primary, size: 22),
-                          title: const Text(
-                            'Lid toevoegen aan deze commissie',
-                            style: TextStyle(
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
-                            ),
-                          ),
-                          onTap: _loadingProfiles ? null : () => _addMemberToCommittee(c),
-                        ),
-                    ],
-                  ),
+          else if (canManage) ...[
+            ReorderableListView.builder(
+              shrinkWrap: true,
+              buildDefaultDragHandles: false,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _committees.length,
+              onReorder: _reorderCommittees,
+              itemBuilder: (context, index) {
+                final c = _committees[index];
+                return _buildCommitteeCard(c, canManage: canManage, dragIndex: index);
+              },
+            ),
+            if (_savingOrder)
+              const Padding(
+                padding: EdgeInsets.only(top: 4, bottom: 8),
+                child: Text(
+                  'Volgorde opslaan...',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
                 ),
-              );
-            }),
+              ),
+          ] else
+            ..._committees.map((c) => _buildCommitteeCard(c, canManage: canManage)),
         ],
       ),
     );
@@ -1533,6 +2226,18 @@ class _ProfileOption {
     required this.profileId,
     required this.name,
     this.email,
+  });
+}
+
+class _CommitteeContactSettings {
+  final bool showInContact;
+  final List<String> emails;
+  final int? sortOrder;
+
+  const _CommitteeContactSettings({
+    required this.showInContact,
+    required this.emails,
+    this.sortOrder,
   });
 }
 

@@ -1,0 +1,27 @@
+Account verwijderen – VV Minerva app
+====================================
+
+Je kunt je account en alle bijbehorende gegevens zelf verwijderen via de Minerva app.
+
+STAPPEN OM JE ACCOUNT TE VERWIJDEREN
+------------------------------------
+1. Open de Minerva app
+2. Ga naar het tabblad Profiel
+3. Scroll naar beneden en tik op Account verwijderen
+4. Bevestig je keuze
+
+WELKE GEGEVENS WORDEN VERWIJDERD?
+---------------------------------
+Na het verwijderen worden permanent gewist:
+- Je account (e-mail, wachtwoord)
+- Je profielnaam
+- Je aanmeldingen voor activiteiten
+- Je aanwezigheid bij trainingen
+- Je teamkoppelingen
+- Alle overige in de app opgeslagen gegevens
+
+BEWAARTERMIJN
+-------------
+Na bevestiging wordt je account direct verwijderd. Er is geen extra bewaartermijn.
+
+Vragen? Neem contact op via de contactpersonen in de app.

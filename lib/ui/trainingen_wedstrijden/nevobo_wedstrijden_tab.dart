@@ -1,19 +1,28 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart' show debugPrint, listEquals;
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'package:minerva_app/ui/components/glass_card.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
-import 'package:minerva_app/ui/display_name_overrides.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/trainingen_wedstrijden/match_travel.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class NevoboWedstrijdenTab extends StatefulWidget {
   final List<String> teamCodes; // e.g. ["HS1","DS1"]
+  /// team_code (uppercase) -> team_id, voor "niet gereageerd" overzicht
+  final Map<String, int> teamIdByCode;
 
   const NevoboWedstrijdenTab({
     super.key,
     required this.teamCodes,
+    this.teamIdByCode = const {},
   });
 
   @override
@@ -31,9 +40,13 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   final Map<String, String> _matchErrorByTeam = {};
 
   // Availability state
-  final Map<String, String> _myStatusByMatchKey = {}; // match_key -> playing | coach (null = afwezig)
+  final Map<String, String> _myStatusByMatchKey = {}; // match_key -> playing | coach | not_playing (null = nog geen keuze)
   final Map<String, List<String>> _playingNamesByMatchKey = {};
   final Map<String, List<String>> _coachNamesByMatchKey = {};
+  final Map<String, List<String>> _notPlayingNamesByMatchKey = {};
+  final Map<String, List<String>> _nietGereageerdByMatchKey = {};
+  final Map<String, List<String>> _refereeNamesByMatchKey = {};
+  final Map<String, List<String>> _tellerNamesByMatchKey = {};
   final Map<String, bool> _cancelledByMatchKey = {}; // match_key -> true if cancelled
   final Map<String, String?> _cancelReasonByMatchKey = {};
   final Set<String> _expandedMatchKeys = {};
@@ -45,52 +58,178 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   /// Alle komende wedstrijden (voor "voor alle wedstrijden"-acties)
   List<_MatchRef> _upcomingMatchRefs = const [];
 
-  /// Welke teams zijn uitgeklapt (alleen bij meerdere teams)
-  final Set<String> _expandedWedstrijdenTeamCodes = {};
+  /// Geselecteerde teamcodes voor weergave (opgeslagen in SharedPreferences).
+  Set<String> _selectedTeamCodes = const {};
+  static const _selectedTeamsKey = 'wedstrijden_selected_team_codes';
 
   @override
   void initState() {
     super.initState();
+    _selectedTeamCodes = widget.teamCodes
+        .map((c) => c.trim().toUpperCase())
+        .where((c) => c.isNotEmpty)
+        .toSet();
+    _loadSelectedTeamsFromPrefs();
     _loadAll();
   }
 
-  bool _isMinervaTeamName(String name) {
-    final s = name.trim().toLowerCase();
-    return s.contains('minerva');
+  @override
+  void didUpdateWidget(covariant NevoboWedstrijdenTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!listEquals(oldWidget.teamCodes, widget.teamCodes)) {
+      final current = widget.teamCodes
+          .map((c) => c.trim().toUpperCase())
+          .where((c) => c.isNotEmpty)
+          .toSet();
+      final merged = _selectedTeamCodes.intersection(current);
+      setState(() {
+        _selectedTeamCodes = merged.isEmpty ? current : merged;
+      });
+    }
   }
 
-  Widget _buildMatchSummaryText(String summary, {TextStyle? style}) {
+  Future<void> _loadSelectedTeamsFromPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final json = prefs.getString(_selectedTeamsKey);
+      if (json == null) return;
+      final list = jsonDecode(json) as List<dynamic>?;
+      if (list == null || list.isEmpty) return;
+      final saved = list
+          .map((e) => e.toString().trim().toUpperCase())
+          .where((c) => c.isNotEmpty)
+          .toSet();
+      final current = widget.teamCodes
+          .map((c) => c.trim().toUpperCase())
+          .where((c) => c.isNotEmpty)
+          .toSet();
+      final merged = saved.intersection(current);
+      if (merged.isNotEmpty && mounted) {
+        setState(() => _selectedTeamCodes = merged);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveSelectedTeamsToPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _selectedTeamsKey,
+        jsonEncode(_selectedTeamCodes.toList()..sort()),
+      );
+    } catch (_) {}
+  }
+
+  void _toggleTeamSelection(String code) {
+    final upper = code.trim().toUpperCase();
+    setState(() {
+      if (_selectedTeamCodes.contains(upper)) {
+        if (_selectedTeamCodes.length > 1) {
+          _selectedTeamCodes = {..._selectedTeamCodes}..remove(upper);
+        }
+      } else {
+        _selectedTeamCodes = {..._selectedTeamCodes}..add(upper);
+      }
+    });
+    _saveSelectedTeamsToPrefs();
+  }
+
+  bool _segmentMatchesTeamCode(String segment, String teamCode) {
+    final s = segment.trim();
+    if (s.isEmpty || !s.toLowerCase().contains('minerva')) return false;
+    final extracted = NevoboApi.extractCodeFromTeamName(s);
+    if (extracted == null || extracted.isEmpty) return false;
+    final a = extracted.trim().toUpperCase();
+    final b = teamCode.trim().toUpperCase();
+    if (a.startsWith('XR') && b.startsWith('MR') && a.substring(2) == b.substring(2)) return true;
+    if (b.startsWith('XR') && a.startsWith('MR') && b.substring(2) == a.substring(2)) return true;
+    return a == b;
+  }
+
+  /// Displaylabel voor team (inclusief "(kindnaam)" bij gekoppeld kind).
+  String _teamDisplayLabelForCode(String teamCode) {
+    try {
+      final ctx = AppUserContext.of(context);
+      final code = teamCode.trim().toUpperCase();
+      for (final m in ctx.memberships) {
+        final extracted = NevoboApi.extractCodeFromTeamName(m.teamName);
+        final match = extracted != null && extracted.toUpperCase() == code;
+        final nevoboMatch = (m.nevoboCode?.trim().toUpperCase() ?? '') == code;
+        if (match || nevoboMatch) return m.displayLabel;
+      }
+      return NevoboApi.displayTeamCode(teamCode);
+    } catch (_) {
+      return NevoboApi.displayTeamCode(teamCode);
+    }
+  }
+
+  /// Highlight alleen het Minerva-team dat exact bij [teamCode] hoort.
+  Widget _buildMatchSummaryText(String summary, {TextStyle? style, String? teamCode}) {
     final base = style ??
         const TextStyle(
           color: AppColors.onBackground,
           fontWeight: FontWeight.w800,
         );
+    const sep = ' - ';
+    final parts = summary.split(sep);
+    if (parts.isEmpty) return Text(summary, style: base);
+
+    final minervaSegmentCount = parts
+        .where((p) => p.toLowerCase().contains('minerva'))
+        .length;
+    final isInternalMinervaMatch = minervaSegmentCount >= 2;
+
+    if (teamCode != null && teamCode.trim().isNotEmpty) {
+      final spans = <InlineSpan>[];
+      var anyExactMatch = false;
+      for (var i = 0; i < parts.length; i++) {
+        if (i > 0) spans.add(TextSpan(text: sep, style: base));
+        final segment = parts[i].trim();
+        final highlight = _segmentMatchesTeamCode(segment, teamCode) ||
+            (isInternalMinervaMatch && segment.toLowerCase().contains('minerva'));
+        if (highlight) anyExactMatch = true;
+        spans.add(TextSpan(
+          text: parts[i],
+          style: highlight ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900) : base,
+        ));
+      }
+      // Fallback: als exacte teamcode niet matcht, highlight alsnog eerste "Minerva"-segment.
+      if (!anyExactMatch) {
+        spans.clear();
+        var highlighted = false;
+        for (var i = 0; i < parts.length; i++) {
+          if (i > 0) spans.add(TextSpan(text: sep, style: base));
+          final raw = parts[i];
+          final isMinervaSegment = !highlighted && raw.toLowerCase().contains('minerva');
+          if (isMinervaSegment) highlighted = true;
+          spans.add(TextSpan(
+            text: raw,
+            style: isMinervaSegment
+                ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)
+                : base,
+          ));
+        }
+      }
+      return RichText(
+        text: TextSpan(style: base, children: spans),
+        overflow: TextOverflow.ellipsis,
+        maxLines: 2,
+      );
+    }
+
     final lower = summary.toLowerCase();
     final idx = lower.indexOf('minerva');
     if (idx < 0) return Text(summary, style: base);
-
-    final endIdx = (() {
-      final nextSep = summary.indexOf(' - ', idx);
-      if (nextSep >= 0) return nextSep;
-      return summary.length;
-    })();
-
+    final endIdx = summary.indexOf(sep, idx) >= 0 ? summary.indexOf(sep, idx) : summary.length;
     final before = summary.substring(0, idx);
     final mid = summary.substring(idx, endIdx);
     final after = summary.substring(endIdx);
-
     return RichText(
       text: TextSpan(
         style: base,
         children: [
           if (before.isNotEmpty) TextSpan(text: before),
-          TextSpan(
-            text: mid,
-            style: base.copyWith(
-              color: AppColors.primary,
-              fontWeight: FontWeight.w900,
-            ),
-          ),
+          TextSpan(text: mid, style: base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)),
           if (after.isNotEmpty) TextSpan(text: after),
         ],
       ),
@@ -103,9 +242,287 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     return 'nevobo_match:${teamCode.trim().toUpperCase()}:${start.toUtc().toIso8601String()}';
   }
 
-  String _shortId(String value) {
-    if (value.length <= 8) return value;
-    return '${value.substring(0, 4)}…${value.substring(value.length - 4)}';
+  String _normalizeMatchSummaryForCompare(String value) {
+    return value
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(RegExp(r'[^a-z0-9 ]'), '')
+        .trim();
+  }
+
+  (String team, DateTime start)? _parseNevoboMatchKey(String key) {
+    if (!key.startsWith('nevobo_match:')) return null;
+    final rest = key.substring('nevobo_match:'.length);
+    final idx = rest.indexOf(':');
+    if (idx <= 0 || idx + 1 >= rest.length) return null;
+    final team = rest.substring(0, idx).trim().toUpperCase();
+    final start = DateTime.tryParse(rest.substring(idx + 1))?.toUtc();
+    if (team.isEmpty || start == null) return null;
+    return (team, start);
+  }
+
+  bool _summariesMatchForCancellation(String a, String b) {
+    final na = _normalizeMatchSummaryForCompare(a);
+    final nb = _normalizeMatchSummaryForCompare(b);
+    if (na.isEmpty || nb.isEmpty) return false;
+    return na == nb || na.contains(nb) || nb.contains(na);
+  }
+
+  DateTime? _parseCancellationStartsAt(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is DateTime) return raw.toUtc();
+    final s = raw.toString().trim();
+    if (s.isEmpty) return null;
+    return DateTime.tryParse(s)?.toUtc();
+  }
+
+  _MatchRef? _findMatchRefByEquivalentKey({
+    required List<_MatchRef> matches,
+    required String rowKey,
+  }) {
+    final rowParts = _parseNevoboMatchKey(rowKey);
+    if (rowParts == null) return null;
+    const tolerance = Duration(minutes: 2);
+    for (final m in matches) {
+      final localParts = _parseNevoboMatchKey(m.matchKey);
+      if (localParts == null) continue;
+      if (localParts.$1 != rowParts.$1) continue;
+      if (localParts.$2.difference(rowParts.$2).abs() <= tolerance) return m;
+    }
+    return null;
+  }
+
+  _MatchRef? _findMatchRefByTeamAndTime({
+    required List<_MatchRef> matches,
+    required String teamCode,
+    required DateTime startsAt,
+  }) {
+    const tolerance = Duration(minutes: 2);
+    _MatchRef? best;
+    Duration? bestDiff;
+    for (final m in matches) {
+      if (m.teamCode.trim().toUpperCase() != teamCode) continue;
+      final diff = m.start.toUtc().difference(startsAt).abs();
+      if (diff <= tolerance && (bestDiff == null || diff < bestDiff)) {
+        best = m;
+        bestDiff = diff;
+      }
+    }
+    return best;
+  }
+
+  _MatchRef? _findMatchRefByTimeAndSummary({
+    required List<_MatchRef> matches,
+    required DateTime startsAt,
+    required String rowSummary,
+  }) {
+    const tolerance = Duration(minutes: 2);
+    _MatchRef? best;
+    Duration? bestDiff;
+    for (final m in matches) {
+      final diff = m.start.toUtc().difference(startsAt).abs();
+      if (diff > tolerance) continue;
+      if (!_summariesMatchForCancellation(m.summary, rowSummary)) continue;
+      if (bestDiff == null || diff < bestDiff) {
+        best = m;
+        bestDiff = diff;
+      }
+    }
+    return best;
+  }
+
+  _MatchRef? _findMatchRefByTeamAndSummary({
+    required List<_MatchRef> matches,
+    required String teamCode,
+    required String rowSummary,
+  }) {
+    _MatchRef? best;
+    for (final m in matches) {
+      if (m.teamCode.trim().toUpperCase() != teamCode) continue;
+      if (!_summariesMatchForCancellation(m.summary, rowSummary)) continue;
+      best ??= m;
+    }
+    return best;
+  }
+
+  _MatchRef? _findMatchRefByTeamAndLocalDate({
+    required List<_MatchRef> matches,
+    required String teamCode,
+    required DateTime startsAt,
+    required String rowSummary,
+  }) {
+    final localRow = startsAt.toLocal();
+    for (final m in matches) {
+      if (m.teamCode.trim().toUpperCase() != teamCode) continue;
+      final localMatch = m.start.toLocal();
+      if (localMatch.year != localRow.year ||
+          localMatch.month != localRow.month ||
+          localMatch.day != localRow.day) {
+        continue;
+      }
+      if (rowSummary.trim().isEmpty ||
+          _summariesMatchForCancellation(m.summary, rowSummary)) {
+        return m;
+      }
+    }
+    return null;
+  }
+
+  _MatchRef? _findMatchRefForCancellationRow({
+    required List<_MatchRef> matches,
+    required Set<String> localKeys,
+    required Map<String, dynamic> row,
+  }) {
+    final rowKey = (row['match_key'] ?? '').toString();
+    if (rowKey.isNotEmpty) {
+      if (localKeys.contains(rowKey)) {
+        for (final m in matches) {
+          if (m.matchKey == rowKey) return m;
+        }
+      }
+      final byKey = _findMatchRefByEquivalentKey(matches: matches, rowKey: rowKey);
+      if (byKey != null) return byKey;
+    }
+
+    final teamCode = (row['team_code'] ?? '').toString().trim().toUpperCase();
+    final startsAt = _parseCancellationStartsAt(row['starts_at']);
+    final rowSummary = (row['summary'] ?? '').toString();
+
+    if (teamCode.isNotEmpty && startsAt != null) {
+      final byTeamTime = _findMatchRefByTeamAndTime(
+        matches: matches,
+        teamCode: teamCode,
+        startsAt: startsAt,
+      );
+      if (byTeamTime != null) return byTeamTime;
+    }
+
+    if (startsAt != null && rowSummary.trim().isNotEmpty) {
+      final byTimeSummary = _findMatchRefByTimeAndSummary(
+        matches: matches,
+        startsAt: startsAt,
+        rowSummary: rowSummary,
+      );
+      if (byTimeSummary != null) return byTimeSummary;
+    }
+
+    if (teamCode.isNotEmpty && rowSummary.trim().isNotEmpty) {
+      final byTeamSummary = _findMatchRefByTeamAndSummary(
+        matches: matches,
+        teamCode: teamCode,
+        rowSummary: rowSummary,
+      );
+      if (byTeamSummary != null) return byTeamSummary;
+    }
+
+    if (teamCode.isNotEmpty && startsAt != null) {
+      final byTeamDate = _findMatchRefByTeamAndLocalDate(
+        matches: matches,
+        teamCode: teamCode,
+        startsAt: startsAt,
+        rowSummary: rowSummary,
+      );
+      if (byTeamDate != null) return byTeamDate;
+    }
+
+    if (teamCode.isEmpty && rowKey.isNotEmpty) {
+      final rowParts = _parseNevoboMatchKey(rowKey);
+      if (rowParts != null) {
+        return _findMatchRefByTeamAndTime(
+          matches: matches,
+          teamCode: rowParts.$1,
+          startsAt: rowParts.$2,
+        );
+      }
+    }
+
+    return null;
+  }
+
+  void _applyCancellationRowToMaps({
+    required Map<String, dynamic> row,
+    required _MatchRef ref,
+    required Map<String, bool> map,
+    required Map<String, String?> reasons,
+  }) {
+    final localKey = ref.matchKey;
+    final cancelled = row['is_cancelled'] == true;
+    if (cancelled) {
+      map[localKey] = true;
+      final reason = (row['reason'] ?? '').toString().trim();
+      if (reason.isNotEmpty) reasons[localKey] = reason;
+      return;
+    }
+    map.putIfAbsent(localKey, () => false);
+    final reason = (row['reason'] ?? '').toString().trim();
+    reasons.putIfAbsent(localKey, () => reason.isEmpty ? null : reason);
+  }
+
+  /// Nevobo levert wedstrijden; lokale annuleringen uit `match_cancellations` winnen.
+  void _overlayLocalCancellations({
+    required List<_MatchRef> matches,
+    required List<Map<String, dynamic>> rows,
+    required Map<String, bool> map,
+    required Map<String, String?> reasons,
+  }) {
+    final localKeys = matches.map((m) => m.matchKey).toSet();
+    for (final ref in matches) {
+      for (final r in rows) {
+        if (r['is_cancelled'] != true) continue;
+        final hit = _findMatchRefForCancellationRow(
+          matches: [ref],
+          localKeys: localKeys,
+          row: r,
+        );
+        if (hit != null) {
+          _applyCancellationRowToMaps(
+            row: r,
+            ref: hit,
+            map: map,
+            reasons: reasons,
+          );
+          break;
+        }
+      }
+    }
+    for (final r in rows) {
+      final ref = _findMatchRefForCancellationRow(
+        matches: matches,
+        localKeys: localKeys,
+        row: r,
+      );
+      if (ref == null) continue;
+      _applyCancellationRowToMaps(row: r, ref: ref, map: map, reasons: reasons);
+    }
+  }
+
+  void _debugLogCancellationMatching({
+    required List<_MatchRef> matches,
+    required List<Map<String, dynamic>> rows,
+    required Map<String, bool> matched,
+  }) {
+    debugPrint(
+      'NevoboWedstrijden: cancellations refs=${matches.length} rows=${rows.length} matched=${matched.length}',
+    );
+    for (final m in matches) {
+      if (m.teamCode.trim().toUpperCase() != 'JC1') continue;
+      debugPrint(
+        'NevoboWedstrijden: local JC1 key=${m.matchKey} '
+        'startUtc=${m.start.toUtc().toIso8601String()} summary=${m.summary}',
+      );
+    }
+    for (final r in rows) {
+      final key = (r['match_key'] ?? '').toString();
+      final team = (r['team_code'] ?? '').toString().trim().toUpperCase();
+      if (team != 'JC1' && !key.contains(':JC1:')) continue;
+      debugPrint(
+        'NevoboWedstrijden: cancel JC1 row key=$key team=$team '
+        'start=${r['starts_at']} cancelled=${r['is_cancelled']} reason=${r['reason']}',
+      );
+    }
+    for (final entry in matched.entries.where((e) => e.value)) {
+      debugPrint('NevoboWedstrijden: matched cancelled key=${entry.key}');
+    }
   }
 
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
@@ -125,7 +542,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         if (id.isEmpty) continue;
         final raw = (r['display_name'] ?? '').toString().trim();
         final name = applyDisplayNameOverrides(raw);
-        map[id] = name.isNotEmpty ? name : _shortId(id);
+        map[id] = name.isNotEmpty ? name : unknownUserName;
       }
       if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
         map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -161,7 +578,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
               .toString()
               .trim();
       final overridden = applyDisplayNameOverrides(name);
-      map[id] = overridden.isNotEmpty ? overridden : _shortId(id);
+      map[id] = overridden.isNotEmpty ? overridden : unknownUserName;
     }
     if (myId.isNotEmpty && myMetaName.isNotEmpty && map.containsKey(myId)) {
       map[myId] = applyDisplayNameOverrides(myMetaName);
@@ -197,20 +614,24 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       final pid = r['profile_id']?.toString() ?? '';
       if (pid.isNotEmpty) profileIds.add(pid);
     }
+    // Altijd naam van huidig profiel (zelf of kind) laden, ook als die nog nergens is aangemeld.
+    if (targetProfileId.isNotEmpty) profileIds.add(targetProfileId);
     final namesById = await _loadProfileDisplayNames(profileIds);
 
     final myStatus = <String, String>{};
     final playingByKey = <String, List<String>>{};
     final coachByKey = <String, List<String>>{};
+    final notPlayingByKey = <String, List<String>>{};
 
     for (final r in rows) {
       final key = (r['match_key'] ?? '').toString();
       if (key.isEmpty) continue;
       final pid = r['profile_id']?.toString() ?? '';
       final status = (r['status'] ?? '').toString().trim().toLowerCase();
-      final name = pid.isEmpty ? '' : (namesById[pid] ?? _shortId(pid));
+      final name = pid.isEmpty ? '' : (namesById[pid] ?? unknownUserName);
 
-      if (pid == targetProfileId && (status == 'playing' || status == 'coach')) {
+      if (pid == targetProfileId &&
+          (status == 'playing' || status == 'coach' || status == 'not_playing' || status == 'afgemeld')) {
         myStatus[key] = status;
       }
       if (name.trim().isEmpty) continue;
@@ -218,6 +639,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         playingByKey.putIfAbsent(key, () => []).add(name);
       } else if (status == 'coach') {
         coachByKey.putIfAbsent(key, () => []).add(name);
+      } else if (status == 'not_playing') {
+        notPlayingByKey.putIfAbsent(key, () => []).add(name);
       }
     }
 
@@ -227,9 +650,81 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     for (final entry in coachByKey.entries) {
       entry.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
+    for (final entry in notPlayingByKey.entries) {
+      entry.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    }
+
+    // Leden die niet hebben gereageerd: teamleden zonder match_availability-row.
+    final respondedByKey = <String, Set<String>>{};
+    for (final r in rows) {
+      final key = (r['match_key'] ?? '').toString();
+      final pid = r['profile_id']?.toString() ?? '';
+      if (key.isEmpty || pid.isEmpty) continue;
+      respondedByKey.putIfAbsent(key, () => {}).add(pid);
+    }
+
+    final nietGereageerdByKey = <String, List<String>>{};
+    if (widget.teamIdByCode.isNotEmpty) {
+      final teamIds = <int>{};
+      final matchKeyToTeamId = <String, int>{};
+      for (final m in matches) {
+        final tid = widget.teamIdByCode[m.teamCode.trim().toUpperCase()];
+        if (tid != null) {
+          teamIds.add(tid);
+          matchKeyToTeamId[m.matchKey] = tid;
+        }
+      }
+      Map<int, List<String>> teamMemberIdsByTid = {};
+      try {
+        final tmRes = await _client
+            .from('team_members')
+            .select('team_id, profile_id')
+            .inFilter('team_id', teamIds.toList());
+        final tmRows = (tmRes as List<dynamic>).cast<Map<String, dynamic>>();
+        for (final row in tmRows) {
+          final tid = (row['team_id'] as num?)?.toInt();
+          final pid = row['profile_id']?.toString() ?? '';
+          if (tid == null || pid.isEmpty) continue;
+          teamMemberIdsByTid.putIfAbsent(tid, () => []).add(pid);
+        }
+      } catch (_) {}
+
+      var allNamesById = Map<String, String>.from(namesById);
+      final idsToLoad = <String>{};
+      for (final m in matches) {
+        final key = m.matchKey;
+        final tid = matchKeyToTeamId[key];
+        if (tid == null) continue;
+        final members = teamMemberIdsByTid[tid] ?? [];
+        final responded = respondedByKey[key] ?? {};
+        for (final pid in members) {
+          if (!responded.contains(pid)) idsToLoad.add(pid);
+        }
+      }
+      if (idsToLoad.isNotEmpty) {
+        final extra = await _loadProfileDisplayNames(idsToLoad);
+        allNamesById = {...allNamesById, ...extra};
+      }
+      for (final m in matches) {
+        final key = m.matchKey;
+        final tid = matchKeyToTeamId[key];
+        if (tid == null) continue;
+        final members = teamMemberIdsByTid[tid] ?? [];
+        final responded = respondedByKey[key] ?? {};
+        final names = <String>[];
+        for (final pid in members) {
+          if (!responded.contains(pid)) {
+            final n = allNamesById[pid] ?? unknownUserName;
+            if (n.trim().isNotEmpty) names.add(n);
+          }
+        }
+        names.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+        if (names.isNotEmpty) nietGereageerdByKey[key] = names;
+      }
+    }
 
     if (!mounted) return;
-    final myName = namesById[targetProfileId] ?? _shortId(targetProfileId);
+    final myName = namesById[targetProfileId] ?? unknownUserName;
     setState(() {
       _myDisplayName = myName;
       _myStatusByMatchKey
@@ -241,29 +736,239 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       _coachNamesByMatchKey
         ..clear()
         ..addAll(coachByKey);
+      _notPlayingNamesByMatchKey
+        ..clear()
+        ..addAll(notPlayingByKey);
+      _nietGereageerdByMatchKey
+        ..clear()
+        ..addAll(nietGereageerdByKey);
     });
   }
 
-  Future<void> _loadCancellationsForMatches(List<_MatchRef> matches) async {
+  Future<void> _loadRefereesForMatches(List<_MatchRef> matches) async {
     if (matches.isEmpty) return;
     final keys = matches.map((m) => m.matchKey).toSet().toList();
     if (keys.isEmpty) return;
+    final targetProfileId = AppUserContext.of(context).attendanceProfileId;
 
     try {
-      final res = await _client
-          .from('match_cancellations')
-          .select('match_key, is_cancelled, reason')
+      final linksRes = await _client
+          .from('nevobo_home_matches')
+          .select('match_key, fluiten_task_id, tellen_task_id')
           .inFilter('match_key', keys);
-      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      final linkRows = (linksRes as List<dynamic>).cast<Map<String, dynamic>>();
+
+      final refereeTaskIdByKey = <String, int>{};
+      final tellerTaskIdByKey = <String, int>{};
+      final taskIds = <int>{};
+      for (final row in linkRows) {
+        final key = (row['match_key'] ?? '').toString();
+        if (key.isEmpty) continue;
+        final fluitenTaskId = (row['fluiten_task_id'] as num?)?.toInt();
+        final tellenTaskId = (row['tellen_task_id'] as num?)?.toInt();
+        if (fluitenTaskId != null) {
+          refereeTaskIdByKey[key] = fluitenTaskId;
+          taskIds.add(fluitenTaskId);
+        }
+        if (tellenTaskId != null) {
+          tellerTaskIdByKey[key] = tellenTaskId;
+          taskIds.add(tellenTaskId);
+        }
+      }
+
+      if (taskIds.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _refereeNamesByMatchKey
+            ..clear()
+            ..addEntries(keys.map((k) => MapEntry(k, const <String>[])));
+          _tellerNamesByMatchKey
+            ..clear()
+            ..addEntries(keys.map((k) => MapEntry(k, const <String>[])));
+        });
+        return;
+      }
+
+      final signupRes = await _client
+          .from('club_task_signups')
+          .select('task_id, profile_id')
+          .inFilter('task_id', taskIds.toList());
+      final signupRows = (signupRes as List<dynamic>).cast<Map<String, dynamic>>();
+
+      final profileIds = <String>{};
+      for (final row in signupRows) {
+        final pid = row['profile_id']?.toString() ?? '';
+        if (pid.isNotEmpty) profileIds.add(pid);
+      }
+      // Altijd naam van huidig profiel laden (voor correcte weergave na aanmelden fluiten/tellen).
+      if (targetProfileId.isNotEmpty) profileIds.add(targetProfileId);
+      final namesByProfile = await _loadProfileDisplayNames(profileIds);
+
+      final namesByTaskId = <int, List<String>>{};
+      for (final row in signupRows) {
+        final taskId = (row['task_id'] as num?)?.toInt();
+        final pid = row['profile_id']?.toString() ?? '';
+        if (taskId == null || pid.isEmpty) continue;
+        final name = (namesByProfile[pid] ?? unknownUserName).trim();
+        namesByTaskId.putIfAbsent(taskId, () => []).add(name);
+      }
+      for (final e in namesByTaskId.entries) {
+        e.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      }
+
+      final byMatch = <String, List<String>>{};
+      final tellerByMatch = <String, List<String>>{};
+      for (final key in keys) {
+        final refereeTaskId = refereeTaskIdByKey[key];
+        final tellerTaskId = tellerTaskIdByKey[key];
+        byMatch[key] = refereeTaskId == null
+            ? const []
+            : (namesByTaskId[refereeTaskId] ?? const []);
+        tellerByMatch[key] = tellerTaskId == null
+            ? const []
+            : (namesByTaskId[tellerTaskId] ?? const []);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _refereeNamesByMatchKey
+          ..clear()
+          ..addAll(byMatch);
+        _tellerNamesByMatchKey
+          ..clear()
+          ..addAll(tellerByMatch);
+      });
+    } catch (_) {
+      // best effort: keep UI working without referee data
+    }
+  }
+
+  Future<void> _loadCancellationsForMatches(List<_MatchRef> matches) async {
+    if (matches.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _cancelledByMatchKey.clear();
+        _cancelReasonByMatchKey.clear();
+      });
+      return;
+    }
+    final keys = matches.map((m) => m.matchKey).toSet().toList();
+
+    final teamCodes = matches
+        .map((m) => m.teamCode.trim().toUpperCase())
+        .where((c) => c.isNotEmpty)
+        .toSet()
+        .toList();
+
+    DateTime? minStart;
+    DateTime? maxStart;
+    for (final m in matches) {
+      final utc = m.start.toUtc();
+      if (minStart == null || utc.isBefore(minStart)) minStart = utc;
+      if (maxStart == null || utc.isAfter(maxStart)) maxStart = utc;
+    }
+
+    try {
+      const selectWithSummary =
+          'match_key, team_code, starts_at, summary, is_cancelled, reason';
+      const selectWithoutSummary =
+          'match_key, team_code, starts_at, is_cancelled, reason';
+      final rowsByKey = <String, Map<String, dynamic>>{};
+
+      Future<void> runSelect(String select, Future<dynamic> Function() query) async {
+        try {
+          final res = await query();
+          for (final r in (res as List<dynamic>).cast<Map<String, dynamic>>()) {
+            final k = (r['match_key'] ?? '').toString();
+            if (k.isNotEmpty) rowsByKey[k] = r;
+          }
+        } catch (e) {
+          debugPrint('NevoboWedstrijden: cancellations query failed ($select): $e');
+        }
+      }
+
+      await runSelect(
+        selectWithSummary,
+        () => _client.from('match_cancellations').select(selectWithSummary).inFilter('match_key', keys),
+      );
+
+      if (teamCodes.isNotEmpty) {
+        await runSelect(
+          selectWithSummary,
+          () => _client
+              .from('match_cancellations')
+              .select(selectWithSummary)
+              .inFilter('team_code', teamCodes)
+              .eq('is_cancelled', true),
+        );
+      }
+
+      if (teamCodes.isNotEmpty && minStart != null && maxStart != null) {
+        final tightStart = minStart
+            .subtract(const Duration(minutes: 2))
+            .toUtc()
+            .toIso8601String();
+        final tightEnd = maxStart
+            .add(const Duration(minutes: 2))
+            .toUtc()
+            .toIso8601String();
+        await runSelect(
+          selectWithSummary,
+          () => _client
+              .from('match_cancellations')
+              .select(selectWithSummary)
+              .inFilter('team_code', teamCodes)
+              .gte('starts_at', tightStart)
+              .lte('starts_at', tightEnd),
+        );
+      }
+
+      if (minStart != null && maxStart != null) {
+        final wideStart = minStart
+            .subtract(const Duration(days: 1))
+            .toUtc()
+            .toIso8601String();
+        final wideEnd = maxStart
+            .add(const Duration(days: 1))
+            .toUtc()
+            .toIso8601String();
+        await runSelect(
+          selectWithSummary,
+          () => _client
+              .from('match_cancellations')
+              .select(selectWithSummary)
+              .gte('starts_at', wideStart)
+              .lte('starts_at', wideEnd),
+        );
+      }
+
+      if (rowsByKey.isEmpty && teamCodes.isNotEmpty) {
+        await runSelect(
+          selectWithoutSummary,
+          () => _client
+              .from('match_cancellations')
+              .select(selectWithoutSummary)
+              .inFilter('team_code', teamCodes)
+              .eq('is_cancelled', true),
+        );
+      }
+
+      final rows = rowsByKey.values.toList();
       final map = <String, bool>{};
       final reasons = <String, String?>{};
-      for (final r in rows) {
-        final k = (r['match_key'] ?? '').toString();
-        if (k.isEmpty) continue;
-        map[k] = r['is_cancelled'] == true;
-        final reason = (r['reason'] ?? '').toString().trim();
-        reasons[k] = reason.isEmpty ? null : reason;
-      }
+      _overlayLocalCancellations(
+        matches: matches,
+        rows: rows,
+        map: map,
+        reasons: reasons,
+      );
+
+      _debugLogCancellationMatching(
+        matches: matches,
+        rows: rows,
+        matched: map,
+      );
+
       if (!mounted) return;
       setState(() {
         _cancelledByMatchKey
@@ -273,8 +978,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           ..clear()
           ..addAll(reasons);
       });
-    } catch (_) {
-      // Table missing or RLS; ignore (best-effort)
+    } catch (e) {
+      debugPrint('NevoboWedstrijden: cancellations load failed: $e');
     }
   }
 
@@ -282,22 +987,37 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final me = _myDisplayName ?? 'Ik';
     final playing = List<String>.from(_playingNamesByMatchKey[key] ?? []);
     final coaches = List<String>.from(_coachNamesByMatchKey[key] ?? []);
+    final notPlaying = List<String>.from(_notPlayingNamesByMatchKey[key] ?? []);
     playing.remove(me);
     coaches.remove(me);
+    notPlaying.remove(me);
     if (status == 'playing') {
       playing.add(me);
       playing.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     } else if (status == 'coach') {
       coaches.add(me);
       coaches.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    } else if (status == 'not_playing') {
+      notPlaying.add(me);
+      notPlaying.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
-    if (status == null) {
+    if (status == 'afgemeld') {
+      _myStatusByMatchKey[key] = 'afgemeld';
+      final ng = List<String>.from(_nietGereageerdByMatchKey[key] ?? []);
+      ng.remove(me);
+      _nietGereageerdByMatchKey[key] = ng;
+    } else if (status == null) {
       _myStatusByMatchKey.remove(key);
     } else {
       _myStatusByMatchKey[key] = status;
+      // Wie reageert (incl. afgemeld) verdwijnt uit "niet gereageerd"
+      final ng = List<String>.from(_nietGereageerdByMatchKey[key] ?? []);
+      ng.remove(me);
+      _nietGereageerdByMatchKey[key] = ng;
     }
     _playingNamesByMatchKey[key] = playing;
     _coachNamesByMatchKey[key] = coaches;
+    _notPlayingNamesByMatchKey[key] = notPlaying;
   }
 
   /// Bepaal of gebruiker als trainer/coach wordt aangemeld voor dit team (anders speler).
@@ -315,13 +1035,6 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     } catch (_) {
       return false;
     }
-  }
-
-  String _matchAttendanceSummary(List<String> playing, List<String> coaches) {
-    final parts = <String>[];
-    if (coaches.isNotEmpty) parts.add('Trainer/coach: ${coaches.length}');
-    if (playing.isNotEmpty) parts.add('Speler(s): ${playing.length}');
-    return parts.isEmpty ? '' : parts.join(' • ');
   }
 
   Future<void> _setMyStatus({
@@ -342,19 +1055,15 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final prevStatus = _myStatusByMatchKey[key];
     final prevPlaying = List<String>.from(_playingNamesByMatchKey[key] ?? []);
     final prevCoaches = List<String>.from(_coachNamesByMatchKey[key] ?? []);
+    final prevNotPlaying = List<String>.from(_notPlayingNamesByMatchKey[key] ?? []);
 
     _applyOptimisticMatchUpdate(key, status);
     if (!mounted) return;
     setState(() {});
 
     try {
-      if (status == null) {
-        await _client
-            .from('match_availability')
-            .delete()
-            .eq('match_key', key)
-            .eq('profile_id', targetProfileId);
-      } else {
+      if (status != null) {
+        // status = playing | coach | not_playing | afgemeld
         await _client.from('match_availability').upsert(
           {
             'match_key': key,
@@ -378,151 +1087,14 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         }
         _playingNamesByMatchKey[key] = prevPlaying;
         _coachNamesByMatchKey[key] = prevCoaches;
-      });
-      showTopMessage(context, 'Kon status niet opslaan: $e', isError: true);
-    }
-  }
-
-  Future<void> _setMyStatusForAllMatches(String? status) async {
-    final user = _client.auth.currentUser;
-    if (user == null) return;
-    if (_upcomingMatchRefs.isEmpty) return;
-    final ctx = AppUserContext.of(context);
-    final targetProfileId = ctx.attendanceProfileId;
-
-    final prevStatus = Map<String, String?>.from(_myStatusByMatchKey);
-    final prevPlaying = <String, List<String>>{
-      for (final e in _playingNamesByMatchKey.entries) e.key: List<String>.from(e.value),
-    };
-    final prevCoaches = <String, List<String>>{
-      for (final e in _coachNamesByMatchKey.entries) e.key: List<String>.from(e.value),
-    };
-
-    for (final m in _upcomingMatchRefs) {
-      if (_cancelledByMatchKey[m.matchKey] == true) continue;
-      _applyOptimisticMatchUpdate(m.matchKey, status);
-    }
-    if (!mounted) return;
-    setState(() {});
-
-    try {
-      final keys = _upcomingMatchRefs
-          .where((m) => _cancelledByMatchKey[m.matchKey] != true)
-          .map((m) => m.matchKey)
-          .toSet()
-          .toList();
-      if (status == null) {
-        await _client
-            .from('match_availability')
-            .delete()
-            .eq('profile_id', targetProfileId)
-            .inFilter('match_key', keys);
-      } else {
-        final rows = _upcomingMatchRefs
-            .where((m) => _cancelledByMatchKey[m.matchKey] != true)
-            .map((m) => {
-          'match_key': m.matchKey,
-          'team_code': m.teamCode,
-          'starts_at': m.start.toUtc().toIso8601String(),
-          'summary': m.summary,
-          'location': m.location,
-          'profile_id': targetProfileId,
-          'status': status,
-        })
-            .toList();
-        await _client.from('match_availability').upsert(
-          rows,
-          onConflict: 'match_key,profile_id',
-        );
-      }
-      if (!mounted) return;
-      final label = status == null ? 'Afwezig' : 'Aanwezig';
-      showTopMessage(
-        context,
-        '$label voor ${_upcomingMatchRefs.length} wedstrijd(en) opgeslagen.',
-      );
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _myStatusByMatchKey.clear();
-        for (final e in prevStatus.entries) {
-          if (e.value != null) _myStatusByMatchKey[e.key] = e.value!;
-        }
-        _playingNamesByMatchKey
-          ..clear()
-          ..addAll(prevPlaying);
-        _coachNamesByMatchKey
-          ..clear()
-          ..addAll(prevCoaches);
-      });
-      showTopMessage(context, 'Kon status niet opslaan: $e', isError: true);
-    }
-  }
-
-  /// Aanwezig voor alle wedstrijden: per match coach of playing op basis van team.
-  Future<void> _setMyStatusForAllMatchesAanwezig() async {
-    final user = _client.auth.currentUser;
-    if (user == null) return;
-    if (_upcomingMatchRefs.isEmpty) return;
-    final ctx = AppUserContext.of(context);
-    final targetProfileId = ctx.attendanceProfileId;
-
-    final prevStatus = Map<String, String?>.from(_myStatusByMatchKey);
-    final prevPlaying = <String, List<String>>{
-      for (final e in _playingNamesByMatchKey.entries) e.key: List<String>.from(e.value),
-    };
-    final prevCoaches = <String, List<String>>{
-      for (final e in _coachNamesByMatchKey.entries) e.key: List<String>.from(e.value),
-    };
-
-    for (final m in _upcomingMatchRefs) {
-      final status = _isTrainerOrCoachForTeamCode(m.teamCode) ? 'coach' : 'playing';
-      _applyOptimisticMatchUpdate(m.matchKey, status);
-    }
-    if (!mounted) return;
-    setState(() {});
-
-    try {
-      final rows = _upcomingMatchRefs.map((m) {
-        final status = _isTrainerOrCoachForTeamCode(m.teamCode) ? 'coach' : 'playing';
-        return {
-          'match_key': m.matchKey,
-          'team_code': m.teamCode,
-          'starts_at': m.start.toUtc().toIso8601String(),
-          'summary': m.summary,
-          'location': m.location,
-          'profile_id': targetProfileId,
-          'status': status,
-        };
-      }).toList();
-      await _client.from('match_availability').upsert(
-        rows,
-        onConflict: 'match_key,profile_id',
-      );
-      if (!mounted) return;
-      showTopMessage(
-        context,
-        'Aanwezig voor ${_upcomingMatchRefs.length} wedstrijd(en) opgeslagen.',
-      );
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _myStatusByMatchKey.clear();
-        for (final e in prevStatus.entries) {
-          if (e.value != null) _myStatusByMatchKey[e.key] = e.value!;
-        }
-        _playingNamesByMatchKey
-          ..clear()
-          ..addAll(prevPlaying);
-        _coachNamesByMatchKey
-          ..clear()
-          ..addAll(prevCoaches);
+        _notPlayingNamesByMatchKey[key] = prevNotPlaying;
       });
       showTopMessage(context, 'Kon status niet opslaan: $e', isError: true);
     }
   }
 
   Future<void> _loadAll() async {
+    if (!mounted) return;
     setState(() {
       _loading = true;
       _error = null;
@@ -530,6 +1102,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       _errorByTeam.clear();
       _matchesByTeam.clear();
       _matchErrorByTeam.clear();
+      _nietGereageerdByMatchKey.clear();
     });
 
     try {
@@ -567,6 +1140,26 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
             final standings = await NevoboApi.fetchStandingsForTeam(team: team);
             if (!mounted) return;
             setState(() => _leaderboardByTeam[team.code] = standings);
+            // Sync teamnaam uit API naar Supabase (geen team_id in deze tab).
+            for (final s in standings) {
+              if (s.teamName.trim().toLowerCase().contains('minerva')) {
+                final extracted = NevoboApi.extractCodeFromTeamName(s.teamName);
+                if (extracted != null &&
+                    (extracted == team.code ||
+                        (extracted.startsWith('XR') && team.code.startsWith('MR') &&
+                            extracted.substring(2) == team.code.substring(2)) ||
+                        (extracted.startsWith('MR') && team.code.startsWith('XR') &&
+                            extracted.substring(2) == team.code.substring(2)))) {
+                  NevoboApi.syncTeamNameFromNevobo(
+                    client: _client,
+                    teamId: null,
+                    nevoboCode: team.code,
+                    teamName: s.teamName,
+                  );
+                  break;
+                }
+              }
+            }
           } catch (e) {
             if (!mounted) return;
             setState(() => _errorByTeam[team.code] = e.toString());
@@ -595,9 +1188,12 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         }
       }
       if (mounted) setState(() => _upcomingMatchRefs = matchRefs);
+      // Nevobo-wedstrijden blijven de bron; lokale annuleringen overlayen daarna.
       await _loadCancellationsForMatches(matchRefs);
       await _loadAvailabilityForMatches(matchRefs);
+      await _loadRefereesForMatches(matchRefs);
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = 'Kon Nevobo data niet laden.\n$e';
         _loading = false;
@@ -615,75 +1211,352 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     return '${two(d.day)}-${two(d.month)}-${d.year} ${two(d.hour)}:${two(d.minute)}';
   }
 
-  String _displayTeamCode(String code) {
-    final normalized = code.trim().toUpperCase();
-    if (normalized.startsWith('MR')) return 'XR${normalized.substring(2)}';
-    return normalized;
+  static const List<String> _weekdayNames = [
+    'maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag', 'zondag',
+  ];
+  static const List<String> _monthNames = [
+    'januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli',
+    'augustus', 'september', 'oktober', 'november', 'december',
+  ];
+
+  String _formatDateHeader(DateTime dt) {
+    final d = dt.toLocal();
+    final weekday = _weekdayNames[d.weekday - 1];
+    final month = _monthNames[d.month - 1];
+    return '$weekday ${d.day} $month ${d.year}';
   }
 
-  Widget _buildVoorAlleWedstrijdenBar() {
-    final active = _upcomingMatchRefs.where((m) => _cancelledByMatchKey[m.matchKey] != true).toList();
-    final allPresent = active.every((m) {
-      final s = _myStatusByMatchKey[m.matchKey];
-      return s == 'playing' || s == 'coach';
-    });
-    final anyPresent = active.any((m) {
-      final s = _myStatusByMatchKey[m.matchKey];
-      return s == 'playing' || s == 'coach';
-    });
+  String _formatRoleNames(List<String> names) {
+    if (names.isEmpty) return 'Nog niet ingedeeld';
+    if (names.length <= 2) return names.join(', ');
+    return '${names.take(2).join(', ')} +${names.length - 2}';
+  }
 
-    return GlassCard(
-      padding: const EdgeInsets.all(14),
+  Widget _buildSectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 6),
+      child: Text(
+        title,
+        style: const TextStyle(
+          color: AppColors.onBackground,
+          fontWeight: FontWeight.w800,
+          fontSize: 18,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMatchAttendanceCategory(String label, int count, List<String> names, bool expanded, TextStyle labelStyle) {
+    if (count == 0) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('$label: $count', style: labelStyle),
+        if (expanded && names.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(left: 12, top: 2),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: names.map((n) => Text('- $n', style: labelStyle.copyWith(fontSize: 12))).toList(),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// Eén wedstrijdrij (tijd, teamlabel, samenvatting, locatie, aanwezigheid). Voor weergave per dag.
+  Widget _buildMatchRow(_MatchRef ref, String teamDisplayLabel) {
+    final key = ref.matchKey;
+    final isCancelled = _cancelledByMatchKey[key] == true;
+    final cancelReason = _cancelReasonByMatchKey[key];
+    final myStatus = _myStatusByMatchKey[key];
+    final isPresent = myStatus == 'playing' || myStatus == 'coach';
+    final isNotPlaying = myStatus == 'not_playing';
+    final isAfgemeld = myStatus == 'afgemeld';
+    final playing = _playingNamesByMatchKey[key] ?? const [];
+    final coaches = _coachNamesByMatchKey[key] ?? const [];
+    final notPlaying = _notPlayingNamesByMatchKey[key] ?? const [];
+    final nietGereageerd = _nietGereageerdByMatchKey[key] ?? const [];
+    final referees = _refereeNamesByMatchKey[key] ?? const [];
+    final tellers = _tellerNamesByMatchKey[key] ?? const [];
+    final hasCounts = playing.isNotEmpty || coaches.isNotEmpty || notPlaying.isNotEmpty || nietGereageerd.isNotEmpty;
+    final expanded = _expandedMatchKeys.contains(key);
+    final summaryColor =
+        isCancelled ? AppColors.textSecondary : AppColors.onBackground;
+    final teamLabelColor =
+        isCancelled ? AppColors.textSecondary : AppColors.primary;
+    final metaStyle = TextStyle(
+      color: AppColors.textSecondary,
+      fontSize: 13,
+    );
+    final disabledMetaStyle = metaStyle.copyWith(
+      color: AppColors.textSecondary.withValues(alpha: isCancelled ? 0.85 : 1),
+    );
+
+    return Opacity(
+      opacity: isCancelled ? 0.72 : 1,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: AppColors.darkBlue,
-              borderRadius: BorderRadius.circular(AppColors.cardRadius),
-            ),
-            child: Text(
-              'Voor alle wedstrijden',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w900,
-                  ),
+          Text(
+            _formatDateTime(ref.start),
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w800,
             ),
           ),
           const SizedBox(height: 2),
           Text(
-            '${active.length} wedstrijd(en)',
-            style: const TextStyle(color: AppColors.textSecondary),
+            teamDisplayLabel,
+            style: TextStyle(
+              color: teamLabelColor,
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+            ),
           ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          const SizedBox(height: 2),
+          Row(
             children: [
-              ElevatedButton(
-                onPressed: _setMyStatusForAllMatchesAanwezig,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: allPresent ? AppColors.primary : AppColors.card,
-                  foregroundColor: allPresent ? AppColors.background : AppColors.onBackground,
-                  side: allPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
+              Expanded(
+                child: _buildMatchSummaryText(
+                  NevoboApi.displayTeamName(ref.summary),
+                  style: TextStyle(
+                    color: summaryColor,
+                    fontWeight: FontWeight.w800,
+                    decoration: isCancelled
+                        ? TextDecoration.lineThrough
+                        : TextDecoration.none,
+                  ),
+                  teamCode: ref.teamCode,
                 ),
-                child: const Text('Aanwezig'),
               ),
-              ElevatedButton(
-                onPressed: () => _setMyStatusForAllMatches(null),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: !anyPresent ? AppColors.primary : AppColors.card,
-                  foregroundColor: !anyPresent ? AppColors.background : AppColors.onBackground,
-                  side: !anyPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
+              if (isCancelled)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: AppColors.error.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: AppColors.error.withValues(alpha: 0.35),
+                    ),
+                  ),
+                  child: const Text(
+                    'Geannuleerd',
+                    style: TextStyle(
+                      color: AppColors.error,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                 ),
-                child: const Text('Afwezig'),
-              ),
             ],
+          ),
+          if (ref.location.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              ref.location,
+              style: disabledMetaStyle,
+            ),
+            MatchTravelRow(
+              location: ref.location,
+              textDecoration: isCancelled ? TextDecoration.lineThrough : null,
+            ),
+          ],
+          const SizedBox(height: 4),
+          Text(
+            'Scheidsrechter: ${_formatRoleNames(referees)}',
+            style: disabledMetaStyle,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Teller: ${_formatRoleNames(tellers)}',
+            style: disabledMetaStyle,
+          ),
+          if (isCancelled && cancelReason != null && cancelReason.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Reden: $cancelReason',
+              style: const TextStyle(color: AppColors.textSecondary),
+            ),
+          ],
+          const SizedBox(height: 8),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              isPresent
+                  ? FilledButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _setMyStatus(
+                                match: ref,
+                                status: _isTrainerOrCoachForTeamCode(ref.teamCode)
+                                    ? 'coach'
+                                    : 'playing',
+                              ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.success,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Aanmelden'),
+                    )
+                  : OutlinedButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _setMyStatus(
+                                match: ref,
+                                status: _isTrainerOrCoachForTeamCode(ref.teamCode)
+                                    ? 'coach'
+                                    : 'playing',
+                              ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Aanmelden'),
+                    ),
+              const SizedBox(width: 6),
+              isNotPlaying
+                  ? FilledButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _setMyStatus(match: ref, status: 'not_playing'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.amber.shade600,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Niet spelend'),
+                    )
+                  : OutlinedButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _setMyStatus(match: ref, status: 'not_playing'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Niet spelend'),
+                    ),
+              const SizedBox(width: 6),
+              isAfgemeld
+                  ? FilledButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _confirmAndSetAfwezig(match: ref),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.error,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Afmelden'),
+                    )
+                  : OutlinedButton(
+                      onPressed: isCancelled
+                          ? null
+                          : () => _confirmAndSetAfwezig(match: ref),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        minimumSize: const Size(0, 44),
+                        textStyle: const TextStyle(fontSize: 14),
+                      ),
+                      child: const Text('Afmelden'),
+                    ),
+            ],
+          ),
+          if (hasCounts) ...[
+            const SizedBox(height: 6),
+            GestureDetector(
+              onTap: () {
+                setState(() {
+                  if (expanded) {
+                    _expandedMatchKeys.remove(key);
+                  } else {
+                    _expandedMatchKeys.add(key);
+                  }
+                });
+              },
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        expanded ? Icons.expand_less : Icons.expand_more,
+                        size: 18,
+                        color: AppColors.textSecondary,
+                      ),
+                      const SizedBox(width: 4),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  _buildMatchAttendanceCategory(
+                    'Spelend',
+                    playing.length + coaches.length,
+                    [...playing, ...coaches],
+                    expanded,
+                    const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  ),
+                  if (playing.isNotEmpty || coaches.isNotEmpty) const SizedBox(height: 4),
+                  _buildMatchAttendanceCategory(
+                    'Niet spelend',
+                    notPlaying.length,
+                    notPlaying,
+                    expanded,
+                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.9), fontSize: 13),
+                  ),
+                  if (notPlaying.isNotEmpty) const SizedBox(height: 4),
+                  _buildMatchAttendanceCategory(
+                    'Niet gereageerd',
+                    nietGereageerd.length,
+                    nietGereageerd,
+                    expanded,
+                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.7), fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmAndSetAfwezig({required _MatchRef match}) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Afmelden bevestigen'),
+        content: const Text(
+          'Weet je zeker dat je je wilt afmelden voor deze wedstrijd?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annuleren'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: AppColors.background,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Afmelden'),
           ),
         ],
       ),
     );
+    if (confirm == true && mounted) {
+      _setMyStatus(match: match, status: 'afgemeld');
+    }
   }
 
   @override
@@ -721,10 +1594,15 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                         ),
                       ),
                       const SizedBox(height: 6),
-                      ...ctx.memberships.map((m) => Text(
-                            '- ${m.teamName.isNotEmpty ? m.teamName : 'Team ${m.teamId}'}',
-                            style: const TextStyle(color: AppColors.textSecondary),
-                          )),
+                      ...ctx.memberships.map((m) {
+                        final naam = m.displayLabel.trim().isNotEmpty
+                            ? m.displayLabel
+                            : '(naam ontbreekt)';
+                        return Text(
+                          '- $naam',
+                          style: const TextStyle(color: AppColors.textSecondary),
+                        );
+                      }),
                     ],
                   ),
                 ),
@@ -771,375 +1649,110 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       );
     }
 
-    final showBulkBar = _upcomingMatchRefs.isNotEmpty;
+    // Filter op geselecteerde teams
+    final displayedMatchRefs = _upcomingMatchRefs
+        .where((r) => _selectedTeamCodes.contains(r.teamCode))
+        .toList();
+
+    // Wedstrijden gegroepeerd per dag (lokale datum) voor "Wedstrijden per dag".
+    final matchesByDate = <DateTime, List<_MatchRef>>{};
+    for (final ref in displayedMatchRefs) {
+      final local = ref.start.toLocal();
+      final dateKey = DateTime(local.year, local.month, local.day);
+      matchesByDate.putIfAbsent(dateKey, () => []).add(ref);
+    }
+    for (final list in matchesByDate.values) {
+      list.sort((a, b) => a.start.compareTo(b.start));
+    }
+    final sortedDates = matchesByDate.keys.toList()..sort();
+
+    // Teamfilter: aanvinken welke teams te tonen (alleen bij 2+ teams)
+    final showTeamFilter = _teams.length >= 2;
+
+    final listChildren = <Widget>[
+      if (showTeamFilter) ...[
+        _buildSectionHeader('Toon wedstrijden van'),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          children: _teams.map((team) {
+            final selected = _selectedTeamCodes.contains(team.code);
+            return FilterChip(
+              label: Text(
+                NevoboApi.displayTeamCode(team.code),
+                style: TextStyle(
+                  color: selected ? AppColors.primary : AppColors.background,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              selected: selected,
+              onSelected: (_) => _toggleTeamSelection(team.code),
+              backgroundColor: AppColors.darkBlue,
+              selectedColor: AppColors.darkBlue,
+              side: BorderSide(
+                color: selected
+                    ? AppColors.primary.withValues(alpha: 0.95)
+                    : AppColors.darkBlue,
+                width: selected ? 1.6 : 1.0,
+              ),
+              checkmarkColor: AppColors.primary,
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 16),
+      ],
+      _buildSectionHeader('Wedstrijden per dag'),
+      if (sortedDates.isEmpty)
+        const Padding(
+          padding: EdgeInsets.only(top: 8, bottom: 16),
+          child: Text(
+            'Geen komende wedstrijden.',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+        )
+      else
+        ...sortedDates.expand((date) => [
+              Padding(
+                padding: const EdgeInsets.only(top: 12, bottom: 6),
+                child: Text(
+                  _formatDateHeader(date),
+                  style: const TextStyle(
+                    color: AppColors.darkBlue,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final ref in matchesByDate[date]!)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: GlassCard(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        child: _buildMatchRow(
+                          ref,
+                          _teamDisplayLabelForCode(ref.teamCode),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
+            ]),
+    ];
 
     return RefreshIndicator(
       color: AppColors.primary,
       onRefresh: () async {
-        // Reload memberships first (e.g. after TC linking).
         await ctx.reloadUserContext?.call();
         await _loadAll();
       },
-      child: ListView.separated(
+      child: ListView(
         padding: const EdgeInsets.all(12),
-        itemCount: (showBulkBar ? 1 : 0) + _teams.length,
-        separatorBuilder: (_, _) => const SizedBox(height: 10),
-        itemBuilder: (context, index) {
-          if (showBulkBar && index == 0) {
-            return _buildVoorAlleWedstrijdenBar();
-          }
-          final teamIndex = showBulkBar ? index - 1 : index;
-          final team = _teams[teamIndex];
-          final matches = _matchesByTeam[team.code] ?? const [];
-          final matchError = _matchErrorByTeam[team.code];
-          final leaderboard = _leaderboardByTeam[team.code];
-          final error = _errorByTeam[team.code];
-
-          final useAccordion = _teams.length > 1;
-          final expanded = !useAccordion || _expandedWedstrijdenTeamCodes.contains(team.code);
-
-          return GlassCard(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                InkWell(
-                  onTap: useAccordion
-                      ? () {
-                          setState(() {
-                            if (_expandedWedstrijdenTeamCodes.contains(team.code)) {
-                              _expandedWedstrijdenTeamCodes.remove(team.code);
-                            } else {
-                              _expandedWedstrijdenTeamCodes.add(team.code);
-                            }
-                          });
-                        }
-                      : null,
-                  borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: AppColors.darkBlue,
-                            borderRadius: BorderRadius.circular(AppColors.cardRadius),
-                          ),
-                          child: Text(
-                            _displayTeamCode(team.code),
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                  color: AppColors.primary,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                          ),
-                        ),
-                        const Spacer(),
-                        if (useAccordion)
-                          Icon(
-                            expanded ? Icons.expand_less : Icons.expand_more,
-                            color: AppColors.textSecondary,
-                          )
-                        else if (_loading && (leaderboard == null && error == null))
-                          const SizedBox(
-                            height: 16,
-                            width: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: AppColors.primary,
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-                if (expanded) ...[
-                  const SizedBox(height: 12),
-
-                  const Text(
-                  'Leaderboard',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                if (error != null)
-                  Text(
-                    error,
-                    style: const TextStyle(color: AppColors.error),
-                  )
-                else ...[
-                  if (leaderboard == null)
-                    const Text(
-                      'Laden...',
-                      style: TextStyle(color: AppColors.textSecondary),
-                    )
-                  else if (leaderboard.isEmpty)
-                    const Text(
-                      'Geen leaderboard gevonden.',
-                      style: TextStyle(color: AppColors.textSecondary),
-                    )
-                  else
-                    ...leaderboard.map((s) {
-                      final isMinerva = _isMinervaTeamName(s.teamName);
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: isMinerva
-                                ? AppColors.primary.withValues(alpha: 0.12)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(12),
-                            border: isMinerva
-                                ? Border.all(
-                                    color: AppColors.primary.withValues(alpha: 0.35),
-                                  )
-                                : null,
-                          ),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: 28,
-                                child: Text(
-                                  s.position > 0 ? '${s.position}.' : '-',
-                                  style: const TextStyle(
-                                    color: AppColors.textSecondary,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  s.teamName,
-                                  style: TextStyle(
-                                    color: AppColors.onBackground,
-                                    fontWeight: isMinerva ? FontWeight.w900 : FontWeight.w700,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              SizedBox(
-                                width: 36,
-                                child: Text(
-                                  '${s.played}',
-                                  textAlign: TextAlign.right,
-                                  style: const TextStyle(
-                                    color: AppColors.textSecondary,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              SizedBox(
-                                width: 36,
-                                child: Text(
-                                  '${s.points}',
-                                  textAlign: TextAlign.right,
-                                  style: const TextStyle(
-                                    color: AppColors.primary,
-                                    fontWeight: FontWeight.w900,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    }),
-                ],
-
-                const SizedBox(height: 14),
-
-                const Text(
-                  'Wedstrijden',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                if (matchError != null)
-                  Text(
-                    matchError,
-                    style: const TextStyle(color: AppColors.error),
-                  )
-                else if (matches.isEmpty)
-                  const Text(
-                    'Geen wedstrijden gevonden.',
-                    style: TextStyle(color: AppColors.textSecondary),
-                  )
-                else ...[
-                  ...matches.where((m) {
-                    final start = m.start;
-                    if (start == null) return false;
-                    return start.isAfter(DateTime.now().subtract(const Duration(hours: 2)));
-                  }).take(20).map((m) {
-                    final start = m.start;
-                    if (start == null) return const SizedBox.shrink();
-                    final key = _matchKey(teamCode: team.code, start: start);
-                    final isCancelled = _cancelledByMatchKey[key] == true;
-                    final cancelReason = _cancelReasonByMatchKey[key];
-                    final myStatus = _myStatusByMatchKey[key];
-                    final isPresent = myStatus == 'playing' || myStatus == 'coach';
-                    final playing = _playingNamesByMatchKey[key] ?? const [];
-                    final coaches = _coachNamesByMatchKey[key] ?? const [];
-                    final hasCounts = playing.isNotEmpty || coaches.isNotEmpty;
-                    final expanded = _expandedMatchKeys.contains(key);
-                    final summary = _matchAttendanceSummary(playing, coaches);
-
-                    final ref = _MatchRef(
-                      matchKey: key,
-                      teamCode: team.code,
-                      start: start,
-                      summary: m.summary,
-                      location: (m.location ?? '').trim(),
-                    );
-
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            _formatDateTime(start),
-                            style: const TextStyle(
-                              color: AppColors.textSecondary,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: _buildMatchSummaryText(
-                                  m.summary,
-                                  style: TextStyle(
-                                    color: AppColors.onBackground,
-                                    fontWeight: FontWeight.w800,
-                                    decoration: isCancelled
-                                        ? TextDecoration.lineThrough
-                                        : TextDecoration.none,
-                                  ),
-                                ),
-                              ),
-                              if (isCancelled)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.error.withValues(alpha: 0.14),
-                                    borderRadius: BorderRadius.circular(999),
-                                    border: Border.all(
-                                      color: AppColors.error.withValues(alpha: 0.35),
-                                    ),
-                                  ),
-                                  child: const Text(
-                                    'Geannuleerd',
-                                    style: TextStyle(
-                                      color: AppColors.error,
-                                      fontWeight: FontWeight.w900,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                          if ((m.location ?? '').trim().isNotEmpty) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              (m.location ?? '').trim(),
-                              style: const TextStyle(color: AppColors.textSecondary),
-                            ),
-                          ],
-                          if (isCancelled && cancelReason != null && cancelReason.trim().isNotEmpty) ...[
-                            const SizedBox(height: 6),
-                            Text(
-                              'Reden: $cancelReason',
-                              style: const TextStyle(color: AppColors.textSecondary),
-                            ),
-                          ],
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              ElevatedButton(
-                                onPressed: isCancelled
-                                    ? null
-                                    : () => _setMyStatus(
-                                          match: ref,
-                                          status: _isTrainerOrCoachForTeamCode(ref.teamCode)
-                                              ? 'coach'
-                                              : 'playing',
-                                        ),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: isPresent ? AppColors.primary : AppColors.card,
-                                  foregroundColor: isPresent ? AppColors.background : AppColors.onBackground,
-                                  side: isPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
-                                ),
-                                child: const Text('Aanwezig'),
-                              ),
-                              ElevatedButton(
-                                onPressed: isCancelled
-                                    ? null
-                                    : () => _setMyStatus(match: ref, status: null),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: !isPresent ? AppColors.primary : AppColors.card,
-                                  foregroundColor: !isPresent ? AppColors.background : AppColors.onBackground,
-                                  side: !isPresent ? null : BorderSide(color: AppColors.primary.withValues(alpha: 0.5)),
-                                ),
-                                child: const Text('Afwezig'),
-                              ),
-                            ],
-                          ),
-                          if (hasCounts) ...[
-                            const SizedBox(height: 6),
-                            GestureDetector(
-                              onTap: () {
-                                setState(() {
-                                  if (expanded) {
-                                    _expandedMatchKeys.remove(key);
-                                  } else {
-                                    _expandedMatchKeys.add(key);
-                                  }
-                                });
-                              },
-                              child: Row(
-                                children: [
-                                  Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 18, color: AppColors.textSecondary),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    summary,
-                                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            if (expanded) ...[
-                              const SizedBox(height: 4),
-                              if (coaches.isNotEmpty)
-                                Text(
-                                  'Trainer/coach: ${coaches.join(', ')}',
-                                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                                ),
-                              if (coaches.isNotEmpty && playing.isNotEmpty) const SizedBox(height: 2),
-                              if (playing.isNotEmpty)
-                                Text(
-                                  'Speler(s): ${playing.join(', ')}',
-                                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                                ),
-                            ],
-                          ],
-                        ],
-                      ),
-                    );
-                  }),
-                ],
-                ],
-              ],
-            ),
-          );
-        },
+        children: listChildren,
       ),
     );
   }

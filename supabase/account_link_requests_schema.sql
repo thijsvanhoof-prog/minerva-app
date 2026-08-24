@@ -175,6 +175,25 @@ as $$
   where l.parent_id = auth.uid();
 $$;
 
+-- RPC: list linked parent profiles for the logged-in child.
+create or replace function public.get_my_linked_parent_profiles()
+returns table (
+  profile_id uuid,
+  display_name text
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    p.id as profile_id,
+    coalesce(p.display_name, p.email, '')::text as display_name
+  from public.account_links l
+  join public.profiles p on p.id = l.parent_id
+  where l.child_id = auth.uid();
+$$;
+
 -- RPC: list pending requests the current user must accept/reject.
 create or replace function public.get_my_pending_account_link_requests()
 returns table (
@@ -316,6 +335,7 @@ $$;
 grant execute on function public.request_child_link(text) to authenticated;
 grant execute on function public.request_parent_link(text) to authenticated;
 grant execute on function public.get_my_linked_child_profiles() to authenticated;
+grant execute on function public.get_my_linked_parent_profiles() to authenticated;
 grant execute on function public.get_my_pending_account_link_requests() to authenticated;
 grant execute on function public.accept_account_link_request(uuid) to authenticated;
 grant execute on function public.reject_account_link_request(uuid) to authenticated;

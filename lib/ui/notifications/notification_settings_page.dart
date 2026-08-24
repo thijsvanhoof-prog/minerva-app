@@ -1,9 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
-import 'package:minerva_app/ui/branded_background.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
-import 'package:onesignal_flutter/onesignal_flutter.dart';
-
 import 'package:minerva_app/ui/app_colors.dart';
 import 'notification_service.dart';
 
@@ -18,12 +15,8 @@ class NotificationSettingsPage extends StatefulWidget {
 class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
   bool _loading = true;
   bool _permissionGranted = false;
-
-  bool _agenda = true;
-  bool _news = true;
-  bool _highlights = true;
-  bool _standings = true;
-  bool _trainings = true;
+  /// Eén schakelaar: aan = ontvang alle meldingen, uit = geen meldingen.
+  bool _meldingenAan = true;
 
   @override
   void initState() {
@@ -38,21 +31,23 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
     }
 
     try {
-      final granted = OneSignal.Notifications.permission;
-      Map<String, String> tags = {};
-      try {
-        tags = await OneSignal.User.getTags();
-      } catch (_) {}
+      final granted = await NotificationService.getNotificationPermission();
+      final meldingenAan = await NotificationService.getNotifyEnabled();
 
+      if (!mounted) return;
       setState(() {
         _permissionGranted = granted;
-        _agenda = tags['notify_agenda'] != 'false';
-        _news = tags['notify_news'] != 'false';
-        _highlights = tags['notify_highlights'] != 'false';
-        _standings = tags['notify_standings'] != 'false';
-        _trainings = tags['notify_trainings'] != 'false';
+        _meldingenAan = meldingenAan;
         _loading = false;
       });
+
+      if (!granted) {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        if (!mounted) return;
+        final nowGranted =
+            await NotificationService.requestNotificationPermission(true);
+        if (mounted) setState(() => _permissionGranted = nowGranted);
+      }
     } catch (_) {
       setState(() => _loading = false);
     }
@@ -60,52 +55,34 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
 
   Future<void> _requestPermission() async {
     if (!NotificationService.pushSupported) return;
-    final granted = await OneSignal.Notifications.requestPermission(true);
+    final granted = await NotificationService.requestNotificationPermission(true);
     setState(() => _permissionGranted = granted);
   }
 
-  Future<void> _applyTags() async {
+  Future<void> _save() async {
     if (!NotificationService.pushSupported) return;
 
-    final tags = <String, String>{
-      'notify_agenda': _agenda ? 'true' : 'false',
-      'notify_news': _news ? 'true' : 'false',
-      'notify_highlights': _highlights ? 'true' : 'false',
-      'notify_standings': _standings ? 'true' : 'false',
-      'notify_trainings': _trainings ? 'true' : 'false',
-    };
-
     try {
-      await OneSignal.User.addTags(tags);
+      await NotificationService.setNotifyEnabled(_meldingenAan);
+      await NotificationService.registerToken();
+
       if (!mounted) return;
-      showTopMessage(context, 'Notificatievoorkeuren opgeslagen');
+      showTopMessage(
+        context,
+        _meldingenAan ? 'Meldingen aan. Je ontvangt berichten van Minerva.' : 'Meldingen uit. Je ontvangt geen pushberichten.',
+        isError: false,
+      );
     } catch (e) {
       if (!mounted) return;
       showTopMessage(context, 'Opslaan mislukt: $e', isError: true);
     }
   }
 
-  Widget _toggle(String label, bool value, ValueChanged<bool> onChanged) {
-    return SwitchListTile.adaptive(
-      title: Text(
-        label,
-        style: const TextStyle(color: AppColors.onBackground),
-      ),
-      subtitle: const Text(
-        'Aan/uit',
-        style: TextStyle(color: AppColors.textSecondary),
-      ),
-      value: value,
-      onChanged: (v) => setState(() => onChanged(v)),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: BrandedBackground(
-        child: _loading
+      body: _loading
             ? const Center(
                 child: CircularProgressIndicator(color: AppColors.primary),
               )
@@ -126,9 +103,13 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
                 ),
                 if (!NotificationService.pushSupported)
                   const GlassCard(
-                    child: Text(
-                      'Push notificaties worden op dit platform niet ondersteund.',
-                      style: TextStyle(color: AppColors.onBackground),
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text(
+                        'Push is hier niet beschikbaar. Controleer of Firebase is geconfigureerd '
+                        '(GoogleService-Info.plist op iOS, google-services.json op Android) en of je op een echt apparaat draait.',
+                        style: TextStyle(color: AppColors.onBackground),
+                      ),
                     ),
                   )
                 else ...[
@@ -147,43 +128,49 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
                         const SizedBox(height: 8),
                         Text(
                           _permissionGranted
-                              ? 'Toestemming is ingeschakeld.'
-                              : 'Toestemming is uitgeschakeld.',
+                              ? 'Toestemming is ingeschakeld. Je kunt hieronder kiezen of je meldingen ontvangt.'
+                              : 'Geen toestemming. Tik op "Toestemming vragen" om meldingen van Minerva te kunnen ontvangen.',
                           style: const TextStyle(color: AppColors.textSecondary),
                         ),
-                        const SizedBox(height: 12),
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: OutlinedButton(
-                            onPressed: _requestPermission,
-                            child: const Text('Toestemming vragen'),
+                        if (!_permissionGranted) ...[
+                          const SizedBox(height: 12),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: OutlinedButton(
+                              onPressed: _requestPermission,
+                              child: const Text('Toestemming vragen'),
+                            ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                   ),
                   const SizedBox(height: 12),
                   GlassCard(
                     padding: EdgeInsets.zero,
-                    child: Column(
-                      children: [
-                        _toggle('Agenda', _agenda, (v) => _agenda = v),
-                        _toggle('Nieuws', _news, (v) => _news = v),
-                        _toggle('Uitgelicht', _highlights, (v) => _highlights = v),
-                        _toggle('Stand', _standings, (v) => _standings = v),
-                        _toggle('Trainingen', _trainings, (v) => _trainings = v),
-                      ],
+                    child: SwitchListTile.adaptive(
+                      title: const Text(
+                        'Ontvang meldingen',
+                        style: TextStyle(color: AppColors.onBackground),
+                      ),
+                      subtitle: Text(
+                        _meldingenAan
+                            ? 'Je ontvangt nieuws, agenda en andere berichten van Minerva.'
+                            : 'Je ontvangt geen pushmeldingen.',
+                        style: const TextStyle(color: AppColors.textSecondary),
+                      ),
+                      value: _meldingenAan,
+                      onChanged: (v) => setState(() => _meldingenAan = v),
                     ),
                   ),
                   const SizedBox(height: 12),
                   ElevatedButton(
-                    onPressed: _applyTags,
+                    onPressed: _save,
                     child: const Text('Opslaan'),
                   ),
                 ],
               ],
             ),
-      ),
     );
   }
 }

@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/primary_button.dart';
+import 'package:minerva_app/ui/auth/forgot_password_page.dart';
 import 'package:minerva_app/ui/auth/register_page.dart';
-import 'package:minerva_app/ui/branded_background.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -24,6 +25,12 @@ class _AuthPageState extends State<AuthPage> {
 
   bool _loading = false;
 
+  String get _reservedGuestEmail {
+    final configured = (dotenv.env['GUEST_EMAIL'] ?? '').trim().toLowerCase();
+    if (configured.isNotEmpty) return configured;
+    return 'gast@mail.com';
+  }
+
   @override
   void dispose() {
     _emailCtrl.dispose();
@@ -32,11 +39,20 @@ class _AuthPageState extends State<AuthPage> {
   }
 
   Future<void> _signIn() async {
+    final email = _emailCtrl.text.trim();
+    if (email.toLowerCase() == _reservedGuestEmail) {
+      showTopMessage(
+        context,
+        'Het gastaccount is alleen voor toeschouwer-modus. Log in met je eigen account.',
+        isError: true,
+      );
+      return;
+    }
     setState(() => _loading = true);
 
     try {
       await _client.auth.signInWithPassword(
-        email: _emailCtrl.text.trim(),
+        email: email,
         password: _passCtrl.text,
       );
 
@@ -83,17 +99,23 @@ class _AuthPageState extends State<AuthPage> {
   @override
   Widget build(BuildContext context) {
     final topPadding = MediaQuery.paddingOf(context).top + 16;
+    // Android 15+: statusBarColor/systemNavigationBarColor zijn beëindigd.
+    final overlayStyle = Theme.of(context).platform == TargetPlatform.android
+        ? const SystemUiOverlayStyle(
+            statusBarIconBrightness: Brightness.dark,
+            systemNavigationBarIconBrightness: Brightness.dark,
+          )
+        : const SystemUiOverlayStyle(
+            statusBarColor: Colors.transparent,
+            statusBarIconBrightness: Brightness.dark,
+            systemNavigationBarColor: Colors.transparent,
+            systemNavigationBarIconBrightness: Brightness.dark,
+          );
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.dark,
-        systemNavigationBarColor: Colors.transparent,
-        systemNavigationBarIconBrightness: Brightness.dark,
-      ),
+      value: overlayStyle,
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: BrandedBackground(
-          child: ListView(
+        body: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.fromLTRB(
               16,
@@ -118,7 +140,30 @@ class _AuthPageState extends State<AuthPage> {
                   style: const TextStyle(color: AppColors.onBackground),
                   decoration: _dec('Wachtwoord'),
                 ),
-                const SizedBox(height: 16),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: _loading
+                        ? null
+                        : () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => ForgotPasswordPage(
+                                  initialEmail: _emailCtrl.text.trim(),
+                                ),
+                              ),
+                            );
+                          },
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.primary,
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      minimumSize: const Size(0, 32),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text('Wachtwoord vergeten?'),
+                  ),
+                ),
+                const SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(
@@ -149,7 +194,6 @@ class _AuthPageState extends State<AuthPage> {
             ),
           ),
         ],
-          ),
         ),
       ),
     );
