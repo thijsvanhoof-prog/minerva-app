@@ -392,7 +392,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ -z \"${CI:-}\" ] && [ -z \"${XCODE_CLOUD_BUILD_ID:-}\" ] && [ -z \"${CI_XCODE_CLOUD:-}\" ] && [ -z \"${CI_XCODECLOUD:-}\" ]; then\n  echo \"[CI bootstrap] Not running on CI; skipping.\";\n  exit 0;\nfi\n\nset -e\n\necho \"[CI bootstrap] Ensuring Flutter + Pods\";\ncd \"${SRCROOT}/..\"\n\nif ! command -v flutter >/dev/null 2>&1; then\n  echo \"[CI bootstrap] Flutter not found; installing to ${HOME}/flutter\";\n  git clone --depth 1 --branch stable https://github.com/flutter/flutter.git \"${HOME}/flutter\";\n  export PATH=\"${HOME}/flutter/bin:${PATH}\";\nfi\n\nflutter --version\nflutter pub get\n\ncd ios\nif [ ! -d \"Pods\" ]; then\n  echo \"[CI bootstrap] Running pod install\";\n  pod install;\nfi\n";
+			shellScript = "if [ -z \"${CI:-}\" ] && [ -z \"${XCODE_CLOUD_BUILD_ID:-}\" ] && [ -z \"${CI_XCODE_CLOUD:-}\" ] && [ -z \"${CI_XCODECLOUD:-}\" ]; then\n  echo \"[CI bootstrap] Not running on CI; skipping.\";\n  exit 0;\nfi\n\nset -e\n\necho \"[CI bootstrap] Ensuring Flutter + Pods\";\ncd \"${SRCROOT}/..\"\n\nif [ -d \"${HOME}/flutter/bin\" ]; then\n  export PATH=\"${HOME}/flutter/bin:${PATH}\";\nfi\n\nif ! command -v flutter >/dev/null 2>&1; then\n  echo \"[CI bootstrap] Flutter not found; installing to ${HOME}/flutter\";\n  git clone --depth 1 --branch stable https://github.com/flutter/flutter.git \"${HOME}/flutter\";\n  export PATH=\"${HOME}/flutter/bin:${PATH}\";\nfi\n\nflutter --version\nflutter precache --ios\nflutter pub get\n\ncd ios\nif [ ! -d \"Pods\" ]; then\n  echo \"[CI bootstrap] Running pod install\";\n  pod install;\nfi\n";
 			showEnvVarsInLog = 0;
 		};
 		FCB9DAB75A65145373EEB993 /* [CP] Embed Pods Frameworks */ = {
