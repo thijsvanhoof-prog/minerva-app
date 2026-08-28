@@ -27,6 +27,7 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
     with TickerProviderStateMixin {
   late TabController _mainTabController;
   late TabController _subTabController;
+  bool _autoSelectedTrainerSubTab = false;
   /// Alle teams met team_id (om wedstrijden te filteren op “mijn” teams).
   late final Future<List<({NevoboTeam team, int? teamId})>> _teamsWithIdsFuture;
 
@@ -141,6 +142,20 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
         final trainerTeamCodes = isAdmin
             ? allTeamCodes
             : _teamCodesForMemberships(withIds, trainerTeams);
+
+        if (playerTeams.isNotEmpty) {
+          _autoSelectedTrainerSubTab = false;
+        } else if (hasTrainerRole &&
+            !isAdmin &&
+            trainerTeams.isNotEmpty &&
+            !_autoSelectedTrainerSubTab) {
+          _autoSelectedTrainerSubTab = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _subTabController.index != 1) {
+              _subTabController.animateTo(1);
+            }
+          });
+        }
 
         return Scaffold(
           backgroundColor: Colors.transparent,

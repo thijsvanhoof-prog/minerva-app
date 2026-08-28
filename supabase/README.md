@@ -2,6 +2,9 @@
 
 Voer de SQL uit in **Supabase Dashboard → SQL Editor**.
 
+Voor een compleet release-/deploy-overzicht met veilige volgorde en waarschuwingen
+voor oude setup-scripts: zie `docs/SUPABASE_SQL_DEPLOYMENT.md`.
+
 ## Home highlights (als de app meldt dat je ze moet toevoegen)
 
 1. Open **Supabase Dashboard** → jouw project → **SQL Editor**.
@@ -77,9 +80,9 @@ De Sport-tab gebruikt de tabel `match_availability` om per wedstrijd je status o
 
 Daarna werken Speler, Trainer/coach, Speel niet en Afmelden in Sport → Wedstrijden. Er is onderscheid tussen spelers en trainer/coach bij de weergave („Aangemeld (speler)“ vs „Trainer/coach“). Elke gebruiker beheert alleen zijn eigen status.
 
-**Bestaande tabel zonder coach?** Voer `match_availability_minimal.sql` **opnieuw** uit; het script breidt de `status`-constraint uit met `coach`.
+**Bestaande tabel zonder `coach` of `afgemeld`?** Voer `match_availability_minimal.sql` **opnieuw** uit; het script breidt de `status`-constraint uit met beide waarden.
 
-**"Kon status niet opslaan" / `match_availability_status_check` (PostgrestException 23514)?** De constraint laat dan geen `coach` toe. Voer **`match_availability_fix_status_constraint.sql`** uit in de SQL Editor. Daarna zou Aanwezig/Afwezig weer moeten werken.
+**"Kon status niet opslaan" / `match_availability_status_check` (PostgrestException 23514)?** De constraint laat dan waarschijnlijk geen `coach` of `afgemeld` toe. Voer **`match_availability_fix_status_constraint.sql`** uit in de SQL Editor. Daarna zouden de wedstrijdstatussen weer moeten werken.
 
 Voor **admin-override** (globale beheer van alle availability): gebruik `match_availability_schema.sql` (vereist `is_global_admin`).
 

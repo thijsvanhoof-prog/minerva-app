@@ -16,7 +16,7 @@ create table if not exists public.match_availability (
   location text null,
 
   profile_id uuid not null references auth.users(id) on delete cascade,
-  status text not null check (status in ('playing', 'not_playing', 'coach')),
+  status text not null check (status in ('playing', 'not_playing', 'coach', 'afgemeld')),
 
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -66,7 +66,7 @@ using (profile_id = auth.uid());
 -- Geen admin-policy hier (vereist is_global_admin). Gebruik match_availability_schema.sql
 -- als je globaal beheer van availability wilt.
 
--- Bestaande tabel met alleen playing/not_playing? Uitbreiden met coach.
+-- Bestaande tabel met alleen playing/not_playing/coach? Uitbreiden met afgemeld.
 alter table public.match_availability drop constraint if exists match_availability_status_check;
 alter table public.match_availability add constraint match_availability_status_check
-  check (status in ('playing', 'not_playing', 'coach'));
+  check (status in ('playing', 'not_playing', 'coach', 'afgemeld'));

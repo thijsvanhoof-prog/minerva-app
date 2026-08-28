@@ -1,4 +1,4 @@
--- Match availability (Speel mee / Speel niet) for Nevobo matches
+-- Match availability (Speel mee / Speel niet / Trainer-coach / Afmelden) for Nevobo matches
 --
 -- Used by: Sport -> Wedstrijden tab
 -- match_key format: "nevobo_match:<TEAMCODE>:<START_UTC_ISO>"
@@ -14,7 +14,7 @@ create table if not exists public.match_availability (
   location text null,
 
   profile_id uuid not null references auth.users(id) on delete cascade,
-  status text not null check (status in ('playing', 'not_playing', 'coach')),
+  status text not null check (status in ('playing', 'not_playing', 'coach', 'afgemeld')),
 
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -80,8 +80,7 @@ to authenticated
 using (public.is_global_admin())
 with check (public.is_global_admin());
 
--- Bestaande tabel met alleen playing/not_playing? Uitbreiden met coach.
+-- Bestaande tabel met alleen playing/not_playing/coach? Uitbreiden met afgemeld.
 alter table public.match_availability drop constraint if exists match_availability_status_check;
 alter table public.match_availability add constraint match_availability_status_check
-  check (status in ('playing', 'not_playing', 'coach'));
-
+  check (status in ('playing', 'not_playing', 'coach', 'afgemeld'));

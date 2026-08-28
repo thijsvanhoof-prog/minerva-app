@@ -44,6 +44,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   final Map<String, List<String>> _playingNamesByMatchKey = {};
   final Map<String, List<String>> _coachNamesByMatchKey = {};
   final Map<String, List<String>> _notPlayingNamesByMatchKey = {};
+  final Map<String, List<String>> _afgemeldNamesByMatchKey = {};
   final Map<String, List<String>> _nietGereageerdByMatchKey = {};
   final Map<String, List<String>> _refereeNamesByMatchKey = {};
   final Map<String, List<String>> _tellerNamesByMatchKey = {};
@@ -525,6 +526,11 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     }
   }
 
+  bool _profileIdMatches(String profileId, String targetProfileId) {
+    if (profileId.trim().isEmpty || targetProfileId.trim().isEmpty) return false;
+    return profileId.trim().toLowerCase() == targetProfileId.trim().toLowerCase();
+  }
+
   Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
@@ -622,6 +628,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final playingByKey = <String, List<String>>{};
     final coachByKey = <String, List<String>>{};
     final notPlayingByKey = <String, List<String>>{};
+    final afgemeldByKey = <String, List<String>>{};
 
     for (final r in rows) {
       final key = (r['match_key'] ?? '').toString();
@@ -630,7 +637,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       final status = (r['status'] ?? '').toString().trim().toLowerCase();
       final name = pid.isEmpty ? '' : (namesById[pid] ?? unknownUserName);
 
-      if (pid == targetProfileId &&
+      if (_profileIdMatches(pid, targetProfileId) &&
           (status == 'playing' || status == 'coach' || status == 'not_playing' || status == 'afgemeld')) {
         myStatus[key] = status;
       }
@@ -641,6 +648,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         coachByKey.putIfAbsent(key, () => []).add(name);
       } else if (status == 'not_playing') {
         notPlayingByKey.putIfAbsent(key, () => []).add(name);
+      } else if (status == 'afgemeld') {
+        afgemeldByKey.putIfAbsent(key, () => []).add(name);
       }
     }
 
@@ -651,6 +660,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       entry.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
     for (final entry in notPlayingByKey.entries) {
+      entry.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    }
+    for (final entry in afgemeldByKey.entries) {
       entry.value.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
 
@@ -674,20 +686,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           matchKeyToTeamId[m.matchKey] = tid;
         }
       }
-      Map<int, List<String>> teamMemberIdsByTid = {};
-      try {
-        final tmRes = await _client
-            .from('team_members')
-            .select('team_id, profile_id')
-            .inFilter('team_id', teamIds.toList());
-        final tmRows = (tmRes as List<dynamic>).cast<Map<String, dynamic>>();
-        for (final row in tmRows) {
-          final tid = (row['team_id'] as num?)?.toInt();
-          final pid = row['profile_id']?.toString() ?? '';
-          if (tid == null || pid.isEmpty) continue;
-          teamMemberIdsByTid.putIfAbsent(tid, () => []).add(pid);
-        }
-      } catch (_) {}
+      final teamMemberIdsByTid =
+          await _loadVisibleTeamMemberIds(teamIds.toList());
 
       var allNamesById = Map<String, String>.from(namesById);
       final idsToLoad = <String>{};
@@ -739,10 +739,51 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       _notPlayingNamesByMatchKey
         ..clear()
         ..addAll(notPlayingByKey);
+      _afgemeldNamesByMatchKey
+        ..clear()
+        ..addAll(afgemeldByKey);
       _nietGereageerdByMatchKey
         ..clear()
         ..addAll(nietGereageerdByKey);
     });
+  }
+
+  Future<Map<int, List<String>>> _loadVisibleTeamMemberIds(List<int> teamIds) async {
+    if (teamIds.isEmpty) return {};
+    final byTeamId = <int, List<String>>{};
+
+    try {
+      final res = await _client.rpc(
+        'get_visible_team_member_profile_ids',
+        params: {'p_team_ids': teamIds},
+      );
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      for (final row in rows) {
+        final tid = (row['team_id'] as num?)?.toInt();
+        final pid = row['profile_id']?.toString() ?? '';
+        if (tid == null || pid.isEmpty) continue;
+        byTeamId.putIfAbsent(tid, () => []).add(pid);
+      }
+      return byTeamId;
+    } catch (_) {
+      // RPC may not be deployed yet. Fall back to direct select for managers/admins.
+    }
+
+    try {
+      final tmRes = await _client
+          .from('team_members')
+          .select('team_id, profile_id')
+          .inFilter('team_id', teamIds);
+      final tmRows = (tmRes as List<dynamic>).cast<Map<String, dynamic>>();
+      for (final row in tmRows) {
+        final tid = (row['team_id'] as num?)?.toInt();
+        final pid = row['profile_id']?.toString() ?? '';
+        if (tid == null || pid.isEmpty) continue;
+        byTeamId.putIfAbsent(tid, () => []).add(pid);
+      }
+    } catch (_) {}
+
+    return byTeamId;
   }
 
   Future<void> _loadRefereesForMatches(List<_MatchRef> matches) async {
@@ -988,9 +1029,11 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final playing = List<String>.from(_playingNamesByMatchKey[key] ?? []);
     final coaches = List<String>.from(_coachNamesByMatchKey[key] ?? []);
     final notPlaying = List<String>.from(_notPlayingNamesByMatchKey[key] ?? []);
+    final afgemeld = List<String>.from(_afgemeldNamesByMatchKey[key] ?? []);
     playing.remove(me);
     coaches.remove(me);
     notPlaying.remove(me);
+    afgemeld.remove(me);
     if (status == 'playing') {
       playing.add(me);
       playing.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
@@ -1000,6 +1043,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     } else if (status == 'not_playing') {
       notPlaying.add(me);
       notPlaying.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    } else if (status == 'afgemeld') {
+      afgemeld.add(me);
+      afgemeld.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     }
     if (status == 'afgemeld') {
       _myStatusByMatchKey[key] = 'afgemeld';
@@ -1008,6 +1054,12 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       _nietGereageerdByMatchKey[key] = ng;
     } else if (status == null) {
       _myStatusByMatchKey.remove(key);
+      final ng = List<String>.from(_nietGereageerdByMatchKey[key] ?? []);
+      if (!ng.contains(me)) {
+        ng.add(me);
+        ng.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      }
+      _nietGereageerdByMatchKey[key] = ng;
     } else {
       _myStatusByMatchKey[key] = status;
       // Wie reageert (incl. afgemeld) verdwijnt uit "niet gereageerd"
@@ -1018,6 +1070,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     _playingNamesByMatchKey[key] = playing;
     _coachNamesByMatchKey[key] = coaches;
     _notPlayingNamesByMatchKey[key] = notPlaying;
+    _afgemeldNamesByMatchKey[key] = afgemeld;
   }
 
   /// Bepaal of gebruiker als trainer/coach wordt aangemeld voor dit team (anders speler).
@@ -1056,6 +1109,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final prevPlaying = List<String>.from(_playingNamesByMatchKey[key] ?? []);
     final prevCoaches = List<String>.from(_coachNamesByMatchKey[key] ?? []);
     final prevNotPlaying = List<String>.from(_notPlayingNamesByMatchKey[key] ?? []);
+    final prevAfgemeld = List<String>.from(_afgemeldNamesByMatchKey[key] ?? []);
+    final prevNietGereageerd =
+        List<String>.from(_nietGereageerdByMatchKey[key] ?? []);
 
     _applyOptimisticMatchUpdate(key, status);
     if (!mounted) return;
@@ -1076,6 +1132,12 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           },
           onConflict: 'match_key,profile_id',
         );
+      } else {
+        await _client
+            .from('match_availability')
+            .delete()
+            .eq('match_key', key)
+            .eq('profile_id', targetProfileId);
       }
     } catch (e) {
       if (!mounted) return;
@@ -1088,6 +1150,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         _playingNamesByMatchKey[key] = prevPlaying;
         _coachNamesByMatchKey[key] = prevCoaches;
         _notPlayingNamesByMatchKey[key] = prevNotPlaying;
+        _afgemeldNamesByMatchKey[key] = prevAfgemeld;
+        _nietGereageerdByMatchKey[key] = prevNietGereageerd;
       });
       showTopMessage(context, 'Kon status niet opslaan: $e', isError: true);
     }
@@ -1273,13 +1337,20 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final isPresent = myStatus == 'playing' || myStatus == 'coach';
     final isNotPlaying = myStatus == 'not_playing';
     final isAfgemeld = myStatus == 'afgemeld';
+    final ctx = AppUserContext.of(context);
+    final canResetOwnStatus = ctx.hasFullAdminRights;
     final playing = _playingNamesByMatchKey[key] ?? const [];
     final coaches = _coachNamesByMatchKey[key] ?? const [];
     final notPlaying = _notPlayingNamesByMatchKey[key] ?? const [];
+    final afgemeld = _afgemeldNamesByMatchKey[key] ?? const [];
     final nietGereageerd = _nietGereageerdByMatchKey[key] ?? const [];
     final referees = _refereeNamesByMatchKey[key] ?? const [];
     final tellers = _tellerNamesByMatchKey[key] ?? const [];
-    final hasCounts = playing.isNotEmpty || coaches.isNotEmpty || notPlaying.isNotEmpty || nietGereageerd.isNotEmpty;
+    final hasCounts = playing.isNotEmpty ||
+        coaches.isNotEmpty ||
+        notPlaying.isNotEmpty ||
+        afgemeld.isNotEmpty ||
+        nietGereageerd.isNotEmpty;
     final expanded = _expandedMatchKeys.contains(key);
     final summaryColor =
         isCancelled ? AppColors.textSecondary : AppColors.onBackground;
@@ -1389,9 +1460,11 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                           ? null
                           : () => _setMyStatus(
                                 match: ref,
-                                status: _isTrainerOrCoachForTeamCode(ref.teamCode)
-                                    ? 'coach'
-                                    : 'playing',
+                                status: canResetOwnStatus
+                                    ? null
+                                    : (_isTrainerOrCoachForTeamCode(ref.teamCode)
+                                        ? 'coach'
+                                        : 'playing'),
                               ),
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.success,
@@ -1423,7 +1496,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                   ? FilledButton(
                       onPressed: isCancelled
                           ? null
-                          : () => _setMyStatus(match: ref, status: 'not_playing'),
+                          : () => _setMyStatus(
+                                match: ref,
+                                status: canResetOwnStatus ? null : 'not_playing',
+                              ),
                       style: FilledButton.styleFrom(
                         backgroundColor: Colors.amber.shade600,
                         foregroundColor: Colors.white,
@@ -1449,7 +1525,13 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                   ? FilledButton(
                       onPressed: isCancelled
                           ? null
-                          : () => _confirmAndSetAfwezig(match: ref),
+                          : () {
+                              if (canResetOwnStatus) {
+                                _setMyStatus(match: ref, status: null);
+                              } else {
+                                _confirmAndSetAfwezig(match: ref);
+                              }
+                            },
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.error,
                         foregroundColor: Colors.white,
@@ -1514,6 +1596,14 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                     TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.9), fontSize: 13),
                   ),
                   if (notPlaying.isNotEmpty) const SizedBox(height: 4),
+                  _buildMatchAttendanceCategory(
+                    'Afgemeld',
+                    afgemeld.length,
+                    afgemeld,
+                    expanded,
+                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.85), fontSize: 13),
+                  ),
+                  if (afgemeld.isNotEmpty) const SizedBox(height: 4),
                   _buildMatchAttendanceCategory(
                     'Niet gereageerd',
                     nietGereageerd.length,

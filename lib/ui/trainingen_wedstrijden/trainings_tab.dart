@@ -46,6 +46,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
   bool _selectionMode = false;
   final Set<int> _selectedSessionIds = {};
+  int _loadGeneration = 0;
 
   @override
   void initState() {
@@ -79,10 +80,6 @@ class _TrainingsTabState extends State<TrainingsTab> {
   }
 
   Future<void> _refresh() async {
-    // Also reload memberships/committees so newly linked teams show up immediately.
-    try {
-      await AppUserContext.of(context).reloadUserContext?.call();
-    } catch (_) {}
     if (!mounted) return;
     setState(() {
       _loadFuture = _loadData(teamIds: _allowedTeamIds);
@@ -104,7 +101,13 @@ class _TrainingsTabState extends State<TrainingsTab> {
     return true;
   }
 
+  bool _personIdMatches(String personId, String targetProfileId) {
+    if (personId.trim().isEmpty || targetProfileId.trim().isEmpty) return false;
+    return personId.trim().toLowerCase() == targetProfileId.trim().toLowerCase();
+  }
+
   Future<void> _loadData({required List<int> teamIds}) async {
+    final loadGeneration = ++_loadGeneration;
     final user = _client.auth.currentUser;
     if (user == null) {
       _trainings = [];
@@ -135,6 +138,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
         .inFilter('team_id', teamIds)
         .order('start_datetime', ascending: true);
 
+    if (loadGeneration != _loadGeneration) return;
+
     final sessions = (sessionsRes as List<dynamic>).cast<Map<String, dynamic>>();
     // Sorteer: eerst volgende datum bovenaan, verst onderaan.
     sessions.sort((a, b) {
@@ -155,7 +160,6 @@ class _TrainingsTabState extends State<TrainingsTab> {
     });
     _trainings = sessions;
 
-    _statusBySessionId.clear();
     _playingBySessionId.clear();
     _coachBySessionId.clear();
     _nietSpelendBySessionId.clear();
@@ -175,6 +179,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
       allRows = (res as List<dynamic>).cast<Map<String, dynamic>>();
     } catch (_) {}
 
+    if (loadGeneration != _loadGeneration) return;
+
     final profileIds = <String>{};
     for (final r in allRows) {
       final pid = r['person_id']?.toString() ?? '';
@@ -184,10 +190,13 @@ class _TrainingsTabState extends State<TrainingsTab> {
     if (targetProfileId.isNotEmpty) profileIds.add(targetProfileId);
     final namesById = await _loadProfileDisplayNames(profileIds);
 
+    if (loadGeneration != _loadGeneration) return;
+
     final playingBySid = <int, List<String>>{};
     final coachBySid = <int, List<String>>{};
     final nietSpelendBySid = <int, List<String>>{};
     final afgemeldBySid = <int, List<String>>{};
+    final statusBySid = <int, AttendanceStatus>{};
 
     for (final r in allRows) {
       final sid = (r['session_id'] as num?)?.toInt();
@@ -196,9 +205,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
       final status = (r['status'] ?? '').toString().trim().toLowerCase();
       final name = pid.isEmpty ? '' : (namesById[pid] ?? unknownUserName);
 
-      if (pid == targetProfileId) {
+      if (_personIdMatches(pid, targetProfileId)) {
         final s = _statusFromString(status);
-        if (s != null) _statusBySessionId[sid] = s;
+        if (s != null) statusBySid[sid] = s;
       }
       if (name.trim().isEmpty) continue;
       if (status == 'playing' || status == 'aanwezig') {
@@ -235,22 +244,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
       respondedBySid.putIfAbsent(sid, () => {}).add(pid);
     }
 
-    Map<int, List<String>> teamMemberIdsByTid = {};
-    try {
-      final tmRes = await _client
-          .from('team_members')
-          .select('team_id, profile_id')
-          .inFilter('team_id', teamIds);
-      final tmRows = (tmRes as List<dynamic>).cast<Map<String, dynamic>>();
-      for (final row in tmRows) {
-        final tid = (row['team_id'] as num?)?.toInt();
-        final pid = row['profile_id']?.toString() ?? '';
-        if (tid == null || pid.isEmpty) continue;
-        teamMemberIdsByTid.putIfAbsent(tid, () => []).add(pid);
-      }
-    } catch (_) {
-      teamMemberIdsByTid = {};
-    }
+    final teamMemberIdsByTid = await _loadVisibleTeamMemberIds(teamIds);
+
+    if (loadGeneration != _loadGeneration) return;
 
     final nietGereageerdBySid = <int, List<String>>{};
     final idsToLoad = <String>{};
@@ -273,6 +269,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
       allNamesById = {...allNamesById, ...extra};
     }
 
+    if (loadGeneration != _loadGeneration) return;
+
     for (final sid in nietGereageerdBySid.keys) {
       final ids = nietGereageerdBySid[sid]!;
       final names = ids
@@ -283,10 +281,13 @@ class _TrainingsTabState extends State<TrainingsTab> {
       nietGereageerdBySid[sid] = names;
     }
 
-    if (!mounted) return;
+    if (loadGeneration != _loadGeneration || !mounted) return;
     final myName = allNamesById[targetProfileId] ?? unknownUserName;
     setState(() {
       _myDisplayName = myName;
+      _statusBySessionId
+        ..clear()
+        ..addAll(statusBySid);
       _playingBySessionId
         ..clear()
         ..addAll(playingBySid);
@@ -303,6 +304,44 @@ class _TrainingsTabState extends State<TrainingsTab> {
         ..clear()
         ..addAll(nietGereageerdBySid);
     });
+  }
+
+  Future<Map<int, List<String>>> _loadVisibleTeamMemberIds(List<int> teamIds) async {
+    if (teamIds.isEmpty) return {};
+    final byTeamId = <int, List<String>>{};
+
+    try {
+      final res = await _client.rpc(
+        'get_visible_team_member_profile_ids',
+        params: {'p_team_ids': teamIds},
+      );
+      final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      for (final row in rows) {
+        final tid = (row['team_id'] as num?)?.toInt();
+        final pid = row['profile_id']?.toString() ?? '';
+        if (tid == null || pid.isEmpty) continue;
+        byTeamId.putIfAbsent(tid, () => []).add(pid);
+      }
+      return byTeamId;
+    } catch (_) {
+      // RPC may not be deployed yet. Fall back to direct select for managers/admins.
+    }
+
+    try {
+      final tmRes = await _client
+          .from('team_members')
+          .select('team_id, profile_id')
+          .inFilter('team_id', teamIds);
+      final tmRows = (tmRes as List<dynamic>).cast<Map<String, dynamic>>();
+      for (final row in tmRows) {
+        final tid = (row['team_id'] as num?)?.toInt();
+        final pid = row['profile_id']?.toString() ?? '';
+        if (tid == null || pid.isEmpty) continue;
+        byTeamId.putIfAbsent(tid, () => []).add(pid);
+      }
+    } catch (_) {}
+
+    return byTeamId;
   }
 
   void _applyOptimisticAttendanceUpdate(int sessionId, AttendanceStatus? effective) {
@@ -330,6 +369,12 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
     if (effective == null) {
       _statusBySessionId.remove(sessionId);
+      final ng = List<String>.from(_nietGereageerdBySessionId[sessionId] ?? []);
+      if (!ng.contains(me)) {
+        ng.add(me);
+        ng.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      }
+      _nietGereageerdBySessionId[sessionId] = ng;
     } else {
       _statusBySessionId[sessionId] = effective;
       // Wie reageert verdwijnt uit "niet gereageerd"
@@ -586,7 +631,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
   }
 
-  /// Spelend = playing + coaches + nietSpelend (iedereen aanwezig).
+  /// Toont één attendance-categorie (label, count, optionele namenlijst).
   Widget _buildAttendanceCategory(String label, int count, List<String> names, bool expanded, TextStyle labelStyle) {
     if (count == 0) return const SizedBox.shrink();
     return Column(
@@ -617,6 +662,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final isPresent = currentStatus == AttendanceStatus.playing || currentStatus == AttendanceStatus.coach;
     final isNotPlaying = currentStatus == AttendanceStatus.nietSpelend;
     final isAfgemeld = currentStatus == AttendanceStatus.afgemeld;
+    final ctx = AppUserContext.of(context);
+    final canResetOwnStatus = ctx.hasFullAdminRights;
     final playing = _playingBySessionId[sessionId] ?? [];
     final coaches = _coachBySessionId[sessionId] ?? [];
     final nietSpelend = _nietSpelendBySessionId[sessionId] ?? [];
@@ -624,6 +671,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final nietGereageerd = _nietGereageerdBySessionId[sessionId] ?? [];
     final expanded = _expandedSessionIds.contains(sessionId);
     final hasCounts = playing.isNotEmpty || coaches.isNotEmpty || nietSpelend.isNotEmpty || afgemeld.isNotEmpty || nietGereageerd.isNotEmpty;
+    final isTrainerView = widget.manageableTeams.isNotEmpty &&
+        widget.manageableTeams.every((m) => m.canManageTeam);
 
     return GlassCard(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -721,9 +770,11 @@ class _TrainingsTabState extends State<TrainingsTab> {
                           ? null
                           : () => _updateAttendance(
                                 sessionId,
-                                _isTrainerOrCoachForTeam(teamId)
-                                    ? AttendanceStatus.coach
-                                    : AttendanceStatus.playing,
+                                canResetOwnStatus
+                                    ? null
+                                    : (_isTrainerOrCoachForTeam(teamId)
+                                        ? AttendanceStatus.coach
+                                        : AttendanceStatus.playing),
                               ),
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.success,
@@ -755,7 +806,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
                   ? FilledButton(
                       onPressed: isCancelled
                           ? null
-                          : () => _updateAttendance(sessionId, AttendanceStatus.nietSpelend),
+                          : () => _updateAttendance(
+                                sessionId,
+                                canResetOwnStatus ? null : AttendanceStatus.nietSpelend,
+                              ),
                       style: FilledButton.styleFrom(
                         backgroundColor: Colors.amber.shade600,
                         foregroundColor: Colors.white,
@@ -782,6 +836,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
                       onPressed: isCancelled
                           ? null
                           : () async {
+                              if (canResetOwnStatus) {
+                                await _updateAttendance(sessionId, null);
+                                return;
+                              }
                               final confirm = await showDialog<bool>(
                                 context: context,
                                 builder: (ctx) => AlertDialog(
@@ -889,14 +947,41 @@ class _TrainingsTabState extends State<TrainingsTab> {
                     ],
                   ),
                   const SizedBox(height: 4),
+                  if (isTrainerView) ...[
+                    _buildAttendanceCategory(
+                      'Spelend',
+                      playing.length,
+                      playing,
+                      expanded,
+                      const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                    ),
+                    if (playing.isNotEmpty) const SizedBox(height: 4),
+                    _buildAttendanceCategory(
+                      'Trainer/coach',
+                      coaches.length,
+                      coaches,
+                      expanded,
+                      const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                    ),
+                    if (coaches.isNotEmpty) const SizedBox(height: 4),
+                  ] else ...[
+                    _buildAttendanceCategory(
+                      'Spelend',
+                      playing.length + coaches.length,
+                      [...playing, ...coaches],
+                      expanded,
+                      const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                    ),
+                    if (playing.isNotEmpty || coaches.isNotEmpty) const SizedBox(height: 4),
+                  ],
                   _buildAttendanceCategory(
-                    'Spelend',
-                    playing.length + coaches.length + nietSpelend.length,
-                    [...playing, ...coaches, ...nietSpelend],
+                    'Niet spelend',
+                    nietSpelend.length,
+                    nietSpelend,
                     expanded,
                     const TextStyle(color: AppColors.textSecondary, fontSize: 13),
                   ),
-                  if (playing.isNotEmpty || coaches.isNotEmpty || nietSpelend.isNotEmpty) const SizedBox(height: 4),
+                  if (nietSpelend.isNotEmpty) const SizedBox(height: 4),
                   _buildAttendanceCategory(
                     'Afgemeld',
                     afgemeld.length,
@@ -1003,8 +1088,6 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final user = _client.auth.currentUser;
     if (user == null) return;
     if (!mounted) return;
-    final effective = status;
-    if (effective == null) return;
 
     final ctx = AppUserContext.of(context);
     final targetProfileId = ctx.attendanceProfileId;
@@ -1014,13 +1097,24 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final prevCoaches = List<String>.from(_coachBySessionId[sessionId] ?? []);
     final prevNietSpelend = List<String>.from(_nietSpelendBySessionId[sessionId] ?? []);
     final prevAfgemeld = List<String>.from(_afgemeldBySessionId[sessionId] ?? []);
+    final prevNietGereageerd =
+        List<String>.from(_nietGereageerdBySessionId[sessionId] ?? []);
 
-    _applyOptimisticAttendanceUpdate(sessionId, effective);
+    _applyOptimisticAttendanceUpdate(sessionId, status);
     if (!mounted) return;
     setState(() {});
 
     try {
-      final apiStatus = switch (effective) {
+      if (status == null) {
+        await _client
+            .from('attendance')
+            .delete()
+            .eq('session_id', sessionId)
+            .eq('person_id', targetProfileId);
+        return;
+      }
+
+      final apiStatus = switch (status) {
         AttendanceStatus.playing => 'playing',
         AttendanceStatus.coach => 'coach',
         AttendanceStatus.nietSpelend => 'niet_spelend',
@@ -1046,6 +1140,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
         _coachBySessionId[sessionId] = prevCoaches;
         _nietSpelendBySessionId[sessionId] = prevNietSpelend;
         _afgemeldBySessionId[sessionId] = prevAfgemeld;
+        _nietGereageerdBySessionId[sessionId] = prevNietGereageerd;
       });
     }
   }
