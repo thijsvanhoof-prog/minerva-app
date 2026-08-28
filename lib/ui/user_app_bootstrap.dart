@@ -13,6 +13,7 @@ import 'package:minerva_app/ui/notifications/notification_service.dart';
 
 /// Wrapt jouw app met AppUserContext.
 /// - Haalt global admin status op via RPC: is_global_admin
+/// - Haalt commissie power admin status op via RPC: is_committee_power_admin
 /// - Haalt team memberships op uit team_members
 /// - Haalt teamnamen op uit teams (losse query, dus geen FK/join vereist)
 class UserAppBootstrap extends StatefulWidget {
@@ -36,6 +37,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
   bool _loading = true;
   bool _initialLoadComplete = false;
   bool _isGlobalAdmin = false;
+  bool _isCommitteePowerAdmin = false;
 
   String _profileId = '';
   String _email = '';
@@ -107,6 +109,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
         _displayName = '';
         _loggedInProfileId = '';
         _isGlobalAdmin = false;
+        _isCommitteePowerAdmin = false;
         _memberships = const [];
         _committees = const [];
         _loading = false;
@@ -169,6 +172,15 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       if (res is bool) isGlobalAdmin = res;
     } catch (_) {
       isGlobalAdmin = false;
+    }
+
+    // 1b) Commissie power admin (alle commissierechten, geen global admin / geen alle teams)
+    bool isCommitteePowerAdmin = false;
+    try {
+      final res = await _client.rpc('is_committee_power_admin');
+      if (res is bool) isCommitteePowerAdmin = res;
+    } catch (_) {
+      isCommitteePowerAdmin = false;
     }
 
     // 2) Team memberships:
@@ -381,6 +393,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     if (!mounted) return;
     setState(() {
       _isGlobalAdmin = isGlobalAdmin;
+      _isCommitteePowerAdmin = isCommitteePowerAdmin;
       _memberships = memberships;
       _committees = committees;
       _displayName = displayName;
@@ -519,6 +532,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       email: _email,
       displayName: _displayName,
       isGlobalAdmin: _isGlobalAdmin,
+      isCommitteePowerAdmin: _isCommitteePowerAdmin,
       memberships: _memberships,
       committees: _committees,
       reloadUserContext: _reload,

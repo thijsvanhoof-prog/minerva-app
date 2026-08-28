@@ -95,6 +95,8 @@ class AppUserContext extends InheritedWidget {
   final String email;
   final String displayName;
   final bool isGlobalAdmin;
+  /// Alle commissierechten zonder Contact/teamzicht als global admin.
+  final bool isCommitteePowerAdmin;
   final List<TeamMembership> memberships;
   final List<String> committees;
 
@@ -116,6 +118,7 @@ class AppUserContext extends InheritedWidget {
     required this.email,
     required this.displayName,
     required this.isGlobalAdmin,
+    this.isCommitteePowerAdmin = false,
     required this.memberships,
     required this.committees,
     this.reloadUserContext,
@@ -158,12 +161,14 @@ class AppUserContext extends InheritedWidget {
   /// Nieuws/agenda beheren: admin, bestuur en communicatie (sluit aan bij RLS).
   bool get canManageAgenda =>
       hasFullAdminRights ||
+      isCommitteePowerAdmin ||
       isInBestuur ||
       isInCommunicatie ||
       isInJeugdcommissie ||
       isInEvenementen;
   bool get canViewAgendaRsvps =>
       hasFullAdminRights ||
+      isCommitteePowerAdmin ||
       isInBestuur ||
       isInCommunicatie ||
       isInJeugdcommissie ||
@@ -171,28 +176,44 @@ class AppUserContext extends InheritedWidget {
 
   /// Alleen bestuur en communicatie (en global admin) mogen aanmeldingen exporteren.
   bool get canExportAgendaRsvps =>
-      hasFullAdminRights || isInBestuur || isInCommunicatie;
+      hasFullAdminRights ||
+      isCommitteePowerAdmin ||
+      isInBestuur ||
+      isInCommunicatie;
 
   bool get canManageNews =>
-      hasFullAdminRights || isInBestuur || isInCommunicatie;
+      hasFullAdminRights || isCommitteePowerAdmin || isInBestuur || isInCommunicatie;
   bool get canManageHighlights =>
-      hasFullAdminRights || isInBestuur || isInCommunicatie;
+      hasFullAdminRights || isCommitteePowerAdmin || isInBestuur || isInCommunicatie;
   bool get canManageTeams => hasFullAdminRights || isInTechnischeCommissie;
-  bool get canManageMatches => hasFullAdminRights || isInWedstrijdzaken;
+  bool get canManageMatches =>
+      hasFullAdminRights || isCommitteePowerAdmin || isInWedstrijdzaken;
 
   /// Bestuur-tab: bestuursleden en admins mogen bewerken.
-  bool get canManageBestuur => hasFullAdminRights || isInBestuur;
+  bool get canManageBestuur =>
+      hasFullAdminRights || isCommitteePowerAdmin || isInBestuur;
 
-  /// TC-tab: alleen admins en TC mogen bewerken; Bestuur mag alleen kijken.
+  /// TC-tab teambeheer: alleen global admin of echte TC (niet committee power admin).
   bool get canManageTc => hasFullAdminRights || isInTechnischeCommissie;
 
   // Tasks
-  bool get canViewAllTasks => hasFullAdminRights || isInBestuur || isInWedstrijdzaken;
-  bool get canManageTasks => hasFullAdminRights || isInWedstrijdzaken;
+  bool get canViewAllTasks =>
+      hasFullAdminRights ||
+      isCommitteePowerAdmin ||
+      isInBestuur ||
+      isInWedstrijdzaken;
+  bool get canManageTasks =>
+      hasFullAdminRights || isCommitteePowerAdmin || isInWedstrijdzaken;
 
   /// Weergave van alle accounts (gebruikersnamen, team toevoegen): bestuur, TC en admins.
   bool get canViewAllAccounts =>
-      hasFullAdminRights || isInBestuur || isInTechnischeCommissie;
+      hasFullAdminRights ||
+      isCommitteePowerAdmin ||
+      isInBestuur ||
+      isInTechnischeCommissie;
+
+  /// Gebruikersnamen wijzigen en accounts verwijderen (global admin of committee power admin).
+  bool get canManageAccounts => hasFullAdminRights || isCommitteePowerAdmin;
 
   static AppUserContext of(BuildContext context) {
     final result =
@@ -212,6 +233,7 @@ class AppUserContext extends InheritedWidget {
         email != oldWidget.email ||
         displayName != oldWidget.displayName ||
         isGlobalAdmin != oldWidget.isGlobalAdmin ||
+        isCommitteePowerAdmin != oldWidget.isCommitteePowerAdmin ||
         memberships != oldWidget.memberships ||
         committees != oldWidget.committees ||
         reloadUserContext != oldWidget.reloadUserContext ||

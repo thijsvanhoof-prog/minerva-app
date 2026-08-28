@@ -103,7 +103,7 @@ class CommissiesTab extends StatelessWidget {
 
   /// Of de gebruiker deze commissie mag inzien/aanpassen: alleen eigen commissies, tenzij bestuur of admin.
   static bool _mayViewCommittee(AppUserContext ctx, String committeeKey) {
-    if (ctx.hasFullAdminRights || ctx.isInBestuur) return true;
+    if (ctx.hasFullAdminRights || ctx.isCommitteePowerAdmin || ctx.isInBestuur) return true;
     return ctx.isInCommittee(committeeKey);
   }
 
@@ -138,8 +138,8 @@ class CommissiesTab extends StatelessWidget {
     final List<String> committees = allPossible
         .where((c) => _mayViewCommittee(ctx, c))
         .toList();
-    // Admin-tab alleen voor globale admins (gebruikersnamen wijzigen, accounts verwijderen).
-    if (ctx.hasFullAdminRights && !committees.any((c) => c.trim().toLowerCase() == 'admin')) {
+    // Admin-tab voor global admin en committee power admin (gebruikersnamen, accounts verwijderen).
+    if (ctx.canManageAccounts && !committees.any((c) => c.trim().toLowerCase() == 'admin')) {
       committees.add('admin');
     }
     committees.sort((a, b) {
@@ -254,7 +254,8 @@ class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
-    if ((ctx.isInBestuur || ctx.hasFullAdminRights) && !_schemaCheckDone) {
+    if ((ctx.isInBestuur || ctx.hasFullAdminRights || ctx.isCommitteePowerAdmin) &&
+        !_schemaCheckDone) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _checkNevoboTable());
     }
     final controller = DefaultTabController.of(context);
@@ -430,7 +431,7 @@ class _AdminCommitteeView extends StatelessWidget {
                 ),
               ),
               subtitle: const Text(
-                'Bekijk alle accounts, wijzig gebruikersnamen of voeg leden aan teams toe. Alleen voor admins.',
+                'Bekijk alle accounts, wijzig gebruikersnamen of verwijder accounts.',
                 style: TextStyle(color: AppColors.textSecondary),
               ),
               trailing: const Icon(Icons.chevron_right),

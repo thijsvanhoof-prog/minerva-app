@@ -91,8 +91,7 @@ class _TcTabState extends State<TcTab> {
   }
 
   /// Bestuur mag kijken, alleen admins en TC mogen bewerken.
-  bool _canView(AppUserContext ctx) =>
-      ctx.hasFullAdminRights || ctx.isInTechnischeCommissie || ctx.isInBestuur;
+  bool _canView(AppUserContext ctx) => ctx.canViewAllAccounts;
   bool _canManage(AppUserContext ctx) => ctx.canManageTc;
 
   /// Profile_ids die in minstens één commissie zitten (voor filter "zonder team én zonder commissie").

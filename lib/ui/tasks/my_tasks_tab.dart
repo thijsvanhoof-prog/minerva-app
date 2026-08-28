@@ -73,10 +73,7 @@ class MyTasksTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
-    final canSeeOverview = forceFullView ||
-        ctx.hasFullAdminRights ||
-        ctx.isInBestuur ||
-        ctx.isInWedstrijdzaken;
+    final canSeeOverview = forceFullView || ctx.canViewAllTasks;
 
     if (!canSeeOverview) {
       if (compactView) {

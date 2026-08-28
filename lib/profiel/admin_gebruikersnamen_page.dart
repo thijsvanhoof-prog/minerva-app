@@ -7,7 +7,7 @@ import 'package:minerva_app/ui/display_name_overrides.dart' show unknownUserName
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 
-/// Alleen globale admins: bekijk alle accounts, wijzig gebruikersnamen en verwijder accounts.
+/// Global admin en committee power admin: bekijk alle accounts, wijzig gebruikersnamen en verwijder accounts.
 class AdminGebruikersnamenPage extends StatefulWidget {
   const AdminGebruikersnamenPage({super.key});
 
@@ -401,7 +401,7 @@ class _AdminGebruikersnamenPageState extends State<AdminGebruikersnamenPage> {
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (AppUserContext.of(context).hasFullAdminRights)
+                if (AppUserContext.of(context).canManageAccounts)
                   IconButton(
                     tooltip: 'Account verwijderen',
                     icon: const Icon(Icons.delete_outline),

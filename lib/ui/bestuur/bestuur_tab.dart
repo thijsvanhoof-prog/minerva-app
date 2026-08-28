@@ -44,7 +44,7 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
-    final allowed = ctx.hasFullAdminRights || ctx.isInBestuur;
+    final allowed = ctx.canManageBestuur;
 
     if (!allowed) {
       return const Center(

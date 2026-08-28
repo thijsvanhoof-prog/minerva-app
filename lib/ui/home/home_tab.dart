@@ -1106,6 +1106,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     final ctx = AppUserContext.of(context);
     final hidePastForCommitteeViews =
         !ctx.hasFullAdminRights &&
+        !ctx.isCommitteePowerAdmin &&
         !ctx.isInBestuur &&
         (ctx.isInCommunicatie || ctx.isInEvenementen || ctx.isInJeugdcommissie);
     final now = DateTime.now();
@@ -5151,7 +5152,7 @@ class _AgendaItem {
       )) {
         return true;
       }
-      if (ctx.hasFullAdminRights && keys.contains('admin')) return true;
+      if (ctx.canManageAccounts && keys.contains('admin')) return true;
     }
     return false;
   }

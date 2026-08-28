@@ -73,7 +73,8 @@ class _ShellState extends State<Shell> {
     final userContext = AppUserContext.of(context);
     final hasTeam = userContext.memberships.isNotEmpty;
     final hasCommittees = userContext.committees.isNotEmpty ||
-        userContext.hasFullAdminRights;
+        userContext.hasFullAdminRights ||
+        userContext.isCommitteePowerAdmin;
     final manageableTeams = userContext.memberships
         .where((m) => m.canManageTeam)
         .toList();
@@ -215,7 +216,8 @@ class _ShellState extends State<Shell> {
     final userContext = AppUserContext.of(context);
     final hasTeam = userContext.memberships.isNotEmpty;
     final hasCommittees = userContext.committees.isNotEmpty ||
-        userContext.hasFullAdminRights;
+        userContext.hasFullAdminRights ||
+        userContext.isCommitteePowerAdmin;
 
     // Filter to only teams the user can manage
     final manageableTeams = userContext.memberships
