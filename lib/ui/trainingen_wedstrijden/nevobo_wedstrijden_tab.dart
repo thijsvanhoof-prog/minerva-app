@@ -10,6 +10,7 @@ import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/trainingen_wedstrijden/match_key.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/match_travel.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -240,7 +241,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   }
 
   String _matchKey({required String teamCode, required DateTime start}) {
-    return 'nevobo_match:${teamCode.trim().toUpperCase()}:${start.toUtc().toIso8601String()}';
+    return nevoboMatchKey(teamCode: teamCode, start: start);
   }
 
   String _normalizeMatchSummaryForCompare(String value) {
@@ -601,18 +602,67 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final targetProfileId = ctx.attendanceProfileId;
 
     final keys = matches.map((m) => m.matchKey).toSet().toList();
+    final targets = [
+      for (final m in matches)
+        MatchKeyTarget(matchKey: m.matchKey, teamCode: m.teamCode, start: m.start),
+    ];
 
-    // Fetch all availability rows for displayed matches
-    List<Map<String, dynamic>> rows = const [];
+    // Fetch availability; match_key strings drift between app versions, so also
+    // load by team_code and key prefix, then map onto the displayed matches.
+    const select = 'match_key, profile_id, status, team_code, starts_at';
+    final collected = <String, Map<String, dynamic>>{};
+    void addRows(dynamic res) {
+      for (final r in (res as List<dynamic>).cast<Map<String, dynamic>>()) {
+        final id = '${r['match_key']}|${r['profile_id']}';
+        collected[id] = r;
+      }
+    }
+
     try {
-      final res = await _client
-          .from('match_availability')
-          .select('match_key, profile_id, status')
-          .inFilter('match_key', keys);
-      rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      addRows(
+        await _client.from('match_availability').select(select).inFilter('match_key', keys),
+      );
     } catch (_) {
-      // Table missing or RLS; leave empty
-      return;
+      // Table missing or RLS; leave empty unless the broader queries succeed.
+    }
+
+    final teamAliases = <String>{};
+    for (final m in matches) {
+      teamAliases.addAll(nevoboTeamCodeAliases(m.teamCode));
+    }
+    if (teamAliases.isNotEmpty) {
+      try {
+        addRows(
+          await _client
+              .from('match_availability')
+              .select(select)
+              .inFilter('team_code', teamAliases.toList()),
+        );
+      } catch (_) {}
+      await Future.wait(
+        teamAliases.map((code) async {
+          try {
+            addRows(
+              await _client
+                  .from('match_availability')
+                  .select(select)
+                  .like('match_key', 'nevobo_match:$code:%'),
+            );
+          } catch (_) {}
+        }),
+      );
+    }
+
+    final rows = <Map<String, dynamic>>[];
+    for (final r in collected.values) {
+      final localKey = resolveLocalMatchKey(
+        matches: targets,
+        rowKey: (r['match_key'] ?? '').toString(),
+        teamCode: r['team_code']?.toString(),
+        startsAt: r['starts_at'],
+      );
+      if (localKey == null) continue;
+      rows.add({...r, 'match_key': localKey});
     }
 
     final profileIds = <String>{};
