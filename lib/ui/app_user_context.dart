@@ -66,6 +66,8 @@ class TeamMembership {
   final String? nevoboCode;
   /// Bij guardian-rol: displaynaam van het gekoppelde kind (voor label "Team (kind)").
   final String? linkedChildDisplayName;
+  /// Bij guardian-rol: profile_id van het gekoppelde kind.
+  final String? linkedChildProfileId;
 
   const TeamMembership({
     required this.teamId,
@@ -73,6 +75,7 @@ class TeamMembership {
     required this.teamName,
     this.nevoboCode,
     this.linkedChildDisplayName,
+    this.linkedChildProfileId,
   });
 
   /// Teamnaam voor weergave: "Team" of "Team (kindnaam)" bij gekoppeld kind.
@@ -87,6 +90,275 @@ class TeamMembership {
   }
 
   bool get isGuardian => role.trim().toLowerCase() == 'guardian';
+}
+
+/// Prioriteit bij samenvoegen van dubbele teamrollen voor hetzelfde team (hoger wint).
+int teamMembershipRolePriority(String role) {
+  switch (role.trim().toLowerCase()) {
+    case 'admin':
+      return 3;
+    case 'trainer':
+    case 'coach':
+      return 2;
+    case 'player':
+    case 'speler':
+    case 'lid':
+      return 1;
+    case 'guardian':
+      return 1;
+    case 'trainingslid':
+      return 0;
+    case 'supporter':
+      return -1;
+    default:
+      return 0;
+  }
+}
+
+/// Kiest de winnende membership bij conflicten voor hetzelfde [teamId].
+TeamMembership pickHigherPriorityTeamMembership(
+  TeamMembership a,
+  TeamMembership b,
+) {
+  final pa = teamMembershipRolePriority(a.role);
+  final pb = teamMembershipRolePriority(b.role);
+  if (pa != pb) return pa > pb ? a : b;
+  // Zelfde prioriteit: eigen rol boven guardian (deterministisch).
+  if (a.isGuardian != b.isGuardian) return a.isGuardian ? b : a;
+  return a;
+}
+
+/// Voegt memberships per [teamId] samen; trainer/coach wint boven speler-rollen.
+List<TeamMembership> mergeTeamMembershipsByTeamId(
+  List<TeamMembership> memberships,
+) {
+  final byTeam = <int, TeamMembership>{};
+  for (final m in memberships) {
+    final existing = byTeam[m.teamId];
+    byTeam[m.teamId] =
+        existing == null ? m : pickHigherPriorityTeamMembership(existing, m);
+  }
+  return byTeam.values.toList();
+}
+
+/// Resultaat van verdeling over Trainingen-subtabs Spelers en Trainers.
+class TrainingTabTeamSplit {
+  final List<TeamMembership> playerTeams;
+  final List<TeamMembership> trainerTeams;
+
+  const TrainingTabTeamSplit({
+    required this.playerTeams,
+    required this.trainerTeams,
+  });
+}
+
+/// Verdeelt teams over Spelers- en Trainers-subtab; elk team komt maximaal in één lijst.
+TrainingTabTeamSplit splitTeamMembershipsForTrainingTabs(
+  List<TeamMembership> memberships,
+) {
+  final merged = mergeTeamMembershipsByTeamId(memberships);
+  final playerTeams = <TeamMembership>[];
+  final trainerTeams = <TeamMembership>[];
+  for (final m in merged) {
+    if (m.canManageTeam) {
+      trainerTeams.add(m);
+    } else {
+      playerTeams.add(m);
+    }
+  }
+  return TrainingTabTeamSplit(
+    playerTeams: playerTeams,
+    trainerTeams: trainerTeams,
+  );
+}
+
+/// Spelers- of Trainers-subtab onder Teams → Trainingen.
+enum TrainingTabViewRole { player, trainer }
+
+/// Lege-staattekst per subtab (exacte copy).
+String trainingTabEmptyMessage(TrainingTabViewRole role) {
+  switch (role) {
+    case TrainingTabViewRole.player:
+      return 'Je bent niet gekoppeld als speler aan een team.';
+    case TrainingTabViewRole.trainer:
+      return 'Je bent niet gekoppeld als trainer aan een team.';
+  }
+}
+
+/// Of de rolgerichte lege toestand getoond moet worden (niet voor global admin).
+bool shouldShowTrainingRoleEmptyState({
+  required List<TeamMembership> teamsForTab,
+  required bool isGlobalAdmin,
+}) {
+  return !isGlobalAdmin && teamsForTab.isEmpty;
+}
+
+/// Lege-staattekst voor Teams → Wedstrijden zonder speler/trainer/coach-koppeling.
+const String matchAccessEmptyMessage =
+    'Je bent niet gekoppeld als speler of trainer/coach aan een team.';
+
+/// Of een membership wedstrijdtoegang geeft (geen trainingslid/supporter).
+bool teamMembershipGrantsMatchAccess(TeamMembership membership) {
+  final r = membership.role.trim().toLowerCase();
+  switch (r) {
+    case 'trainingslid':
+    case 'supporter':
+      return false;
+    case 'trainer':
+    case 'coach':
+    case 'admin':
+    case 'guardian':
+    case 'player':
+    case 'speler':
+    case 'lid':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/// Teams waarvoor wedstrijden getoond mogen worden (samengevoegd, deterministisch).
+List<TeamMembership> matchAccessTeamMemberships(
+  List<TeamMembership> memberships, {
+  String? viewingAsProfileId,
+}) {
+  final merged = mergeTeamMembershipsByTeamId(memberships);
+
+  if (viewingAsProfileId != null) {
+    return merged
+        .where(
+          (m) =>
+              m.isGuardian &&
+              m.linkedChildProfileId == viewingAsProfileId &&
+              teamMembershipGrantsMatchAccess(m),
+        )
+        .toList();
+  }
+
+  return merged.where(teamMembershipGrantsMatchAccess).toList();
+}
+
+/// Of de wedstrijd-leegstaat getoond moet worden (niet voor global admin).
+bool shouldShowMatchAccessEmptyState({
+  required List<TeamMembership> matchTeams,
+  required bool isGlobalAdmin,
+}) {
+  return !isGlobalAdmin && matchTeams.isEmpty;
+}
+
+/// Teams waarvoor teamtaken getoond mogen worden (zelfde rollen als wedstrijden).
+List<TeamMembership> taskAccessTeamMemberships(
+  List<TeamMembership> memberships, {
+  String? viewingAsProfileId,
+}) {
+  return matchAccessTeamMemberships(
+    memberships,
+    viewingAsProfileId: viewingAsProfileId,
+  );
+}
+
+/// Lege-staattekst voor Taken zonder speler/trainer/coach-koppeling.
+const String tasksEmptyMessage = matchAccessEmptyMessage;
+
+/// Of de Taken-leegstaat getoond moet worden (niet voor global admin).
+bool shouldShowTaskAccessEmptyState({
+  required List<TeamMembership> taskTeams,
+  required bool isGlobalAdmin,
+  required bool canViewAllTasks,
+  required bool isInScheidsrechtersTellers,
+}) {
+  if (isGlobalAdmin || canViewAllTasks || isInScheidsrechtersTellers) {
+    return false;
+  }
+  return taskTeams.isEmpty;
+}
+
+/// Standaard commissies in vaste volgorde (canonieke sleutels).
+const standardCommitteeKeys = [
+  'bestuur',
+  'technische-commissie',
+  'communicatie',
+  'wedstrijdzaken',
+  'evenementen',
+  'jeugdcommissie',
+  'scheidsrechters-tellers',
+];
+
+const commissiesEmptyMessage = 'Je bent niet gekoppeld aan een commissie.';
+
+/// Unieke commissiesleutels op basis van [normalizeCommitteeKey].
+List<String> dedupeNormalizedCommitteeKeys(Iterable<String> raw) {
+  final seen = <String>{};
+  final result = <String>[];
+  for (final item in raw) {
+    final key = normalizeCommitteeKey(item);
+    if (key.isEmpty || key == 'admin') continue;
+    if (seen.add(key)) result.add(key);
+  }
+  return result;
+}
+
+int committeeDisplayOrder(String key) {
+  switch (normalizeCommitteeKey(key)) {
+    case 'admin':
+      return 0;
+    case 'bestuur':
+      return 1;
+    case 'technische-commissie':
+      return 2;
+    case 'communicatie':
+      return 3;
+    case 'wedstrijdzaken':
+      return 4;
+    case 'evenementen':
+      return 5;
+    case 'jeugdcommissie':
+      return 6;
+    case 'scheidsrechters-tellers':
+      return 7;
+    default:
+      return 8;
+  }
+}
+
+void sortCommitteesForDisplay(List<String> committees) {
+  committees.sort((a, b) {
+    final orderA = committeeDisplayOrder(a);
+    final orderB = committeeDisplayOrder(b);
+    if (orderA != orderB) return orderA.compareTo(orderB);
+    return a.compareTo(b);
+  });
+}
+
+/// Commissies zichtbaar in het Commissies-tabblad.
+List<String> visibleCommitteesForCommissiesTab({
+  required List<String> userCommittees,
+  required bool hasFullAdminRights,
+  required bool isCommitteePowerAdmin,
+  required bool isInBestuur,
+  required bool canManageAccounts,
+}) {
+  final userKeys = dedupeNormalizedCommitteeKeys(userCommittees);
+
+  final List<String> visible;
+  if (hasFullAdminRights || isCommitteePowerAdmin || isInBestuur) {
+    visible = List<String>.from(standardCommitteeKeys);
+    for (final k in userKeys) {
+      if (!visible.any((v) => normalizeCommitteeKey(v) == k)) {
+        visible.add(k);
+      }
+    }
+  } else {
+    visible = List<String>.from(userKeys);
+  }
+
+  if (canManageAccounts &&
+      !visible.any((c) => normalizeCommitteeKey(c) == 'admin')) {
+    visible.add('admin');
+  }
+
+  sortCommitteesForDisplay(visible);
+  return visible;
 }
 
 class AppUserContext extends InheritedWidget {

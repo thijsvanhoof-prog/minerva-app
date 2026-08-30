@@ -1128,9 +1128,15 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     try {
       final ctx = AppUserContext.of(context);
       final code = teamCode.trim().toUpperCase();
-      for (final m in ctx.memberships) {
-        final extracted = NevoboApi.extractCodeFromTeamName(m.teamName);
-        if (extracted != null && extracted.toUpperCase() == code) {
+      final accessTeams = matchAccessTeamMemberships(
+        ctx.memberships,
+        viewingAsProfileId: ctx.viewingAsProfileId,
+      );
+      for (final m in accessTeams) {
+        final fromName = NevoboApi.extractCodeFromTeamName(m.teamName);
+        final fromCode = m.nevoboCode?.trim().toUpperCase();
+        if ((fromName != null && fromName.toUpperCase() == code) ||
+            (fromCode != null && fromCode == code)) {
           return m.canManageTeam;
         }
       }

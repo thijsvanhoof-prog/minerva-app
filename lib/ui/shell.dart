@@ -71,19 +71,7 @@ class _ShellState extends State<Shell> {
 
   void _switchToContactTab() {
     final userContext = AppUserContext.of(context);
-    final hasTeam = userContext.memberships.isNotEmpty;
-    final hasCommittees = userContext.committees.isNotEmpty ||
-        userContext.hasFullAdminRights ||
-        userContext.isCommitteePowerAdmin;
-    final manageableTeams = userContext.memberships
-        .where((m) => m.canManageTeam)
-        .toList();
-    final navItems = _buildNavItems(
-      manageableTeams: manageableTeams,
-      hasCommittees: hasCommittees,
-      hasTeam: hasTeam,
-      userContext: userContext,
-    );
+    final navItems = _buildNavItems(userContext: userContext);
     int contactTabIndex = -1;
     for (var i = 0; i < navItems.length; i++) {
       if (navItems[i].page is InfoTab) {
@@ -109,28 +97,17 @@ class _ShellState extends State<Shell> {
         ),
       );
 
-  // Helper to keep nav structure in one place.
-  // Beperkte weergave alleen wanneer géén team én géén commissie. Met commissie (of admin) = volledige toegang.
+  /// Gast (`profileId` leeg): Home, Contact, Profiel.
+  /// Eigen account: Home, Teams, Commissies, Contact, Taken, Profiel.
   List<_NavItem> _buildNavItems({
-    required List<TeamMembership> manageableTeams,
-    required bool hasCommittees,
-    required bool hasTeam,
     required AppUserContext userContext,
   }) {
-    final _ = userContext;
+    final isGuest = userContext.profileId.trim().isEmpty;
 
-    // Admin heeft altijd volledige toegang; anders: team of commissie nodig.
-    final hasFullAccess =
-        userContext.hasFullAdminRights || hasTeam || hasCommittees;
-    // Toeschouwer: geen rol → alleen Uitgelicht, Agenda, Nieuws, Standen, Contact, Profiel
-    if (!hasFullAccess) {
-      final isGuestViewer = userContext.profileId.trim().isEmpty;
+    if (isGuest) {
       return [
         _NavItem(
-          page: HomeTab(
-            // Gastaccount: geen agenda-toegang.
-            showOnlyHighlightsAndNews: isGuestViewer,
-          ),
+          page: const HomeTab(showOnlyHighlightsAndNews: true),
           destination: NavigationDestination(
             icon: _navIcon(Icons.home_outlined, selected: false),
             selectedIcon: _navIcon(Icons.home, selected: true),
@@ -156,7 +133,7 @@ class _ShellState extends State<Shell> {
       ];
     }
 
-    final items = <_NavItem>[
+    return [
       _NavItem(
         page: const HomeTab(),
         destination: NavigationDestination(
@@ -173,21 +150,12 @@ class _ShellState extends State<Shell> {
           label: 'Teams',
         ),
       ),
-      if (hasCommittees)
-        _NavItem(
-          page: const CommissiesTab(),
-          destination: NavigationDestination(
-            icon: _navIcon(Icons.badge_outlined, selected: false),
-            selectedIcon: _navIcon(Icons.badge, selected: true),
-            label: 'Commissie',
-          ),
-        ),
       _NavItem(
-        page: const MyTasksTab(),
+        page: const CommissiesTab(),
         destination: NavigationDestination(
-          icon: _navIcon(Icons.task_alt_outlined, selected: false),
-          selectedIcon: _navIcon(Icons.task_alt, selected: true),
-          label: 'Taken',
+          icon: _navIcon(Icons.badge_outlined, selected: false),
+          selectedIcon: _navIcon(Icons.badge, selected: true),
+          label: 'Commissies',
         ),
       ),
       _NavItem(
@@ -199,6 +167,14 @@ class _ShellState extends State<Shell> {
         ),
       ),
       _NavItem(
+        page: const MyTasksTab(),
+        destination: NavigationDestination(
+          icon: _navIcon(Icons.task_alt_outlined, selected: false),
+          selectedIcon: _navIcon(Icons.task_alt, selected: true),
+          label: 'Taken',
+        ),
+      ),
+      _NavItem(
         page: const ProfielTab(),
         destination: NavigationDestination(
           icon: _navIcon(Icons.person_outline, selected: false),
@@ -207,29 +183,13 @@ class _ShellState extends State<Shell> {
         ),
       ),
     ];
-
-    return items;
   }
 
   @override
   Widget build(BuildContext context) {
     final userContext = AppUserContext.of(context);
-    final hasTeam = userContext.memberships.isNotEmpty;
-    final hasCommittees = userContext.committees.isNotEmpty ||
-        userContext.hasFullAdminRights ||
-        userContext.isCommitteePowerAdmin;
 
-    // Filter to only teams the user can manage
-    final manageableTeams = userContext.memberships
-        .where((m) => m.canManageTeam)
-        .toList();
-
-    final navItems = _buildNavItems(
-      manageableTeams: manageableTeams,
-      hasCommittees: hasCommittees,
-      hasTeam: hasTeam,
-      userContext: userContext,
-    );
+    final navItems = _buildNavItems(userContext: userContext);
 
     final selectedIndex = _index.clamp(0, navItems.length - 1);
     final pages = navItems.map((i) => i.page).toList();

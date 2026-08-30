@@ -7,6 +7,7 @@ import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/trainings_tab.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/match_team_code_resolution.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_wedstrijden_tab.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
@@ -55,47 +56,21 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
     super.dispose();
   }
 
-  /// Spelers-tab: alle teams waar je géén beheerder bent (dus role = player, speler, lid, trainingslid, guardian, supporter).
-  /// canManageTeam is true alleen voor trainer/coach/admin.
-  static List<TeamMembership> _playerTeams(List<TeamMembership> memberships) {
-    return memberships
-        .where((m) => !m.canManageTeam)
-        .toList()
-      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
+  /// Spelers- en trainersteams via gedeelde rol-logica (deterministisch per teamId).
+  TrainingTabTeamSplit _trainingTeamSplit(List<TeamMembership> memberships) {
+    return splitTeamMembershipsForTrainingTabs(memberships);
   }
 
-  /// Alleen teams waar je als trainer/coach/admin staat.
-  static List<TeamMembership> _trainerTeams(List<TeamMembership> memberships) {
-    return memberships.where((m) => m.canManageTeam).toList()
-      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
-  }
-
-  List<String> _teamCodesForMemberships(
+  Map<int, String> _codeByTeamIdFromWithIds(
     List<({NevoboTeam team, int? teamId})> withIds,
-    List<TeamMembership> memberships,
   ) {
-    final teamIds = memberships.map((m) => m.teamId).toSet();
-    final codes = withIds
-        .where((e) => e.teamId != null && teamIds.contains(e.teamId))
-        .map((e) => e.team.code)
-        .toSet()
-        .toList()
-      ..sort(NevoboApi.compareTeamCodes);
-    if (codes.isEmpty && memberships.isNotEmpty) {
-      codes.addAll(_fallbackLinkedCodes(memberships));
-      codes.sort(NevoboApi.compareTeamCodes);
+    final codeByTeamId = <int, String>{};
+    for (final e in withIds) {
+      if (e.teamId != null) {
+        codeByTeamId[e.teamId!] = e.team.code;
+      }
     }
-    return codes;
-  }
-
-  List<String> _fallbackLinkedCodes(List<TeamMembership> memberships) {
-    return memberships
-        .map((m) => m.nevoboCode?.trim().toUpperCase() ?? NevoboApi.extractCodeFromTeamName(m.teamName))
-        .whereType<String>()
-        .where((c) => c.isNotEmpty)
-        .toSet()
-        .toList()
-      ..sort(NevoboApi.compareTeamCodes);
+    return codeByTeamId;
   }
 
   @override
@@ -103,9 +78,11 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
     final userContext = AppUserContext.of(context);
     final isAdmin = userContext.hasFullAdminRights;
     final allMemberships = widget.manageableTeams;
-    final playerTeams = _playerTeams(allMemberships);
-    final trainerTeams = _trainerTeams(allMemberships);
-    final hasTrainerRole = trainerTeams.isNotEmpty || isAdmin;
+    final teamSplit = _trainingTeamSplit(allMemberships);
+    var playerTeams = teamSplit.playerTeams
+      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
+    var trainerTeams = teamSplit.trainerTeams
+      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
 
     return FutureBuilder<List<({NevoboTeam team, int? teamId})>>(
       future: _teamsWithIdsFuture,
@@ -130,23 +107,10 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
           );
         final trainingPlayerTeams = isAdmin ? adminAllTeams : playerTeams;
         final trainingTrainerTeams = isAdmin ? adminAllTeams : trainerTeams;
-        final allTeamCodes = withIds
-            .map((e) => e.team.code.trim().toUpperCase())
-            .where((c) => c.isNotEmpty)
-            .toSet()
-            .toList()
-          ..sort(NevoboApi.compareTeamCodes);
-        final playerTeamCodes = isAdmin
-            ? allTeamCodes
-            : _teamCodesForMemberships(withIds, playerTeams);
-        final trainerTeamCodes = isAdmin
-            ? allTeamCodes
-            : _teamCodesForMemberships(withIds, trainerTeams);
 
         if (playerTeams.isNotEmpty) {
           _autoSelectedTrainerSubTab = false;
-        } else if (hasTrainerRole &&
-            !isAdmin &&
+        } else if (!isAdmin &&
             trainerTeams.isNotEmpty &&
             !_autoSelectedTrainerSubTab) {
           _autoSelectedTrainerSubTab = true;
@@ -199,8 +163,8 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                     ),
                   ),
                 ),
-                // Sub-tabs: Spelers | Trainers (alleen bij Trainingen, niet bij Wedstrijden)
-                if (hasTrainerRole && _mainTabController.index == 0)
+                // Sub-tabs: Spelers | Trainers (altijd bij Trainingen)
+                if (_mainTabController.index == 0)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                     child: GlassCard(
@@ -232,14 +196,15 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                     children: [
                       // Trainingen
                       _buildTrainingenContent(
-                        hasTrainerRole: hasTrainerRole,
+                        isAdmin: isAdmin,
                         playerTeams: trainingPlayerTeams,
                         trainerTeams: trainingTrainerTeams,
                       ),
                       // Wedstrijden
                       _buildWedstrijdenContent(
-                        playerTeamCodes: playerTeamCodes,
-                        trainerTeamCodes: trainerTeamCodes,
+                        isAdmin: isAdmin,
+                        allMemberships: allMemberships,
+                        viewingAsProfileId: userContext.viewingAsProfileId,
                         withIds: withIds,
                       ),
                     ],
@@ -254,84 +219,268 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
   }
 
   Widget _buildTrainingenContent({
-    required bool hasTrainerRole,
+    required bool isAdmin,
     required List<TeamMembership> playerTeams,
     required List<TeamMembership> trainerTeams,
   }) {
-    if (!hasTrainerRole) {
-      return TrainingsTab(manageableTeams: playerTeams);
-    }
     return IndexedStack(
       index: _subTabController.index,
       children: [
-        TrainingsTab(manageableTeams: playerTeams),
-        TrainingsTab(manageableTeams: trainerTeams),
+        TrainingsTab(
+          manageableTeams: playerTeams,
+          viewRole: TrainingTabViewRole.player,
+          suppressRoleEmptyState: isAdmin,
+        ),
+        TrainingsTab(
+          manageableTeams: trainerTeams,
+          viewRole: TrainingTabViewRole.trainer,
+          suppressRoleEmptyState: isAdmin,
+        ),
       ],
     );
   }
 
   Widget _buildWedstrijdenContent({
-    required List<String> playerTeamCodes,
-    required List<String> trainerTeamCodes,
+    required bool isAdmin,
+    required List<TeamMembership> allMemberships,
+    required String? viewingAsProfileId,
     required List<({NevoboTeam team, int? teamId})> withIds,
   }) {
-    final allTeamCodes = <String>{
-      ...playerTeamCodes,
-      ...trainerTeamCodes,
-    }.toList()
-      ..sort(NevoboApi.compareTeamCodes);
-    if (allTeamCodes.isEmpty) {
-      return _SpelersEmptyContent();
-    }
-    final teamIdByCode = <String, int>{};
-    for (final e in withIds) {
-      if (e.teamId != null) {
-        teamIdByCode[e.team.code.trim().toUpperCase()] = e.teamId!;
+    final codeByTeamId = _codeByTeamIdFromWithIds(withIds);
+
+    if (isAdmin) {
+      final adminCodes = withIds
+          .map((e) => e.team.code.trim().toUpperCase())
+          .where((c) => c.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort(NevoboApi.compareTeamCodes);
+      final viewState = resolveMatchWedstrijdenViewState(
+        matchTeams: const [],
+        resolvedCodes: adminCodes,
+        isGlobalAdmin: true,
+      );
+      if (viewState == MatchWedstrijdenViewState.adminNoValidCodes) {
+        return const _MatchAdminNoCodesContent();
       }
+      final teamIdByCode = <String, int>{};
+      for (final e in withIds) {
+        if (e.teamId != null) {
+          teamIdByCode[e.team.code.trim().toUpperCase()] = e.teamId!;
+        }
+      }
+      return NevoboWedstrijdenTab(
+        teamCodes: adminCodes,
+        teamIdByCode: teamIdByCode,
+      );
     }
-    return NevoboWedstrijdenTab(
-      teamCodes: allTeamCodes,
-      teamIdByCode: teamIdByCode,
+
+    final matchTeams = matchAccessTeamMemberships(
+      allMemberships,
+      viewingAsProfileId: viewingAsProfileId,
+    );
+    final resolution = resolveMatchTeamCodes(
+      matchTeams: matchTeams,
+      codeByTeamId: codeByTeamId,
+    );
+    final viewState = resolveMatchWedstrijdenViewState(
+      matchTeams: matchTeams,
+      resolvedCodes: resolution.codes,
+      isGlobalAdmin: false,
+    );
+
+    switch (viewState) {
+      case MatchWedstrijdenViewState.notLinked:
+        return const _MatchAccessEmptyContent();
+      case MatchWedstrijdenViewState.missingTeamCode:
+        return _MatchTeamCodeMissingContent(matchTeams: matchTeams);
+      case MatchWedstrijdenViewState.adminNoValidCodes:
+        return const _MatchAdminNoCodesContent();
+      case MatchWedstrijdenViewState.showMatches:
+        final teamIdByCode = <String, int>{};
+        for (final e in withIds) {
+          if (e.teamId != null) {
+            teamIdByCode[e.team.code.trim().toUpperCase()] = e.teamId!;
+          }
+        }
+        return NevoboWedstrijdenTab(
+          teamCodes: resolution.codes,
+          teamIdByCode: teamIdByCode,
+        );
+    }
+  }
+}
+
+/// Lege staat voor Wedstrijden zonder speler/trainer/coach-koppeling.
+class _MatchAccessEmptyContent extends StatelessWidget {
+  const _MatchAccessEmptyContent();
+
+  Future<void> _refresh(BuildContext context) async {
+    final ctx = AppUserContext.of(context);
+    await ctx.reloadUserContext?.call();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      color: AppColors.primary,
+      onRefresh: () => _refresh(context),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(20),
+        children: [
+          const SizedBox(height: 80),
+          Icon(
+            Icons.emoji_events_outlined,
+            size: 48,
+            color: AppColors.textSecondary.withValues(alpha: 0.7),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            matchAccessEmptyMessage,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: AppColors.onBackground,
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+          const SizedBox(height: 12),
+          Center(
+            child: ElevatedButton.icon(
+              onPressed: AppUserContext.of(context).reloadUserContext == null
+                  ? null
+                  : () => _refresh(context),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Opnieuw laden'),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
 
-/// Lege staat wanneer je bij geen team als speler staat (Spelers-tab).
-class _SpelersEmptyContent extends StatelessWidget {
+/// Lege staat: gekoppeld team(s) zonder Nevobo-code.
+class _MatchTeamCodeMissingContent extends StatelessWidget {
+  final List<TeamMembership> matchTeams;
+
+  const _MatchTeamCodeMissingContent({required this.matchTeams});
+
+  Future<void> _refresh(BuildContext context) async {
+    final ctx = AppUserContext.of(context);
+    await ctx.reloadUserContext?.call();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
+    final sortedTeams = List<TeamMembership>.from(matchTeams)
+      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
+
+    return RefreshIndicator(
+      color: AppColors.primary,
+      onRefresh: () => _refresh(context),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.group_off,
-              size: 48,
-              color: AppColors.textSecondary.withValues(alpha: 0.7),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Je staat bij geen team als speler',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: AppColors.onBackground,
-                    fontWeight: FontWeight.w600,
-                  ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Staat je bij een team alleen als trainer/coach? Dan zie je dat team onder de tab Trainers.\n\n'
-              'Om hier teams te zien: vraag de Technische Commissie (Commissie → TC) om je als speler aan een team toe te voegen.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 14,
+        children: [
+          const SizedBox(height: 80),
+          Icon(
+            Icons.link_off,
+            size: 48,
+            color: AppColors.textSecondary.withValues(alpha: 0.7),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            matchTeamCodeMissingHeadline(sortedTeams.length),
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: AppColors.onBackground,
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+          const SizedBox(height: 12),
+          ...sortedTeams.map(
+            (m) => Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                '- ${m.displayLabel}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 14,
+                ),
               ),
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            matchTeamCodeMissingTcHint,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 14,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Center(
+            child: ElevatedButton.icon(
+              onPressed: AppUserContext.of(context).reloadUserContext == null
+                  ? null
+                  : () => _refresh(context),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Opnieuw laden'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Lege staat voor global admin zonder teams met geldige Nevobo-code.
+class _MatchAdminNoCodesContent extends StatelessWidget {
+  const _MatchAdminNoCodesContent();
+
+  Future<void> _refresh(BuildContext context) async {
+    final ctx = AppUserContext.of(context);
+    await ctx.reloadUserContext?.call();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      color: AppColors.primary,
+      onRefresh: () => _refresh(context),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(20),
+        children: [
+          const SizedBox(height: 80),
+          Icon(
+            Icons.emoji_events_outlined,
+            size: 48,
+            color: AppColors.textSecondary.withValues(alpha: 0.7),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            matchAdminNoValidCodesMessage,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: AppColors.onBackground,
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+          const SizedBox(height: 12),
+          Center(
+            child: ElevatedButton.icon(
+              onPressed: AppUserContext.of(context).reloadUserContext == null
+                  ? null
+                  : () => _refresh(context),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Opnieuw laden'),
+            ),
+          ),
+        ],
       ),
     );
   }

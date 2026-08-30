@@ -70,10 +70,51 @@ class MyTasksTab extends StatelessWidget {
   /// Als true: toon Taken -> Overzicht direct, met S/T signup op alle wedstrijden.
   final bool stOverviewMode;
 
+  Future<void> _refreshTasks(BuildContext context) async {
+    final ctx = AppUserContext.of(context);
+    await ctx.reloadUserContext?.call();
+  }
+
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
     final canSeeOverview = forceFullView || ctx.canViewAllTasks;
+    final taskTeams = taskAccessTeamMemberships(
+      ctx.memberships,
+      viewingAsProfileId: ctx.viewingAsProfileId,
+    );
+
+    if (!canSeeOverview &&
+        shouldShowTaskAccessEmptyState(
+          taskTeams: taskTeams,
+          isGlobalAdmin: ctx.isGlobalAdmin,
+          canViewAllTasks: ctx.canViewAllTasks,
+          isInScheidsrechtersTellers: ctx.isInScheidsrechtersTellers,
+        )) {
+      return Scaffold(
+        backgroundColor: Colors.transparent,
+        body: SafeArea(
+          top: false,
+          bottom: false,
+          child: Column(
+            children: [
+              TabPageHeader(
+                child: Text(
+                  'Taken',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+              ),
+              Expanded(
+                child: _TaskAccessEmptyState(onRefresh: () => _refreshTasks(context)),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     if (!canSeeOverview) {
       if (compactView) {
@@ -182,6 +223,50 @@ class MyTasksTab extends StatelessWidget {
   }
 }
 
+class _TaskAccessEmptyState extends StatelessWidget {
+  const _TaskAccessEmptyState({required this.onRefresh});
+
+  final Future<void> Function() onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      color: AppColors.primary,
+      onRefresh: onRefresh,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(20),
+        children: [
+          const SizedBox(height: 80),
+          Icon(
+            Icons.assignment_outlined,
+            size: 48,
+            color: AppColors.textSecondary.withValues(alpha: 0.7),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            tasksEmptyMessage,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: AppColors.onBackground,
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+          const SizedBox(height: 12),
+          Center(
+            child: ElevatedButton.icon(
+              onPressed: () => onRefresh(),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Opnieuw laden'),
+            ),
+          ),
+          const SizedBox(height: 80),
+        ],
+      ),
+    );
+  }
+}
+
 class _TeamTasksView extends StatefulWidget {
   const _TeamTasksView({this.showTechnicalErrors = false});
 
@@ -212,6 +297,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
   bool _loading = true;
   String? _error;
   bool _schemaMissing = false;
+  bool _noTeamMembership = false;
 
   String? _lastSubjectProfileId;
 
@@ -221,6 +307,12 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
   Map<int, String> _teamNameById = const {};
   Map<int, List<String>> _signupNamesByTaskId = const {}; // task_id -> names
   String? _myDisplayName; // cached for optimistic updates
+
+  Future<void> _refresh({AppUserContext? ctx}) async {
+    final userContext = ctx ?? AppUserContext.of(context);
+    await userContext.reloadUserContext?.call();
+    await _load(ctx: userContext);
+  }
 
   @override
   void didChangeDependencies() {
@@ -260,29 +352,34 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       final userContext = ctx ?? AppUserContext.of(context);
       final targetProfileId = userContext.attendanceProfileId;
       final allowOpenRefereeTellerSignup = userContext.isInScheidsrechtersTellers;
+      final taskTeamIds = taskAccessTeamMemberships(
+        userContext.memberships,
+        viewingAsProfileId: userContext.viewingAsProfileId,
+      ).map((m) => m.teamId).toSet();
       List<int> myTeamIds = [];
       if (!allowOpenRefereeTellerSignup) {
-        myTeamIds = await _loadMyTeamIdsFromRpc();
-        if (myTeamIds.isEmpty) {
-          myTeamIds = userContext.memberships.map((m) => m.teamId).toSet().toList();
-        } else {
-          final fromContext = userContext.memberships.map((m) => m.teamId).toSet();
-          myTeamIds = {...myTeamIds, ...fromContext}.toList();
+        if (taskTeamIds.isEmpty) {
+          if (!mounted) return;
+          setState(() {
+            _matches = const [];
+            _signedUpTaskIds = const {};
+            _assignableTaskIds = const {};
+            _teamNameById = const {};
+            _noTeamMembership = true;
+            _loading = false;
+          });
+          return;
+        }
+        myTeamIds = taskTeamIds.toList()..sort();
+        final rpcTeamIds = await _loadMyTeamIdsFromRpc();
+        final allowedRpc =
+            rpcTeamIds.where(taskTeamIds.contains).toList()..sort();
+        if (allowedRpc.isNotEmpty) {
+          myTeamIds = {...myTeamIds, ...allowedRpc}.toList()..sort();
         }
       }
-      myTeamIds.sort();
 
-      if (myTeamIds.isEmpty && !allowOpenRefereeTellerSignup) {
-        if (!mounted) return;
-        setState(() {
-          _matches = const [];
-          _signedUpTaskIds = const {};
-          _assignableTaskIds = const {};
-          _teamNameById = const {};
-          _loading = false;
-        });
-        return;
-      }
+      _noTeamMembership = false;
 
       // Voor Teamtaken bepalen we eerst welke fluit/tel taken aan mijn teams zijn gekoppeld.
       final assignedTeamIdsByTaskId = <int, Set<int>>{};
@@ -716,7 +813,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
     if (_loading) {
       return RefreshIndicator(
         color: AppColors.primary,
-        onRefresh: () => _load(ctx: ctx),
+        onRefresh: () => _refresh(ctx: ctx),
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
@@ -732,7 +829,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       if (!widget.showTechnicalErrors) {
         return RefreshIndicator(
           color: AppColors.primary,
-          onRefresh: () => _load(ctx: ctx),
+          onRefresh: () => _refresh(ctx: ctx),
           child: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
@@ -753,7 +850,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       }
       return RefreshIndicator(
         color: AppColors.primary,
-        onRefresh: () => _load(ctx: ctx),
+        onRefresh: () => _refresh(ctx: ctx),
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
@@ -807,20 +904,23 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
     }
 
     if (_matches.isEmpty) {
+      final emptyMessage = _noTeamMembership
+          ? tasksEmptyMessage
+          : 'Wedstrijdzaken heeft nog geen wedstrijden aan jouw team(s) gekoppeld.\n\nSwipe omlaag om te verversen.';
       return RefreshIndicator(
         color: AppColors.primary,
-        onRefresh: () => _load(ctx: ctx),
+        onRefresh: () => _refresh(ctx: ctx),
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-          children: const [
+          children: [
             GlassCard(
               child: Padding(
-                padding: EdgeInsets.all(14),
+                padding: const EdgeInsets.all(14),
                 child: Text(
-                  'Wedstrijdzaken heeft nog geen wedstrijden aan jouw team(s) gekoppeld.\n\nSwipe omlaag om te verversen.',
+                  emptyMessage,
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: AppColors.textSecondary),
+                  style: const TextStyle(color: AppColors.textSecondary),
                 ),
               ),
             ),
@@ -831,7 +931,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
 
     return RefreshIndicator(
       color: AppColors.primary,
-      onRefresh: () => _load(ctx: ctx),
+      onRefresh: () => _refresh(ctx: ctx),
       child: ListView.separated(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),

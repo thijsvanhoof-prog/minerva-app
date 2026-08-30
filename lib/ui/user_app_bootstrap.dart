@@ -285,6 +285,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
           teamName: teamName,
           nevoboCode: nevoboCode,
           linkedChildDisplayName: linkedChildName,
+          linkedChildProfileId: profileId.isEmpty ? null : profileId,
         ));
       }
     }
@@ -394,7 +395,7 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     setState(() {
       _isGlobalAdmin = isGlobalAdmin;
       _isCommitteePowerAdmin = isCommitteePowerAdmin;
-      _memberships = memberships;
+      _memberships = mergeTeamMembershipsByTeamId(memberships);
       _committees = committees;
       _displayName = displayName;
       _loading = false;

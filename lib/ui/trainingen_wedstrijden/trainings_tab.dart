@@ -15,10 +15,15 @@ enum AttendanceStatus { playing, coach, nietSpelend, afgemeld }
 
 class TrainingsTab extends StatefulWidget {
   final List<TeamMembership> manageableTeams;
+  final TrainingTabViewRole viewRole;
+  /// Global admin: geen rolgerichte lege melding.
+  final bool suppressRoleEmptyState;
 
   const TrainingsTab({
     super.key,
     required this.manageableTeams,
+    required this.viewRole,
+    this.suppressRoleEmptyState = false,
   });
 
   @override
@@ -58,11 +63,11 @@ class _TrainingsTabState extends State<TrainingsTab> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Gebruik de doorgegeven teams (Spelers- of Trainers-tab), niet alle memberships.
-    final byTeamId = <int, TeamMembership>{};
-    for (final m in widget.manageableTeams) {
-      byTeamId.putIfAbsent(m.teamId, () => m);
-    }
+    // Gebruik de doorgegeven teams (Spelers- of Trainers-tab), samengevoegd per teamId.
+    final mergedTeams = mergeTeamMembershipsByTeamId(widget.manageableTeams);
+    final byTeamId = <int, TeamMembership>{
+      for (final m in mergedTeams) m.teamId: m,
+    };
     final ordered = byTeamId.entries.toList()
       ..sort(
         (a, b) => NevoboApi.compareTeamNames(
@@ -482,15 +487,19 @@ class _TrainingsTabState extends State<TrainingsTab> {
     return '$date $st – $et';
   }
 
-  /// Mag trainingen aanmaken: trainer, coach of admin (canManageTeam).
+  /// Mag trainingen aanmaken: minstens één team in deze tab met beheerrecht.
   bool get _canCreateTrainings =>
       widget.manageableTeams.any((m) => m.canManageTeam);
 
-  /// Team-ids waar deze gebruiker trainer/coach is; alleen die trainingen mogen worden verwijderd.
-  Set<int> get _manageableTeamIds =>
-      widget.manageableTeams.map((m) => m.teamId).toSet();
+  /// Team-ids waar deze gebruiker trainingen mag beheren (alleen trainer/coach/admin).
+  Set<int> get _manageableTeamIds => widget.manageableTeams
+      .where((m) => m.canManageTeam)
+      .map((m) => m.teamId)
+      .toSet();
 
-  bool _canDeleteTrainingForTeam(int teamId) => _manageableTeamIds.contains(teamId);
+  bool _canManageTrainingsForTeam(int teamId) => _manageableTeamIds.contains(teamId);
+
+  bool _canDeleteTrainingForTeam(int teamId) => _canManageTrainingsForTeam(teamId);
 
   /// Trainingen die nog niet afgelopen zijn (niet geannuleerd, start in de toekomst).
   /// Gebruikt voor zowel de "Voor alle"-kaart als de lijst; verleden wordt niet getoond.
@@ -517,15 +526,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
   }
 
   /// Displaylabel voor team (inclusief "(kindnaam)" bij gekoppeld kind).
-  String _teamDisplayLabel(int teamId) {
-    try {
-      final ctx = AppUserContext.of(context);
-      final m = ctx.memberships.where((m) => m.teamId == teamId).firstOrNull;
-      return m?.displayLabel ?? m?.teamName ?? 'Team $teamId';
-    } catch (_) {
-      return 'Team $teamId';
-    }
-  }
+  String _teamDisplayLabel(int teamId) => _membershipDisplayLabel(teamId);
 
   /// Eén team-accordionkaart in dezelfde stijl als de wedstrijden-tab (GlassCard, donkerblauwe header, uitklapicoon).
   Widget _buildTeamTrainingAccordion({
@@ -620,15 +621,18 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
   /// Bepaal of gebruiker als trainer/coach wordt aangemeld voor dit team (anders speler).
   bool _isTrainerOrCoachForTeam(int teamId) {
-    try {
-      final ctx = AppUserContext.of(context);
-      for (final m in ctx.memberships) {
-        if (m.teamId == teamId) return m.canManageTeam;
-      }
-      return false;
-    } catch (_) {
-      return false;
+    for (final m in widget.manageableTeams) {
+      if (m.teamId == teamId) return m.canManageTeam;
     }
+    return false;
+  }
+
+  /// Displaylabel uit de teams van deze subtab (niet globale memberships).
+  String _membershipDisplayLabel(int teamId) {
+    for (final m in widget.manageableTeams) {
+      if (m.teamId == teamId) return m.displayLabel;
+    }
+    return 'Team $teamId';
   }
 
   /// Toont één attendance-categorie (label, count, optionele namenlijst).
@@ -671,8 +675,6 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final nietGereageerd = _nietGereageerdBySessionId[sessionId] ?? [];
     final expanded = _expandedSessionIds.contains(sessionId);
     final hasCounts = playing.isNotEmpty || coaches.isNotEmpty || nietSpelend.isNotEmpty || afgemeld.isNotEmpty || nietGereageerd.isNotEmpty;
-    final isTrainerView = widget.manageableTeams.isNotEmpty &&
-        widget.manageableTeams.every((m) => m.canManageTeam);
 
     return GlassCard(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -947,33 +949,14 @@ class _TrainingsTabState extends State<TrainingsTab> {
                     ],
                   ),
                   const SizedBox(height: 4),
-                  if (isTrainerView) ...[
-                    _buildAttendanceCategory(
-                      'Spelend',
-                      playing.length,
-                      playing,
-                      expanded,
-                      const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                    ),
-                    if (playing.isNotEmpty) const SizedBox(height: 4),
-                    _buildAttendanceCategory(
-                      'Trainer/coach',
-                      coaches.length,
-                      coaches,
-                      expanded,
-                      const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                    ),
-                    if (coaches.isNotEmpty) const SizedBox(height: 4),
-                  ] else ...[
-                    _buildAttendanceCategory(
-                      'Spelend',
-                      playing.length + coaches.length,
-                      [...playing, ...coaches],
-                      expanded,
-                      const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                    ),
-                    if (playing.isNotEmpty || coaches.isNotEmpty) const SizedBox(height: 4),
-                  ],
+                  _buildAttendanceCategory(
+                    'Spelend',
+                    playing.length + coaches.length,
+                    [...playing, ...coaches],
+                    expanded,
+                    const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  ),
+                  if (playing.isNotEmpty || coaches.isNotEmpty) const SizedBox(height: 4),
                   _buildAttendanceCategory(
                     'Niet spelend',
                     nietSpelend.length,
@@ -1073,9 +1056,11 @@ class _TrainingsTabState extends State<TrainingsTab> {
   }
 
   Future<void> _openAddTraining() async {
+    final manageable = widget.manageableTeams.where((m) => m.canManageTeam).toList();
+    if (manageable.isEmpty) return;
     final created = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) => AddTrainingPage(manageableTeams: widget.manageableTeams),
+        builder: (_) => AddTrainingPage(manageableTeams: manageable),
       ),
     );
 
@@ -1250,75 +1235,15 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
   @override
   Widget build(BuildContext context) {
-    final ctx = AppUserContext.of(context);
-    if (ctx.memberships.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Je bent nog niet gekoppeld aan een team.\n'
-                'Koppel eerst je account aan een team om trainingen te zien.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: AppColors.textSecondary),
-              ),
-              const SizedBox(height: 12),
-              ElevatedButton.icon(
-                onPressed: ctx.reloadUserContext == null
-                    ? null
-                    : () async => ctx.reloadUserContext!.call(),
-                icon: const Icon(Icons.refresh),
-                label: const Text('Opnieuw laden'),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Tip: als je net via TC bent gekoppeld, druk op opnieuw laden.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: AppColors.textSecondary.withValues(alpha: 0.9),
-                  fontSize: 12.5,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
+    if (shouldShowTrainingRoleEmptyState(
+      teamsForTab: widget.manageableTeams,
+      isGlobalAdmin: widget.suppressRoleEmptyState,
+    )) {
+      return TrainingRoleEmptyState(viewRole: widget.viewRole);
     }
 
-    // Geen teams in deze tab (bijv. Spelers-tab maar je staat nergens als speler).
     if (widget.manageableTeams.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.group_off, size: 48, color: AppColors.textSecondary.withValues(alpha: 0.7)),
-              const SizedBox(height: 16),
-              Text(
-                'Je staat bij geen team als speler',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: AppColors.onBackground,
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Staat je bij een team alleen als trainer/coach? Dan zie je dat team onder de tab Trainers.\n\n'
-                'Om hier teams te zien: vraag de Technische Commissie (Commissie → TC) om je als speler aan een team toe te voegen.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
+      return const _TrainingAdminEmptyState();
     }
 
     return Scaffold(
@@ -1443,6 +1368,107 @@ class _TrainingsTabState extends State<TrainingsTab> {
             );
           },
         ),
+      ),
+    );
+  }
+}
+
+/// Herbruikbare lege toestand per rol (Spelers- of Trainers-subtab).
+class TrainingRoleEmptyState extends StatelessWidget {
+  final TrainingTabViewRole viewRole;
+
+  const TrainingRoleEmptyState({super.key, required this.viewRole});
+
+  IconData get _icon {
+    switch (viewRole) {
+      case TrainingTabViewRole.player:
+        return Icons.groups_outlined;
+      case TrainingTabViewRole.trainer:
+        return Icons.sports;
+    }
+  }
+
+  Future<void> _refresh(BuildContext context) async {
+    final ctx = AppUserContext.of(context);
+    await ctx.reloadUserContext?.call();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      color: AppColors.primary,
+      onRefresh: () => _refresh(context),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(20),
+        children: [
+          const SizedBox(height: 80),
+          Icon(
+            _icon,
+            size: 48,
+            color: AppColors.textSecondary.withValues(alpha: 0.7),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            trainingTabEmptyMessage(viewRole),
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: AppColors.onBackground,
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+          const SizedBox(height: 12),
+          Center(
+            child: ElevatedButton.icon(
+              onPressed: AppUserContext.of(context).reloadUserContext == null
+                  ? null
+                  : () => _refresh(context),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Opnieuw laden'),
+            ),
+          ),
+          const SizedBox(height: 80),
+        ],
+      ),
+    );
+  }
+}
+
+/// Global admin zonder teams in de database (geen rolgerichte melding).
+class _TrainingAdminEmptyState extends StatelessWidget {
+  const _TrainingAdminEmptyState();
+
+  Future<void> _refresh(BuildContext context) async {
+    final ctx = AppUserContext.of(context);
+    await ctx.reloadUserContext?.call();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      color: AppColors.primary,
+      onRefresh: () => _refresh(context),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(20),
+        children: [
+          const SizedBox(height: 80),
+          const Text(
+            'Geen teams beschikbaar.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+          const SizedBox(height: 12),
+          Center(
+            child: ElevatedButton.icon(
+              onPressed: AppUserContext.of(context).reloadUserContext == null
+                  ? null
+                  : () => _refresh(context),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Opnieuw laden'),
+            ),
+          ),
+        ],
       ),
     );
   }

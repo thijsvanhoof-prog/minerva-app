@@ -73,81 +73,16 @@ class CommissiesTab extends StatelessWidget {
     }
   }
 
-  /// Volgorde: Admin eerst (licht), dan Bestuur, TC, CC, WZ – voorkomt freeze bij opstarten.
-  static int _committeeOrder(String key) {
-    switch (key.trim().toLowerCase()) {
-      case 'admin':
-        return 0;
-      case 'bestuur':
-        return 1;
-      case 'technische-commissie':
-      case 'tc':
-        return 2;
-      case 'communicatie':
-        return 3;
-      case 'wedstrijdzaken':
-        return 4;
-      case 'evenementen':
-      case 'evenementen-commissie':
-        return 5;
-      case 'jeugd':
-      case 'jeugdcommissie':
-        return 6;
-      case 'scheidsrechters/tellers':
-      case 'scheidsrechters-tellers':
-        return 7;
-      default:
-        return 8;
-    }
-  }
-
-  /// Of de gebruiker deze commissie mag inzien/aanpassen: alleen eigen commissies, tenzij bestuur of admin.
-  static bool _mayViewCommittee(AppUserContext ctx, String committeeKey) {
-    if (ctx.hasFullAdminRights || ctx.isCommitteePowerAdmin || ctx.isInBestuur) return true;
-    return ctx.isInCommittee(committeeKey);
-  }
-
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
-    // Alle mogelijke commissies (vaste set + eventueel uit context).
-    final List<String> allPossible = [
-      'bestuur',
-      'technische-commissie',
-      'communicatie',
-      'wedstrijdzaken',
-      'evenementen',
-      'jeugdcommissie',
-      'scheidsrechters-tellers',
-    ];
-    for (final c in ctx.committees) {
-      final k = c.trim().toLowerCase();
-      if (k != 'bestuur' && k != 'technische-commissie' && k != 'tc' &&
-          k != 'wedstrijdzaken' && k != 'communicatie' &&
-          k != 'evenementen' && k != 'evenementen-commissie' &&
-          k != 'jeugd' && k != 'jeugdcommissie' &&
-          k != 'scheidsrechters/tellers' && k != 'scheidsrechters-tellers' &&
-          k != 'vrijwilligers' &&
-          k != 'admin') {
-        if (!allPossible.any((x) => x.trim().toLowerCase() == k)) {
-          allPossible.add(c);
-        }
-      }
-    }
-    // Alleen commissies tonen waar de gebruiker in zit, tenzij bestuur of admin (die zien alles).
-    final List<String> committees = allPossible
-        .where((c) => _mayViewCommittee(ctx, c))
-        .toList();
-    // Admin-tab voor global admin en committee power admin (gebruikersnamen, accounts verwijderen).
-    if (ctx.canManageAccounts && !committees.any((c) => c.trim().toLowerCase() == 'admin')) {
-      committees.add('admin');
-    }
-    committees.sort((a, b) {
-      final orderA = _committeeOrder(a);
-      final orderB = _committeeOrder(b);
-      if (orderA != orderB) return orderA.compareTo(orderB);
-      return _formatCommitteeName(a).compareTo(_formatCommitteeName(b));
-    });
+    final committees = visibleCommitteesForCommissiesTab(
+      userCommittees: ctx.committees,
+      hasFullAdminRights: ctx.hasFullAdminRights,
+      isCommitteePowerAdmin: ctx.isCommitteePowerAdmin,
+      isInBestuur: ctx.isInBestuur,
+      canManageAccounts: ctx.canManageAccounts,
+    );
 
     if (committees.isEmpty) {
       return Scaffold(
@@ -159,7 +94,7 @@ class CommissiesTab extends StatelessWidget {
             children: [
               TabPageHeader(
                 child: Text(
-                  'Commissie',
+                  'Commissies',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                         color: AppColors.primary,
                         fontWeight: FontWeight.w800,
@@ -191,17 +126,11 @@ class CommissiesTab extends StatelessWidget {
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        'Je zit niet in een commissie',
+                        commissiesEmptyMessage,
                         style: Theme.of(context).textTheme.titleMedium?.copyWith(
                               color: AppColors.onBackground,
                               fontWeight: FontWeight.w800,
                             ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Commissieleden kunnen hier hun taken bekijken en uitvoeren.',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: AppColors.textSecondary),
                       ),
                     ],
                   ),
@@ -268,7 +197,7 @@ class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
           children: [
             TabPageHeader(
               child: Text(
-                'Commissie',
+                'Commissies',
                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
                       color: AppColors.primary,
                       fontWeight: FontWeight.w800,
@@ -328,16 +257,31 @@ class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
               ),
             ),
             Expanded(
-              child: AnimatedBuilder(
-                animation: controller,
-                builder: (context, _) => IndexedStack(
-                  index: controller.index,
-                  children: widget.committees.map((c) {
-                    return _CommitteeContent(
-                      committeeKey: c,
-                      committeeName: CommissiesTab._formatCommitteeName(c),
-                    );
-                  }).toList(),
+              child: RefreshIndicator(
+                color: AppColors.primary,
+                onRefresh: () async {
+                  await ctx.reloadUserContext?.call();
+                },
+                child: CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: [
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: AnimatedBuilder(
+                        animation: controller,
+                        builder: (context, _) => IndexedStack(
+                          index: controller.index,
+                          children: widget.committees.map((c) {
+                            return _CommitteeContent(
+                              committeeKey: c,
+                              committeeName:
+                                  CommissiesTab._formatCommitteeName(c),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
