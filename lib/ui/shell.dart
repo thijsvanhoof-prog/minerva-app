@@ -1,5 +1,6 @@
 // lib/ui/shell.dart
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform, listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -12,6 +13,7 @@ import 'package:minerva_app/ui/tasks/my_tasks_tab.dart';
 import 'package:minerva_app/ui/info/info_tab.dart';
 import 'package:minerva_app/profiel/profiel_tab.dart';
 import 'package:minerva_app/ui/commissies/commissies_tab.dart';
+import 'package:minerva_app/ui/shell_navigation.dart';
 
 /// Callbacks voor in-app navigatie (bijv. Commissie → Contact zonder nieuw scherm).
 class ShellNavigatorScope extends InheritedWidget {
@@ -56,6 +58,7 @@ class Shell extends StatefulWidget {
 
 class _ShellState extends State<Shell> {
   int _index = 0;
+  List<ShellTabId> _previousTabIds = shellTabIdsForUser(isGuest: true);
 
   @override
   void initState() {
@@ -188,6 +191,22 @@ class _ShellState extends State<Shell> {
   @override
   Widget build(BuildContext context) {
     final userContext = AppUserContext.of(context);
+
+    final isGuest = userContext.profileId.trim().isEmpty;
+    final tabIds = shellTabIdsForUser(isGuest: isGuest);
+    if (!listEquals(_previousTabIds, tabIds)) {
+      final remapped = remapShellTabIndex(
+        storedIndex: _index,
+        previousTabs: _previousTabIds,
+        newTabs: tabIds,
+      );
+      _previousTabIds = tabIds;
+      if (remapped != _index) {
+        _index = remapped;
+      }
+    } else {
+      _previousTabIds = tabIds;
+    }
 
     final navItems = _buildNavItems(userContext: userContext);
 
