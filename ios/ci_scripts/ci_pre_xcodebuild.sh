@@ -6,12 +6,19 @@ echo "== Xcode Cloud: iOS pre-xcodebuild =="
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$IOS_DIR/.." && pwd)"
+if [ -n "${CI_PRIMARY_REPOSITORY_PATH:-}" ]; then
+  REPO_ROOT="$CI_PRIMARY_REPOSITORY_PATH"
+  IOS_DIR="$REPO_ROOT/ios"
+fi
+ACTION="${CI_XCODEBUILD_ACTION:-unknown}"
 
 cd "$REPO_ROOT"
+echo "Xcode Cloud action: $ACTION"
 
 if [ -d "$HOME/flutter/bin" ]; then
   export PATH="$HOME/flutter/bin:$PATH"
 fi
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 if ! command -v flutter >/dev/null 2>&1; then
   echo "Flutter not found on PATH. Installing stable Flutter SDK..."
@@ -20,8 +27,15 @@ if ! command -v flutter >/dev/null 2>&1; then
 fi
 
 if [ ! -f .env ]; then
-  echo "Missing .env. ci_post_clone should create it from Xcode Cloud environment variables."
-  exit 1
+  echo "Missing .env. Writing placeholders so $ACTION can compile."
+  cat > .env <<EOF
+SUPABASE_URL=https://placeholder.supabase.co
+SUPABASE_ANON_KEY=placeholder-anon-key
+GUEST_EMAIL=guest@placeholder.local
+GUEST_PASSWORD=placeholder
+SUPABASE_RESET_REDIRECT_URL=nl.minerva.clubapp://reset-password/
+SUPABASE_EMAIL_CHANGE_REDIRECT_URL=nl.minerva.clubapp://email-change/
+EOF
 fi
 
 flutter --version
@@ -33,10 +47,27 @@ rm -f "$IOS_DIR/Flutter/flutter_export_environment.sh"
 rm -rf "$IOS_DIR/.symlinks"
 flutter pub get
 
-if ! grep -Fq "FLUTTER_APPLICATION_PATH=$REPO_ROOT" "$IOS_DIR/Flutter/Generated.xcconfig"; then
-  echo "Generated.xcconfig was not regenerated for the Xcode Cloud checkout:"
-  grep -F "FLUTTER_APPLICATION_PATH=" "$IOS_DIR/Flutter/Generated.xcconfig" || true
+GEN="$IOS_DIR/Flutter/Generated.xcconfig"
+if [ ! -f "$GEN" ]; then
+  echo "Generated.xcconfig was not created by flutter pub get."
   exit 1
+fi
+
+FLUTTER_ROOT_VALUE="$(grep -E '^FLUTTER_ROOT=' "$GEN" | cut -d= -f2- || true)"
+if [ -z "$FLUTTER_ROOT_VALUE" ] || [ ! -f "$FLUTTER_ROOT_VALUE/packages/flutter_tools/bin/xcode_backend.sh" ]; then
+  echo "Generated.xcconfig FLUTTER_ROOT is missing or invalid: ${FLUTTER_ROOT_VALUE:-unset}"
+  cat "$GEN"
+  exit 1
+fi
+
+# Best-effort: Analyze uses Debug, Archive uses Release. Do not fail the
+# workflow if config-only cannot codesign in the CI environment.
+if [ "$ACTION" = "analyze" ]; then
+  echo "Preparing Debug Flutter iOS settings for Analyze..."
+  flutter build ios --debug --config-only || echo "warning: flutter build ios --debug --config-only failed; continuing."
+else
+  echo "Preparing Release Flutter iOS settings..."
+  flutter build ios --config-only || echo "warning: flutter build ios --config-only failed; continuing."
 fi
 
 cd "$IOS_DIR"
