@@ -323,7 +323,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" embed_and_thin";
+			shellScript = "/bin/sh \"${SRCROOT}/Flutter/run_xcode_backend.sh\" embed_and_thin";
 		};
 		583378626FEF55E6C1057BE6 /* [CP] Copy Pods Resources */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -377,7 +377,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" build";
+			shellScript = "/bin/sh \"${SRCROOT}/Flutter/run_xcode_backend.sh\" build";
 		};
 		C1C0FFEE0BADF00DDEADBEEF /* [CI] Bootstrap Flutter & Pods */ = {
 			isa = PBXShellScriptBuildPhase;

@@ -6,9 +6,11 @@ echo "== Xcode Cloud: iOS post-clone =="
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$IOS_DIR/.." && pwd)"
+ACTION="${CI_XCODEBUILD_ACTION:-unknown}"
 
 cd "$REPO_ROOT"
 echo "Repository root: $REPO_ROOT"
+echo "Xcode Cloud action: $ACTION"
 
 if [ -d "$HOME/flutter/bin" ]; then
   export PATH="$HOME/flutter/bin:$PATH"
@@ -27,12 +29,25 @@ required_vars=(
   GUEST_PASSWORD
 )
 
+missing=()
 for var in "${required_vars[@]}"; do
   if [ -z "${!var:-}" ]; then
-    echo "Missing required environment variable: $var"
-    exit 1
+    missing+=("$var")
   fi
 done
+
+if [ ${#missing[@]} -ne 0 ]; then
+  echo "Missing environment variables: ${missing[*]}"
+  if [ "$ACTION" = "archive" ]; then
+    echo "Archive builds require these secrets in the Xcode Cloud workflow Environment tab."
+    exit 1
+  fi
+  echo "Continuing $ACTION with placeholder .env so the Flutter asset exists."
+  SUPABASE_URL="${SUPABASE_URL:-https://placeholder.supabase.co}"
+  SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY:-placeholder-anon-key}"
+  GUEST_EMAIL="${GUEST_EMAIL:-guest@placeholder.local}"
+  GUEST_PASSWORD="${GUEST_PASSWORD:-placeholder}"
+fi
 
 cat > .env <<EOF
 SUPABASE_URL=${SUPABASE_URL}
