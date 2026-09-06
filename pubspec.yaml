@@ -37,6 +37,9 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.3
 
 flutter:
+  config:
+    # This project still uses CocoaPods for its iOS plugin integration.
+    enable-swift-package-manager: false
   uses-material-design: true
 
   # HIER staat nu je .env als asset
