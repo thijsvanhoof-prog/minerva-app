@@ -39,7 +39,10 @@ class OuderKindNotifier extends ChangeNotifier {
   }
 
   void setViewingAs(String? profileId, String? displayName) {
-    if (viewingAsProfileId == profileId && viewingAsDisplayName == displayName) return;
+    if (viewingAsProfileId == profileId &&
+        viewingAsDisplayName == displayName) {
+      return;
+    }
     viewingAsProfileId = profileId;
     viewingAsDisplayName = displayName;
     notifyListeners();
@@ -62,12 +65,18 @@ class TeamMembership {
   final int teamId;
   final String role;
   final String teamName;
+
   /// Nevobo-teamcode (HS1, DS1, …) indien bekend; gebruikt voor Standen/Wedstrijden.
   final String? nevoboCode;
+
   /// Bij guardian-rol: displaynaam van het gekoppelde kind (voor label "Team (kind)").
   final String? linkedChildDisplayName;
+
   /// Bij guardian-rol: profile_id van het gekoppelde kind.
   final String? linkedChildProfileId;
+
+  /// Vrije, zelfgekozen omschrijving voor dit account binnen dit team.
+  final String? memberTag;
 
   const TeamMembership({
     required this.teamId,
@@ -76,13 +85,15 @@ class TeamMembership {
     this.nevoboCode,
     this.linkedChildDisplayName,
     this.linkedChildProfileId,
+    this.memberTag,
   });
 
   /// Teamnaam voor weergave: "Team" of "Team (kindnaam)" bij gekoppeld kind.
   String get displayLabel =>
-      linkedChildDisplayName != null && linkedChildDisplayName!.trim().isNotEmpty
-          ? '$teamName (${linkedChildDisplayName!.trim()})'
-          : teamName;
+      linkedChildDisplayName != null &&
+          linkedChildDisplayName!.trim().isNotEmpty
+      ? '$teamName (${linkedChildDisplayName!.trim()})'
+      : teamName;
 
   bool get canManageTeam {
     final r = role.trim().toLowerCase();
@@ -122,10 +133,37 @@ TeamMembership pickHigherPriorityTeamMembership(
 ) {
   final pa = teamMembershipRolePriority(a.role);
   final pb = teamMembershipRolePriority(b.role);
-  if (pa != pb) return pa > pb ? a : b;
+  if (pa != pb) {
+    final winner = pa > pb ? a : b;
+    final other = identical(winner, a) ? b : a;
+    return _membershipWithFallbackTag(winner, other.memberTag);
+  }
   // Zelfde prioriteit: eigen rol boven guardian (deterministisch).
-  if (a.isGuardian != b.isGuardian) return a.isGuardian ? b : a;
-  return a;
+  if (a.isGuardian != b.isGuardian) {
+    final winner = a.isGuardian ? b : a;
+    final other = identical(winner, a) ? b : a;
+    return _membershipWithFallbackTag(winner, other.memberTag);
+  }
+  return _membershipWithFallbackTag(a, b.memberTag);
+}
+
+TeamMembership _membershipWithFallbackTag(
+  TeamMembership membership,
+  String? fallbackTag,
+) {
+  if ((membership.memberTag ?? '').trim().isNotEmpty ||
+      (fallbackTag ?? '').trim().isEmpty) {
+    return membership;
+  }
+  return TeamMembership(
+    teamId: membership.teamId,
+    role: membership.role,
+    teamName: membership.teamName,
+    nevoboCode: membership.nevoboCode,
+    linkedChildDisplayName: membership.linkedChildDisplayName,
+    linkedChildProfileId: membership.linkedChildProfileId,
+    memberTag: fallbackTag!.trim(),
+  );
 }
 
 /// Voegt memberships per [teamId] samen; trainer/coach wint boven speler-rollen.
@@ -135,10 +173,34 @@ List<TeamMembership> mergeTeamMembershipsByTeamId(
   final byTeam = <int, TeamMembership>{};
   for (final m in memberships) {
     final existing = byTeam[m.teamId];
-    byTeam[m.teamId] =
-        existing == null ? m : pickHigherPriorityTeamMembership(existing, m);
+    byTeam[m.teamId] = existing == null
+        ? m
+        : pickHigherPriorityTeamMembership(existing, m);
   }
   return byTeam.values.toList();
+}
+
+/// Voegt eigen rollen per team samen en bewaart iedere ouder-kindkoppeling.
+List<TeamMembership> mergeTeamMembershipsPreservingGuardianProfiles(
+  List<TeamMembership> memberships,
+) {
+  final ownByTeam = <int, TeamMembership>{};
+  final guardiansByTeamAndChild = <String, TeamMembership>{};
+  for (final membership in memberships) {
+    if (membership.isGuardian) {
+      final childId = membership.linkedChildProfileId?.trim() ?? '';
+      guardiansByTeamAndChild.putIfAbsent(
+        '${membership.teamId}:$childId',
+        () => membership,
+      );
+      continue;
+    }
+    final existing = ownByTeam[membership.teamId];
+    ownByTeam[membership.teamId] = existing == null
+        ? membership
+        : pickHigherPriorityTeamMembership(existing, membership);
+  }
+  return [...ownByTeam.values, ...guardiansByTeamAndChild.values];
 }
 
 /// Resultaat van verdeling over Trainingen-subtabs Spelers en Trainers.
@@ -154,9 +216,19 @@ class TrainingTabTeamSplit {
 
 /// Verdeelt teams over Spelers- en Trainers-subtab; elk team komt maximaal in één lijst.
 TrainingTabTeamSplit splitTeamMembershipsForTrainingTabs(
-  List<TeamMembership> memberships,
-) {
-  final merged = mergeTeamMembershipsByTeamId(memberships);
+  List<TeamMembership> memberships, {
+  String? viewingAsProfileId,
+}) {
+  final relevantMemberships = viewingAsProfileId == null
+      ? memberships
+      : memberships
+            .where(
+              (membership) =>
+                  membership.isGuardian &&
+                  membership.linkedChildProfileId == viewingAsProfileId,
+            )
+            .toList();
+  final merged = mergeTeamMembershipsByTeamId(relevantMemberships);
   final playerTeams = <TeamMembership>[];
   final trainerTeams = <TeamMembership>[];
   for (final m in merged) {
@@ -222,18 +294,16 @@ List<TeamMembership> matchAccessTeamMemberships(
   List<TeamMembership> memberships, {
   String? viewingAsProfileId,
 }) {
-  final merged = mergeTeamMembershipsByTeamId(memberships);
-
-  if (viewingAsProfileId != null) {
-    return merged
-        .where(
-          (m) =>
-              m.isGuardian &&
-              m.linkedChildProfileId == viewingAsProfileId &&
-              teamMembershipGrantsMatchAccess(m),
-        )
-        .toList();
-  }
+  final relevantMemberships = viewingAsProfileId == null
+      ? memberships
+      : memberships
+            .where(
+              (membership) =>
+                  membership.isGuardian &&
+                  membership.linkedChildProfileId == viewingAsProfileId,
+            )
+            .toList();
+  final merged = mergeTeamMembershipsByTeamId(relevantMemberships);
 
   return merged.where(teamMembershipGrantsMatchAccess).toList();
 }
@@ -367,6 +437,7 @@ class AppUserContext extends InheritedWidget {
   final String email;
   final String displayName;
   final bool isGlobalAdmin;
+
   /// Alle commissierechten zonder Contact/teamzicht als global admin.
   final bool isCommitteePowerAdmin;
   final List<TeamMembership> memberships;
@@ -378,6 +449,7 @@ class AppUserContext extends InheritedWidget {
 
   /// Ouder-kind: id van de ingelogde user (ouder).
   final String loggedInProfileId;
+
   /// Ouder-kind: als je "als kind" kijkt, de kind-profile-id en -naam.
   final String? viewingAsProfileId;
   final String? viewingAsDisplayName;
@@ -426,7 +498,8 @@ class AppUserContext extends InheritedWidget {
   bool get isInWedstrijdzaken => isInCommittee('wedstrijdzaken');
   bool get isInEvenementen => isInCommittee('evenementen');
   bool get isInJeugdcommissie => isInCommittee('jeugdcommissie');
-  bool get isInScheidsrechtersTellers => isInCommittee('scheidsrechters-tellers');
+  bool get isInScheidsrechtersTellers =>
+      isInCommittee('scheidsrechters-tellers');
   bool get isInVrijwilligers => isInCommittee('vrijwilligers');
 
   /// Central place for feature permissions (can be reused across the app).
@@ -454,9 +527,15 @@ class AppUserContext extends InheritedWidget {
       isInCommunicatie;
 
   bool get canManageNews =>
-      hasFullAdminRights || isCommitteePowerAdmin || isInBestuur || isInCommunicatie;
+      hasFullAdminRights ||
+      isCommitteePowerAdmin ||
+      isInBestuur ||
+      isInCommunicatie;
   bool get canManageHighlights =>
-      hasFullAdminRights || isCommitteePowerAdmin || isInBestuur || isInCommunicatie;
+      hasFullAdminRights ||
+      isCommitteePowerAdmin ||
+      isInBestuur ||
+      isInCommunicatie;
   bool get canManageTeams => hasFullAdminRights || isInTechnischeCommissie;
   bool get canManageMatches =>
       hasFullAdminRights || isCommitteePowerAdmin || isInWedstrijdzaken;
@@ -488,8 +567,7 @@ class AppUserContext extends InheritedWidget {
   bool get canManageAccounts => hasFullAdminRights || isCommitteePowerAdmin;
 
   static AppUserContext of(BuildContext context) {
-    final result =
-        context.dependOnInheritedWidgetOfExactType<AppUserContext>();
+    final result = context.dependOnInheritedWidgetOfExactType<AppUserContext>();
     if (result == null) {
       throw FlutterError(
         'AppUserContext.of() called but no AppUserContext found.\n'

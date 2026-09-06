@@ -37,7 +37,7 @@ class _AuthGateState extends State<AuthGate> {
               state.event == AuthChangeEvent.userUpdated)) {
         unawaited(_maybeHandleEmailChangeConfirmed());
       }
-      // Zodra iemand uitlogt of sessie vervalt, direct terug naar gast.
+      // Zonder persoonlijke sessie blijft de app als publieke gast werken.
       if (state.session == null) {
         _ensureGuestSession();
       }
@@ -112,37 +112,22 @@ class _AuthGateState extends State<AuthGate> {
     final currentEmail = (_auth.currentUser?.email ?? '').trim().toLowerCase();
     final guestEmail = (dotenv.env['GUEST_EMAIL'] ?? '').trim().toLowerCase();
 
-    // Als er al een persoonlijke sessie is, die behouden (volledige toegang volgens account).
-    if (currentSession != null &&
-        (guestEmail.isEmpty || currentEmail != guestEmail)) {
+    if (currentSession == null) {
+      return;
+    }
+
+    // Persoonlijke en anonieme sessies blijven behouden. Een oude gedeelde
+    // gastlogin wordt eenmalig lokaal verwijderd; publieke content gebruikt
+    // daarna rechtstreeks de anon-rol van Supabase.
+    if (guestEmail.isEmpty || currentEmail != guestEmail) {
       return;
     }
 
     _isEnsuringGuestSession = true;
     try {
-      final guestPassword = (dotenv.env['GUEST_PASSWORD'] ?? '').trim();
-      if (guestEmail.isNotEmpty && guestPassword.isNotEmpty) {
-        // Staat al op gast? klaar.
-        if (currentEmail == guestEmail && currentSession != null) return;
-        try {
-          await _auth.signInWithPassword(
-            email: guestEmail,
-            password: guestPassword,
-          );
-          return;
-        } catch (_) {
-          // Als gastlogin mislukt, probeer nog anonymous zodat app bruikbaar blijft.
-        }
-      }
-
-      // Fallback: anonymous gastsessie.
-      if (_auth.currentSession == null) {
-        try {
-          await _auth.signInAnonymously();
-        } catch (_) {
-          // Best-effort: zonder guest credentials/anonymous blijft de app in lokale gastmodus werken.
-        }
-      }
+      await _auth.signOut(scope: SignOutScope.local);
+    } catch (error) {
+      debugPrint('Oude gast-sessie kon niet lokaal worden verwijderd: $error');
     } finally {
       _isEnsuringGuestSession = false;
     }

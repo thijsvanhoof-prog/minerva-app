@@ -6,7 +6,8 @@ import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/committees/committee_normalization.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/tab_page_header.dart';
-import 'package:minerva_app/ui/display_name_overrides.dart' show unknownUserName;
+import 'package:minerva_app/ui/display_name_overrides.dart'
+    show unknownUserName;
 import 'package:minerva_app/ui/shell.dart';
 import 'package:minerva_app/profiel/admin_gebruikersnamen_page.dart';
 import 'package:minerva_app/ui/bestuur/bestuur_tab.dart';
@@ -96,48 +97,49 @@ class CommissiesTab extends StatelessWidget {
                 child: Text(
                   'Commissies',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.w800,
-                      ),
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
               Expanded(
                 child: RefreshIndicator(
-            color: AppColors.primary,
-            onRefresh: () async {
-              await ctx.reloadUserContext?.call();
-            },
-            child: ListView(
-              padding: EdgeInsets.fromLTRB(
-                16,
-                16,
-                16,
-                16 + MediaQuery.paddingOf(context).bottom,
-              ),
-              children: [
-                GlassCard(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
+                  color: AppColors.primary,
+                  onRefresh: () async {
+                    await ctx.reloadUserContext?.call();
+                  },
+                  child: ListView(
+                    padding: EdgeInsets.fromLTRB(
+                      16,
+                      16,
+                      16,
+                      16 + MediaQuery.paddingOf(context).bottom,
+                    ),
                     children: [
-                      Icon(
-                        Icons.badge_outlined,
-                        size: 48,
-                        color: AppColors.textSecondary,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        commissiesEmptyMessage,
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              color: AppColors.onBackground,
-                              fontWeight: FontWeight.w800,
+                      GlassCard(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          children: [
+                            Icon(
+                              Icons.badge_outlined,
+                              size: 48,
+                              color: AppColors.textSecondary,
                             ),
+                            const SizedBox(height: 16),
+                            Text(
+                              commissiesEmptyMessage,
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(
+                                    color: AppColors.onBackground,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
                 ),
-              ],
-            ),
-          ),
               ),
             ],
           ),
@@ -183,7 +185,9 @@ class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
   @override
   Widget build(BuildContext context) {
     final ctx = AppUserContext.of(context);
-    if ((ctx.isInBestuur || ctx.hasFullAdminRights || ctx.isCommitteePowerAdmin) &&
+    if ((ctx.isInBestuur ||
+            ctx.hasFullAdminRights ||
+            ctx.isCommitteePowerAdmin) &&
         !_schemaCheckDone) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _checkNevoboTable());
     }
@@ -199,9 +203,9 @@ class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
               child: Text(
                 'Commissies',
                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.w800,
-                    ),
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
             ),
             if (_nevoboTableMissing) ...[
@@ -235,7 +239,10 @@ class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
             Padding(
               padding: AppColors.tabContentPadding,
               child: GlassCard(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 showBorder: false,
                 showShadow: false,
                 child: TabBar(
@@ -257,32 +264,16 @@ class _CommissiesTabBodyState extends State<_CommissiesTabBody> {
               ),
             ),
             Expanded(
-              child: RefreshIndicator(
-                color: AppColors.primary,
-                onRefresh: () async {
-                  await ctx.reloadUserContext?.call();
-                },
-                child: CustomScrollView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  slivers: [
-                    SliverFillRemaining(
-                      hasScrollBody: false,
-                      child: AnimatedBuilder(
-                        animation: controller,
-                        builder: (context, _) => IndexedStack(
-                          index: controller.index,
-                          children: widget.committees.map((c) {
-                            return _CommitteeContent(
-                              committeeKey: c,
-                              committeeName:
-                                  CommissiesTab._formatCommitteeName(c),
-                            );
-                          }).toList(),
-                        ),
+              child: TabBarView(
+                controller: controller,
+                children: widget.committees
+                    .map(
+                      (c) => _CommitteeContent(
+                        committeeKey: c,
+                        committeeName: CommissiesTab._formatCommitteeName(c),
                       ),
-                    ),
-                  ],
-                ),
+                    )
+                    .toList(),
               ),
             ),
           ],
@@ -366,7 +357,10 @@ class _AdminCommitteeView extends StatelessWidget {
         children: [
           GlassCard(
             child: ListTile(
-              leading: const Icon(Icons.admin_panel_settings_outlined, color: AppColors.primary),
+              leading: const Icon(
+                Icons.admin_panel_settings_outlined,
+                color: AppColors.primary,
+              ),
               title: const Text(
                 'Gebruikersnamen en accounts',
                 style: TextStyle(
@@ -423,7 +417,8 @@ class _GenericCommitteeView extends StatelessWidget {
                     Expanded(
                       child: Text(
                         committeeName,
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
                               color: AppColors.onBackground,
                               fontWeight: FontWeight.w800,
                             ),
@@ -456,7 +451,8 @@ class CommitteeAgendaRsvpsView extends StatefulWidget {
   const CommitteeAgendaRsvpsView({super.key});
 
   @override
-  State<CommitteeAgendaRsvpsView> createState() => _CommitteeAgendaRsvpsViewState();
+  State<CommitteeAgendaRsvpsView> createState() =>
+      _CommitteeAgendaRsvpsViewState();
 }
 
 class _CommitteeAgendaRsvpsViewState extends State<CommitteeAgendaRsvpsView> {
@@ -537,7 +533,9 @@ class _CommitteeAgendaRsvpsViewState extends State<CommitteeAgendaRsvpsView> {
           for (final row in rows) {
             final id = (row['profile_id'] ?? row['id'] ?? '').toString().trim();
             final name = (row['display_name'] ?? '').toString().trim();
-            if (id.isNotEmpty) namesByProfile[id] = name.isEmpty ? unknownUserName : name;
+            if (id.isNotEmpty) {
+              namesByProfile[id] = name.isEmpty ? unknownUserName : name;
+            }
           }
         } catch (_) {}
       }
@@ -572,7 +570,9 @@ class _CommitteeAgendaRsvpsViewState extends State<CommitteeAgendaRsvpsView> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const Center(
+        child: CircularProgressIndicator(color: AppColors.primary),
+      );
     }
     if (_error != null) {
       return Center(
@@ -603,56 +603,67 @@ class _CommitteeAgendaRsvpsViewState extends State<CommitteeAgendaRsvpsView> {
               ],
             )
           : ListView.separated(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: EdgeInsets.fromLTRB(16, 12, 16, 16 + MediaQuery.paddingOf(context).bottom),
-        itemCount: _agendaRows.length,
-        separatorBuilder: (_, _) => const SizedBox(height: 12),
-        itemBuilder: (context, index) {
-          final row = _agendaRows[index];
-          final agendaId = (row['agenda_id'] as num?)?.toInt();
-          final title = (row['title'] ?? 'Activiteit').toString();
-          final startsAt = row['start_datetime'] ?? row['event_date'];
-          final names = agendaId == null ? const <String>[] : (_namesByAgendaId[agendaId] ?? const <String>[]);
-          return GlassCard(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      color: AppColors.onBackground,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 16,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _formatDateTime(startsAt),
-                    style: const TextStyle(color: AppColors.textSecondary),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '${names.length} aanmelding(en)',
-                    style: const TextStyle(
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  if (names.isNotEmpty) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      names.join(', '),
-                      style: const TextStyle(color: AppColors.textSecondary),
-                    ),
-                  ],
-                ],
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: EdgeInsets.fromLTRB(
+                16,
+                12,
+                16,
+                16 + MediaQuery.paddingOf(context).bottom,
               ),
+              itemCount: _agendaRows.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 12),
+              itemBuilder: (context, index) {
+                final row = _agendaRows[index];
+                final agendaId = (row['agenda_id'] as num?)?.toInt();
+                final title = (row['title'] ?? 'Activiteit').toString();
+                final startsAt = row['start_datetime'] ?? row['event_date'];
+                final names = agendaId == null
+                    ? const <String>[]
+                    : (_namesByAgendaId[agendaId] ?? const <String>[]);
+                return GlassCard(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: const TextStyle(
+                            color: AppColors.onBackground,
+                            fontWeight: FontWeight.w800,
+                            fontSize: 16,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _formatDateTime(startsAt),
+                          style: const TextStyle(
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '${names.length} aanmelding(en)',
+                          style: const TextStyle(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        if (names.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            names.join(', '),
+                            style: const TextStyle(
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                );
+              },
             ),
-          );
-        },
-      ),
     );
   }
 }

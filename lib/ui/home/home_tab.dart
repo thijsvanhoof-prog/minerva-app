@@ -17,8 +17,10 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:minerva_app/data/mock_home_data.dart';
 import 'package:minerva_app/models/news_item.dart';
 import 'package:minerva_app/ui/app_colors.dart';
-import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/display_name_overrides.dart'
+    show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/notifications/notification_service.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/match_task_roles.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_standen_tab.dart';
 
@@ -57,6 +59,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   bool _loadingAgenda = true;
   String? _agendaError;
   List<_AgendaItem> _agendaItems = const [];
+
   /// Per agenda_id: welke profile_ids (zelf + gekoppelde kinderen) zijn aangemeld. Voor Fase E multi-select.
   Map<int, Set<String>> _rsvpProfileIdsByAgendaId = const {};
 
@@ -131,7 +134,10 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   }
 
   List<String> _extractUrlsFromText(String text) {
-    final re = RegExp(r'(https?:\/\/[^\s)]+|www\.[^\s)]+)', caseSensitive: false);
+    final re = RegExp(
+      r'(https?:\/\/[^\s)]+|www\.[^\s)]+)',
+      caseSensitive: false,
+    );
     final urls = <String>{};
     for (final m in re.allMatches(text)) {
       final raw = m.group(0)?.trim() ?? '';
@@ -165,9 +171,16 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   }) {
     final value = _normalizeNewsUrl((url ?? '').trim());
     if (value == null) return;
-    final exists = links.any((l) => l.url.trim().toLowerCase() == value.toLowerCase());
+    final exists = links.any(
+      (l) => l.url.trim().toLowerCase() == value.toLowerCase(),
+    );
     if (exists) return;
-    links.add(NewsLink(url: value, label: (label ?? '').trim().isEmpty ? null : label!.trim()));
+    links.add(
+      NewsLink(
+        url: value,
+        label: (label ?? '').trim().isEmpty ? null : label!.trim(),
+      ),
+    );
   }
 
   Future<DateTime?> _pickVisibleUntilDate(DateTime? current) async {
@@ -517,9 +530,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
             final aid = (r['agenda_id'] as num?)?.toInt();
             final pid = r['profile_id']?.toString() ?? '';
             if (aid == null || pid.isEmpty) continue;
-            rsvpProfileIdsByAgendaId
-                .putIfAbsent(aid, () => {})
-                .add(pid);
+            rsvpProfileIdsByAgendaId.putIfAbsent(aid, () => {}).add(pid);
           }
         } catch (_) {}
       }
@@ -586,14 +597,17 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
             final start = m.start;
             if (start == null) continue;
             final startLocal = start.toLocal();
-            if (startLocal.isBefore(cutoff) || startLocal.isAfter(endInclusive)) continue;
+            if (startLocal.isBefore(cutoff) || startLocal.isAfter(endInclusive)) {
+              continue;
+            }
             final summary = m.summary.trim();
             final dedupeKey = '${start.toUtc().toIso8601String()}|$summary';
             if (seenKeys.contains(dedupeKey)) continue;
             final side = _parseMinervaSideFromSummary(summary);
             if (side == null) continue;
             seenKeys.add(dedupeKey);
-            final matchKey = '${side.teamCode}|${start.toUtc().toIso8601String()}|$summary';
+            final matchKey =
+                '${side.teamCode}|${start.toUtc().toIso8601String()}|$summary';
             allFromApi.add(
               _HomeUpcomingMatch(
                 matchKey: matchKey,
@@ -603,8 +617,10 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                 location: (m.location ?? '').trim(),
                 fluitenTaskId: null,
                 tellenTaskId: null,
+                tweedeScheidsrechterTaskId: null,
                 fluitenNames: const [],
                 tellenNames: const [],
+                tweedeScheidsrechterNames: const [],
                 isHome: side.isHome,
               ),
             );
@@ -614,15 +630,17 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
 
       allFromApi.sort((a, b) => a.startsAt.compareTo(b.startsAt));
 
-      // Enrich met fluiten/tellen uit nevobo_home_matches waar beschikbaar.
-      Map<String, ({int? fluitenId, int? tellenId})> dbByKey = {};
+      // Enrich met wedstrijdtaken uit nevobo_home_matches waar beschikbaar.
+      Map<
+        String,
+        ({int? fluitenId, int? tellenId, int? tweedeScheidsrechterId})
+      >
+      dbByKey = {};
       try {
         final nowUtc = DateTime.now().toUtc();
         final res = await _client
             .from('nevobo_home_matches')
-            .select(
-              'match_key, team_code, starts_at, summary, fluiten_task_id, tellen_task_id',
-            )
+            .select(kNevoboHomeMatchesTaskKeySelectColumns)
             .gte(
               'starts_at',
               nowUtc.subtract(const Duration(hours: 2)).toIso8601String(),
@@ -632,11 +650,40 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
         for (final row in rows) {
           final key = (row['match_key'] ?? '').toString();
           if (key.isEmpty) continue;
-          final fluitenId = (row['fluiten_task_id'] as num?)?.toInt();
-          final tellenId = (row['tellen_task_id'] as num?)?.toInt();
-          dbByKey[key] = (fluitenId: fluitenId, tellenId: tellenId);
+          dbByKey[key] = (
+            fluitenId: taskIdFromLinkRow(row, kMatchTaskRoleFluiten),
+            tellenId: taskIdFromLinkRow(row, kMatchTaskRoleTellen),
+            tweedeScheidsrechterId: taskIdFromLinkRow(
+              row,
+              kMatchTaskRoleTweedeScheidsrechter,
+            ),
+          );
         }
-      } catch (_) {}
+      } catch (e) {
+        if (isMissingTweedeScheidsrechterColumn(e)) {
+          try {
+            final nowUtc = DateTime.now().toUtc();
+            final res = await _client
+                .from('nevobo_home_matches')
+                .select(kNevoboHomeMatchesTaskKeySelectColumnsLegacy)
+                .gte(
+                  'starts_at',
+                  nowUtc.subtract(const Duration(hours: 2)).toIso8601String(),
+                )
+                .limit(500);
+            final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+            for (final row in rows) {
+              final key = (row['match_key'] ?? '').toString();
+              if (key.isEmpty) continue;
+              dbByKey[key] = (
+                fluitenId: taskIdFromLinkRow(row, kMatchTaskRoleFluiten),
+                tellenId: taskIdFromLinkRow(row, kMatchTaskRoleTellen),
+                tweedeScheidsrechterId: null,
+              );
+            }
+          } catch (_) {}
+        }
+      }
 
       final taskIds = <int>{};
       for (final m in allFromApi) {
@@ -644,6 +691,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
         if (fromDb != null) {
           if (fromDb.fluitenId != null) taskIds.add(fromDb.fluitenId!);
           if (fromDb.tellenId != null) taskIds.add(fromDb.tellenId!);
+          if (fromDb.tweedeScheidsrechterId != null) {
+            taskIds.add(fromDb.tweedeScheidsrechterId!);
+          }
         }
       }
 
@@ -678,9 +728,20 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
         final fromDb = dbByKey[m.matchKey];
         final fluitenId = fromDb?.fluitenId;
         final tellenId = fromDb?.tellenId;
+        final tweedeId = fromDb?.tweedeScheidsrechterId;
         return m.copyWith(
-          fluitenNames: fluitenId == null ? const [] : (namesByTaskId[fluitenId] ?? const []),
-          tellenNames: tellenId == null ? const [] : (namesByTaskId[tellenId] ?? const []),
+          fluitenTaskId: fluitenId,
+          tellenTaskId: tellenId,
+          tweedeScheidsrechterTaskId: tweedeId,
+          fluitenNames: fluitenId == null
+              ? const []
+              : (namesByTaskId[fluitenId] ?? const []),
+          tellenNames: tellenId == null
+              ? const []
+              : (namesByTaskId[tellenId] ?? const []),
+          tweedeScheidsrechterNames: tweedeId == null
+              ? const []
+              : (namesByTaskId[tweedeId] ?? const []),
         );
       }).toList();
 
@@ -921,9 +982,13 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
           final code = raw.isNotEmpty
               ? (NevoboApi.extractCodeFromTeamName(raw) ?? raw)
               : '';
-          out.add(code.isNotEmpty
-              ? NevoboApi.displayTeamCode(code)
-              : (raw.isNotEmpty ? NevoboApi.displayTeamName(raw) : '(naam ontbreekt)'));
+          out.add(
+            code.isNotEmpty
+                ? NevoboApi.displayTeamCode(code)
+                : (raw.isNotEmpty
+                      ? NevoboApi.displayTeamName(raw)
+                      : '(naam ontbreekt)'),
+          );
         }
         out.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
         return out;
@@ -1080,7 +1145,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
 
           final itemIndex = i - 1;
           final item = _agendaItems[itemIndex];
-          final signedUpProfileIds = item.id != null ? (_rsvpProfileIdsByAgendaId[item.id] ?? <String>{}) : <String>{};
+          final signedUpProfileIds = item.id != null
+              ? (_rsvpProfileIdsByAgendaId[item.id] ?? <String>{})
+              : <String>{};
           final signedUp = signedUpProfileIds.isNotEmpty;
           final canSignUp = item.canUserSignUp(AppUserContext.of(context));
           final enabled = item.canRsvp && item.id != null && canSignUp;
@@ -1115,6 +1182,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       if (until == null) return true;
       return !until.isBefore(now);
     }
+
     final rsvpItems = _agendaItems
         .where((a) => a.canRsvp)
         .where((a) => !hidePastForCommitteeViews || isOngoingOrUpcoming(a))
@@ -1313,24 +1381,69 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       String idField = 'news_id';
       for (final attempt in const [
         // Best: all columns including links.
-        ('news_id, title, description, created_at, author, category, source, visible_until, image_urls, links', 'news_id'),
-        ('id, title, description, created_at, author, category, source, visible_until, image_urls, links', 'id'),
-        ('news_id, title, body, created_at, author, category, source, visible_until, image_urls, links', 'news_id'),
-        ('id, title, body, created_at, author, category, source, visible_until, image_urls, links', 'id'),
+        (
+          'news_id, title, description, created_at, author, category, source, visible_until, image_urls, links',
+          'news_id',
+        ),
+        (
+          'id, title, description, created_at, author, category, source, visible_until, image_urls, links',
+          'id',
+        ),
+        (
+          'news_id, title, body, created_at, author, category, source, visible_until, image_urls, links',
+          'news_id',
+        ),
+        (
+          'id, title, body, created_at, author, category, source, visible_until, image_urls, links',
+          'id',
+        ),
         // Without visible_until but with links.
-        ('news_id, title, description, created_at, author, category, source, image_urls, links', 'news_id'),
-        ('id, title, description, created_at, author, category, source, image_urls, links', 'id'),
-        ('news_id, title, body, created_at, author, category, source, image_urls, links', 'news_id'),
-        ('id, title, body, created_at, author, category, source, image_urls, links', 'id'),
+        (
+          'news_id, title, description, created_at, author, category, source, image_urls, links',
+          'news_id',
+        ),
+        (
+          'id, title, description, created_at, author, category, source, image_urls, links',
+          'id',
+        ),
+        (
+          'news_id, title, body, created_at, author, category, source, image_urls, links',
+          'news_id',
+        ),
+        (
+          'id, title, body, created_at, author, category, source, image_urls, links',
+          'id',
+        ),
         // Without image_urls but with links.
-        ('news_id, title, description, created_at, author, category, source, visible_until, links', 'news_id'),
-        ('id, title, description, created_at, author, category, source, visible_until, links', 'id'),
-        ('news_id, title, body, created_at, author, category, source, visible_until, links', 'news_id'),
-        ('id, title, body, created_at, author, category, source, visible_until, links', 'id'),
+        (
+          'news_id, title, description, created_at, author, category, source, visible_until, links',
+          'news_id',
+        ),
+        (
+          'id, title, description, created_at, author, category, source, visible_until, links',
+          'id',
+        ),
+        (
+          'news_id, title, body, created_at, author, category, source, visible_until, links',
+          'news_id',
+        ),
+        (
+          'id, title, body, created_at, author, category, source, visible_until, links',
+          'id',
+        ),
         // With links only (no visible_until, no image_urls).
-        ('news_id, title, description, created_at, author, category, source, links', 'news_id'),
-        ('id, title, description, created_at, author, category, source, links', 'id'),
-        ('news_id, title, body, created_at, author, category, source, links', 'news_id'),
+        (
+          'news_id, title, description, created_at, author, category, source, links',
+          'news_id',
+        ),
+        (
+          'id, title, description, created_at, author, category, source, links',
+          'id',
+        ),
+        (
+          'news_id, title, body, created_at, author, category, source, links',
+          'news_id',
+        ),
         ('id, title, body, created_at, author, category, source, links', 'id'),
         // Fallback: without image_urls/links.
         (
@@ -1466,7 +1579,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
             }
           }
         }
-        final rowLabel = (r['link_label'] ?? r['label'] ?? '').toString().trim();
+        final rowLabel = (r['link_label'] ?? r['label'] ?? '')
+            .toString()
+            .trim();
         final fallbackLabel = rowLabel.isNotEmpty ? rowLabel : null;
         _addNewsLinkIfValid(
           links,
@@ -1591,20 +1706,32 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   }
 
   /// Parse summary "Thuis - Uit" → (Minerva teamCode, isHome) of null als geen Minerva.
-  ({String teamCode, bool isHome})? _parseMinervaSideFromSummary(String summary) {
+  ({String teamCode, bool isHome})? _parseMinervaSideFromSummary(
+    String summary,
+  ) {
     final parts = summary.split(RegExp(r'\s+-\s+'));
     if (parts.length < 2) return null;
     final first = parts[0].trim();
     final second = parts.sublist(1).join(' - ').trim();
     if (first.toLowerCase().contains('minerva')) {
       final code = _extractCodeFromSummarySide(first);
-      if (code != null && code.isNotEmpty) return (teamCode: _normalizeTeamCode(code), isHome: true);
+      if (code != null && code.isNotEmpty) {
+        return (teamCode: _normalizeTeamCode(code), isHome: true);
+      }
     }
     if (second.toLowerCase().contains('minerva')) {
       final code = _extractCodeFromSummarySide(second);
-      if (code != null && code.isNotEmpty) return (teamCode: _normalizeTeamCode(code), isHome: false);
+      if (code != null && code.isNotEmpty) {
+        return (teamCode: _normalizeTeamCode(code), isHome: false);
+      }
     }
     return null;
+  }
+
+  String _formatHomeMatchRoleNames(List<String> names) {
+    if (names.isEmpty) return '-';
+    if (names.length <= 3) return names.join(', ');
+    return '${names.take(3).join(', ')} +${names.length - 3}';
   }
 
   String _matchTitle(_HomeUpcomingMatch m) {
@@ -1622,14 +1749,23 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     if (extracted == null || extracted.isEmpty) return false;
     final a = extracted.trim().toUpperCase();
     final b = teamCode.trim().toUpperCase();
-    if (a.startsWith('XR') && b.startsWith('MR') && a.substring(2) == b.substring(2)) return true;
-    if (b.startsWith('XR') && a.startsWith('MR') && b.substring(2) == a.substring(2)) return true;
+    if (a.startsWith('XR') &&
+        b.startsWith('MR') &&
+        a.substring(2) == b.substring(2)) {
+      return true;
+    }
+    if (b.startsWith('XR') &&
+        a.startsWith('MR') &&
+        b.substring(2) == a.substring(2)) {
+      return true;
+    }
     return a == b;
   }
 
   Widget _buildHomeMatchTitleText(_HomeUpcomingMatch m, {TextStyle? style}) {
     final summary = m.summary.trim();
-    final base = style ??
+    final base =
+        style ??
         const TextStyle(
           color: AppColors.onBackground,
           fontWeight: FontWeight.w800,
@@ -1638,7 +1774,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
 
     const sep = ' - ';
     final parts = summary.split(sep);
-    if (parts.length < 2) return Text(NevoboApi.displayTeamName(summary), style: base);
+    if (parts.length < 2) {
+      return Text(NevoboApi.displayTeamName(summary), style: base);
+    }
     final minervaSegmentCount = parts
         .where((p) => p.toLowerCase().contains('minerva'))
         .length;
@@ -1649,14 +1787,19 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     for (var i = 0; i < parts.length; i++) {
       if (i > 0) spans.add(TextSpan(text: sep, style: base));
       final part = NevoboApi.displayTeamName(parts[i]);
-      final highlight = _homeSegmentMatchesTeamCode(parts[i], m.teamCode) ||
-          (isInternalMinervaMatch && parts[i].toLowerCase().contains('minerva'));
+      final highlight =
+          _homeSegmentMatchesTeamCode(parts[i], m.teamCode) ||
+          (isInternalMinervaMatch &&
+              parts[i].toLowerCase().contains('minerva'));
       if (highlight) anyExactMatch = true;
       spans.add(
         TextSpan(
           text: part,
           style: highlight
-              ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)
+              ? base.copyWith(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w900,
+                )
               : base,
         ),
       );
@@ -1674,7 +1817,10 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
           TextSpan(
             text: raw,
             style: isMinervaSegment
-                ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)
+                ? base.copyWith(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w900,
+                  )
                 : base,
           ),
         );
@@ -1688,14 +1834,21 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
   }
 
   /// Optionen voor "Aanmelden voor". Alleen ouders krijgen multi-select (zelf + kinderen); anderen alleen "Zelf".
-  List<({String profileId, String displayName})> _agendaRsvpOptions(AppUserContext ctx) {
+  List<({String profileId, String displayName})> _agendaRsvpOptions(
+    AppUserContext ctx,
+  ) {
     final options = <({String profileId, String displayName})>[
       (profileId: ctx.loggedInProfileId, displayName: 'Zelf'),
     ];
     if (ctx.linkedChildProfiles.isNotEmpty) {
       options.addAll(
         ctx.linkedChildProfiles.map(
-          (c) => (profileId: c.profileId, displayName: c.displayName.trim().isEmpty ? 'Gekoppeld kind' : c.displayName),
+          (c) => (
+            profileId: c.profileId,
+            displayName: c.displayName.trim().isEmpty
+                ? 'Gekoppeld kind'
+                : c.displayName,
+          ),
         ),
       );
     }
@@ -1713,8 +1866,14 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       if (pid == ctx.loggedInProfileId) {
         names.add('Zelf');
       } else {
-        final child = ctx.linkedChildProfiles.where((c) => c.profileId == pid).firstOrNull;
-        names.add(child?.displayName.trim().isEmpty == true ? 'Gekoppeld kind' : (child?.displayName ?? '?'));
+        final child = ctx.linkedChildProfiles
+            .where((c) => c.profileId == pid)
+            .firstOrNull;
+        names.add(
+          child?.displayName.trim().isEmpty == true
+              ? 'Gekoppeld kind'
+              : (child?.displayName ?? '?'),
+        );
       }
     }
     names.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
@@ -1765,21 +1924,23 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    ...options.map((opt) => CheckboxListTile(
-                          value: selected.contains(opt.profileId),
-                          onChanged: (v) {
-                            setDialogState(() {
-                              if (v == true) {
-                                selected.add(opt.profileId);
-                              } else {
-                                selected.remove(opt.profileId);
-                              }
-                            });
-                          },
-                          title: Text(opt.displayName),
-                          controlAffinity: ListTileControlAffinity.leading,
-                          contentPadding: EdgeInsets.zero,
-                        )),
+                    ...options.map(
+                      (opt) => CheckboxListTile(
+                        value: selected.contains(opt.profileId),
+                        onChanged: (v) {
+                          setDialogState(() {
+                            if (v == true) {
+                              selected.add(opt.profileId);
+                            } else {
+                              selected.remove(opt.profileId);
+                            }
+                          });
+                        },
+                        title: Text(opt.displayName),
+                        controlAffinity: ListTileControlAffinity.leading,
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1789,7 +1950,8 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                   child: const Text('Annuleren'),
                 ),
                 FilledButton(
-                  onPressed: () => Navigator.of(context).pop(Set<String>.from(selected)),
+                  onPressed: () =>
+                      Navigator.of(context).pop(Set<String>.from(selected)),
                   child: const Text('Opslaan'),
                 ),
               ],
@@ -2072,8 +2234,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     final isDataUrl = urlOrDataUrl.startsWith('data:');
     if (isDataUrl) {
       try {
-        final base64Data =
-            urlOrDataUrl.contains(',') ? urlOrDataUrl.split(',').last : '';
+        final base64Data = urlOrDataUrl.contains(',')
+            ? urlOrDataUrl.split(',').last
+            : '';
         final bytes = base64Decode(base64Data);
         return Image.memory(
           bytes,
@@ -2097,7 +2260,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
             child: CircularProgressIndicator(
               value: progress.expectedTotalBytes != null
                   ? progress.cumulativeBytesLoaded /
-                      (progress.expectedTotalBytes ?? 1)
+                        (progress.expectedTotalBytes ?? 1)
                   : null,
             ),
           ),
@@ -2179,69 +2342,71 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
 
     return [
       if (imageUrls.isNotEmpty)
-        ...imageUrls.asMap().entries.map((entry) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Builder(
-                builder: (context) {
-                  final screenWidth = MediaQuery.of(context).size.width;
-                  final previewWidth =
-                      (screenWidth - 80).clamp(220.0, 500.0);
-                  return SizedBox(
-                    width: previewWidth,
-                    height: 140,
-                    child: Stack(
-                      alignment: Alignment.topRight,
-                      children: [
-                        Positioned.fill(
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Image.network(
-                              entry.value,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, _, _) => Container(
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color: AppColors.textSecondary
-                                      .withValues(alpha: 0.2),
-                                  borderRadius: BorderRadius.circular(8),
+        ...imageUrls.asMap().entries.map(
+          (entry) => Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Builder(
+              builder: (context) {
+                final screenWidth = MediaQuery.of(context).size.width;
+                final previewWidth = (screenWidth - 80).clamp(220.0, 500.0);
+                return SizedBox(
+                  width: previewWidth,
+                  height: 140,
+                  child: Stack(
+                    alignment: Alignment.topRight,
+                    children: [
+                      Positioned.fill(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.network(
+                            entry.value,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) => Container(
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: AppColors.textSecondary.withValues(
+                                  alpha: 0.2,
                                 ),
-                                child: const Icon(
-                                  Icons.broken_image_outlined,
-                                  size: 40,
-                                ),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Icon(
+                                Icons.broken_image_outlined,
+                                size: 40,
                               ),
                             ),
                           ),
                         ),
-                        Padding(
-                          padding: const EdgeInsets.all(4),
-                          child: IconButton(
-                            icon: const Icon(
-                              Icons.close,
-                              color: Colors.white,
-                              size: 22,
-                            ),
-                            style: IconButton.styleFrom(
-                              backgroundColor: Colors.black54,
-                              padding: const EdgeInsets.all(4),
-                              minimumSize: const Size(28, 28),
-                            ),
-                            onPressed: () {
-                              safeLocalState(() {
-                                final updated = [...imageUrls]
-                                  ..removeAt(entry.key);
-                                onImagesChanged(updated);
-                              });
-                            },
-                            tooltip: 'Verwijderen',
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: IconButton(
+                          icon: const Icon(
+                            Icons.close,
+                            color: Colors.white,
+                            size: 22,
                           ),
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.black54,
+                            padding: const EdgeInsets.all(4),
+                            minimumSize: const Size(28, 28),
+                          ),
+                          onPressed: () {
+                            safeLocalState(() {
+                              final updated = [...imageUrls]
+                                ..removeAt(entry.key);
+                              onImagesChanged(updated);
+                            });
+                          },
+                          tooltip: 'Verwijderen',
                         ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            )),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
       Align(
         alignment: Alignment.centerLeft,
         child: uploadingImage
@@ -2327,11 +2492,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       return file;
     } catch (e) {
       if (mounted) {
-        showTopMessage(
-          context,
-          'Afbeelding kiezen mislukt: $e',
-          isError: true,
-        );
+        showTopMessage(context, 'Afbeelding kiezen mislukt: $e', isError: true);
       }
       return null;
     }
@@ -2365,7 +2526,8 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
     // image_picker op iOS/Android levert na imageQuality-compressie altijd JPEG.
     // Forceer daarom jpeg wanneer de extensie onbekend of heic/heif is, want de
     // storage-bucket staat alleen jpeg/png/webp/gif toe.
-    final normalizedExt = (rawExt.isEmpty || rawExt == 'heic' || rawExt == 'heif')
+    final normalizedExt =
+        (rawExt.isEmpty || rawExt == 'heic' || rawExt == 'heif')
         ? 'jpg'
         : rawExt;
     final mimeByExt = <String, String>{
@@ -2387,9 +2549,7 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       report('Foto inlezen...');
       final bytes = await file.readAsBytes().timeout(
         const Duration(seconds: 15),
-        onTimeout: () => throw TimeoutException(
-          'Foto inlezen duurde te lang.',
-        ),
+        onTimeout: () => throw TimeoutException('Foto inlezen duurde te lang.'),
       );
       debugPrint('[news-image] bytes read: ${bytes.lengthInBytes}');
       if (bytes.lengthInBytes > 5 * 1024 * 1024) {
@@ -2409,16 +2569,19 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
         report('Uploaden naar server (${elapsed}s)...');
       });
       try {
-        await _client.storage.from('news-images').uploadBinary(
-          path,
-          bytes,
-          fileOptions: FileOptions(contentType: contentType),
-        ).timeout(
-          const Duration(seconds: 20),
-          onTimeout: () => throw TimeoutException(
-            'Upload duurde te lang (20s). Controleer de verbinding, RLS-policies en of de bucket "news-images" bestaat.',
-          ),
-        );
+        await _client.storage
+            .from('news-images')
+            .uploadBinary(
+              path,
+              bytes,
+              fileOptions: FileOptions(contentType: contentType),
+            )
+            .timeout(
+              const Duration(seconds: 20),
+              onTimeout: () => throw TimeoutException(
+                'Upload duurde te lang (20s). Controleer de verbinding, RLS-policies en of de bucket "news-images" bestaat.',
+              ),
+            );
       } finally {
         tickTimer.cancel();
       }
@@ -2566,36 +2729,41 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                   label: const Text('Link toevoegen'),
                 ),
               ),
-              ...links.map((link) => Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            link.displayLabel,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textSecondary,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+              ...links.map(
+                (link) => Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          link.displayLabel,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textSecondary,
                           ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.close, size: 20),
-                          onPressed: () {
-                            setLocalState(() {
-                              links = links
-                                  .where((e) =>
-                                      e.url != link.url || e.label != link.label)
-                                  .toList();
-                            });
-                          },
-                          tooltip: 'Verwijderen',
-                        ),
-                      ],
-                    ),
-                  )),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 20),
+                        onPressed: () {
+                          setLocalState(() {
+                            links = links
+                                .where(
+                                  (e) =>
+                                      e.url != link.url ||
+                                      e.label != link.label,
+                                )
+                                .toList();
+                          });
+                        },
+                        tooltip: 'Verwijderen',
+                      ),
+                    ],
+                  ),
+                ),
+              ),
               const SizedBox(height: 14),
               Row(
                 children: [
@@ -2677,7 +2845,10 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
       };
       bool usedFallbackWithoutMedia = false;
       try {
-        await _client.from('home_news').insert({...payload, 'source': sourceValue});
+        await _client.from('home_news').insert({
+          ...payload,
+          'source': sourceValue,
+        });
       } on PostgrestException catch (e) {
         if (e.code == 'PGRST204' ||
             (e.message.contains("Could not find the '") &&
@@ -2860,36 +3031,41 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                   label: const Text('Link toevoegen'),
                 ),
               ),
-              ...links.map((link) => Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            link.displayLabel,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textSecondary,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+              ...links.map(
+                (link) => Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          link.displayLabel,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textSecondary,
                           ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.close, size: 20),
-                          onPressed: () {
-                            setLocalState(() {
-                              links = links
-                                  .where((e) =>
-                                      e.url != link.url || e.label != link.label)
-                                  .toList();
-                            });
-                          },
-                          tooltip: 'Verwijderen',
-                        ),
-                      ],
-                    ),
-                  )),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 20),
+                        onPressed: () {
+                          setLocalState(() {
+                            links = links
+                                .where(
+                                  (e) =>
+                                      e.url != link.url ||
+                                      e.label != link.label,
+                                )
+                                .toList();
+                          });
+                        },
+                        tooltip: 'Verwijderen',
+                      ),
+                    ],
+                  ),
+                ),
+              ),
               const SizedBox(height: 14),
               Row(
                 children: [
@@ -3004,10 +3180,13 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                 if (e3.code == 'PGRST204' ||
                     (e3.message.contains("Could not find the '") &&
                         e3.message.contains("column"))) {
-                  await _client.from('home_news').update({
-                    'title': title,
-                    'description': descriptionWithFallbackLink,
-                  }).eq(_newsIdField, idValue);
+                  await _client
+                      .from('home_news')
+                      .update({
+                        'title': title,
+                        'description': descriptionWithFallbackLink,
+                      })
+                      .eq(_newsIdField, idValue);
                   if (hadMedia) usedFallbackWithoutMedia = true;
                 } else {
                   rethrow;
@@ -4421,8 +4600,9 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                                 'Maak dan een eigen account aan via Profiel. Na koppeling kun je je team, '
                                 'trainingen, wedstrijden en taken bekijken.',
                                 style: TextStyle(
-                                  color: AppColors.onBackground
-                                      .withValues(alpha: 0.92),
+                                  color: AppColors.onBackground.withValues(
+                                    alpha: 0.92,
+                                  ),
                                   fontSize: 13,
                                   height: 1.35,
                                 ),
@@ -4496,42 +4676,40 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                               color: AppColors.primary,
                               onRefresh: _refreshHome,
                               child: ListView(
-                                physics:
-                                    const AlwaysScrollableScrollPhysics(),
+                                physics: const AlwaysScrollableScrollPhysics(),
                                 padding: EdgeInsets.fromLTRB(
                                   16,
                                   0,
                                   16,
-                                  24 +
-                                      MediaQuery.paddingOf(context).bottom,
+                                  24 + MediaQuery.paddingOf(context).bottom,
                                 ),
                                 children: [
                                   _HomeTabHeader(
                                     title: 'Aankomende wedstrijden',
-                                    trailing:
-                                        _loadingUpcomingMatches
-                                            ? const SizedBox(
-                                                height: 18,
-                                                width: 18,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                  strokeWidth: 2,
-                                                  color: AppColors.primary,
-                                                ),
-                                              )
-                                            : null,
+                                    trailing: _loadingUpcomingMatches
+                                        ? const SizedBox(
+                                            height: 18,
+                                            width: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: AppColors.primary,
+                                            ),
+                                          )
+                                        : null,
                                   ),
                                   const SizedBox(height: 12),
                                   const Text(
                                     'Overzicht van de komende 14 dagen.',
                                     style: TextStyle(
-                                        color: AppColors.textSecondary),
+                                      color: AppColors.textSecondary,
+                                    ),
                                   ),
                                   const SizedBox(height: 10),
                                   if (_upcomingMatchesError != null)
                                     Padding(
                                       padding: const EdgeInsets.only(
-                                          bottom: 12),
+                                        bottom: 12,
+                                      ),
                                       child: Text(
                                         'Kon aankomende wedstrijden nu niet laden. Probeer straks opnieuw.',
                                         style: const TextStyle(
@@ -4543,34 +4721,32 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                                     const Text(
                                       'Geen aankomende wedstrijden in de komende 14 dagen.',
                                       style: TextStyle(
-                                          color: AppColors.textSecondary),
+                                        color: AppColors.textSecondary,
+                                      ),
                                     )
                                   else
                                     ...(() {
                                       String? currentDayKey;
                                       final out = <Widget>[];
                                       for (final m in _upcomingMatches) {
-                                        final dt =
-                                            m.startsAt.toLocal();
+                                        final dt = m.startsAt.toLocal();
                                         final dayKey =
                                             '${dt.year}-${dt.month}-${dt.day}';
                                         if (currentDayKey != dayKey) {
                                           currentDayKey = dayKey;
                                           out.add(
                                             Padding(
-                                              padding: const EdgeInsets
-                                                  .only(
+                                              padding: const EdgeInsets.only(
                                                 top: 4,
                                                 bottom: 8,
                                               ),
                                               child: Text(
                                                 _formatMatchdayLabel(
-                                                    m.startsAt),
+                                                  m.startsAt,
+                                                ),
                                                 style: const TextStyle(
-                                                  color:
-                                                      AppColors.darkBlue,
-                                                  fontWeight:
-                                                      FontWeight.w800,
+                                                  color: AppColors.darkBlue,
+                                                  fontWeight: FontWeight.w800,
                                                   fontSize: 18,
                                                 ),
                                               ),
@@ -4579,30 +4755,27 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                                         }
                                         out.add(
                                           Padding(
-                                            padding: const EdgeInsets
-                                                .only(bottom: 12),
+                                            padding: const EdgeInsets.only(
+                                              bottom: 12,
+                                            ),
                                             child: _CardBox(
                                               child: Column(
                                                 crossAxisAlignment:
-                                                    CrossAxisAlignment
-                                                        .start,
+                                                    CrossAxisAlignment.start,
                                                 children: [
                                                   _buildHomeMatchTitleText(
                                                     m,
-                                                    style: Theme.of(
-                                                      context,
-                                                    ).textTheme
+                                                    style: Theme.of(context)
+                                                        .textTheme
                                                         .titleMedium
                                                         ?.copyWith(
                                                           color: AppColors
                                                               .onBackground,
                                                           fontWeight:
-                                                              FontWeight
-                                                                  .w800,
+                                                              FontWeight.w800,
                                                         ),
                                                   ),
-                                                  const SizedBox(
-                                                      height: 4),
+                                                  const SizedBox(height: 4),
                                                   Text(
                                                     '${_formatTime(dt)} • ${m.isHome ? 'Thuis' : 'Uit'} • ${m.location.trim().isEmpty ? 'Locatie onbekend' : m.location.trim()}',
                                                     style: const TextStyle(
@@ -4610,6 +4783,32 @@ class _HomeTabState extends State<HomeTab> with TickerProviderStateMixin {
                                                           .textSecondary,
                                                     ),
                                                   ),
+                                                  if (m.isHome) ...[
+                                                    const SizedBox(height: 4),
+                                                    Text(
+                                                      'Scheidsrechter: ${_formatHomeMatchRoleNames(m.fluitenNames)}',
+                                                      style: const TextStyle(
+                                                        color: AppColors
+                                                            .textSecondary,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(height: 2),
+                                                    Text(
+                                                      '2de scheidsrechter: ${_formatHomeMatchRoleNames(m.tweedeScheidsrechterNames)}',
+                                                      style: const TextStyle(
+                                                        color: AppColors
+                                                            .textSecondary,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(height: 2),
+                                                    Text(
+                                                      'Teller: ${_formatHomeMatchRoleNames(m.tellenNames)}',
+                                                      style: const TextStyle(
+                                                        color: AppColors
+                                                            .textSecondary,
+                                                      ),
+                                                    ),
+                                                  ],
                                                 ],
                                               ),
                                             ),
@@ -4765,10 +4964,7 @@ class _HomeTabSwitcher extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GlassCard(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 10,
-        vertical: 6,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       showBorder: false,
       showShadow: false,
       child: TabBar(
@@ -5025,8 +5221,11 @@ class _HomeUpcomingMatch {
   final String location;
   final int? fluitenTaskId;
   final int? tellenTaskId;
+  final int? tweedeScheidsrechterTaskId;
   final List<String> fluitenNames;
   final List<String> tellenNames;
+  final List<String> tweedeScheidsrechterNames;
+
   /// Thuiswedstrijd (uit DB) of uitwedstrijd (uit Nevobo API).
   final bool isHome;
 
@@ -5038,14 +5237,20 @@ class _HomeUpcomingMatch {
     required this.location,
     required this.fluitenTaskId,
     required this.tellenTaskId,
+    required this.tweedeScheidsrechterTaskId,
     required this.fluitenNames,
     required this.tellenNames,
+    required this.tweedeScheidsrechterNames,
     this.isHome = true,
   });
 
   _HomeUpcomingMatch copyWith({
+    int? fluitenTaskId,
+    int? tellenTaskId,
+    int? tweedeScheidsrechterTaskId,
     List<String>? fluitenNames,
     List<String>? tellenNames,
+    List<String>? tweedeScheidsrechterNames,
     bool? isHome,
   }) {
     return _HomeUpcomingMatch(
@@ -5054,10 +5259,14 @@ class _HomeUpcomingMatch {
       startsAt: startsAt,
       summary: summary,
       location: location,
-      fluitenTaskId: fluitenTaskId,
-      tellenTaskId: tellenTaskId,
+      fluitenTaskId: fluitenTaskId ?? this.fluitenTaskId,
+      tellenTaskId: tellenTaskId ?? this.tellenTaskId,
+      tweedeScheidsrechterTaskId:
+          tweedeScheidsrechterTaskId ?? this.tweedeScheidsrechterTaskId,
       fluitenNames: fluitenNames ?? this.fluitenNames,
       tellenNames: tellenNames ?? this.tellenNames,
+      tweedeScheidsrechterNames:
+          tweedeScheidsrechterNames ?? this.tweedeScheidsrechterNames,
       isHome: isHome ?? this.isHome,
     );
   }
@@ -5180,6 +5389,7 @@ class _AgendaSignup {
 class _AgendaCard extends StatelessWidget {
   final _AgendaItem item;
   final bool signedUp;
+
   /// Bij aanmelding: "Zelf, Jan" voor knoptekst "Aangemeld (Zelf, Jan)".
   final String? signedUpLabel;
   final bool enabled;
@@ -5361,7 +5571,9 @@ class _AgendaCard extends StatelessWidget {
                         : OutlinedButton(
                             onPressed: enabled ? onToggleRsvp : null,
                             style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
                               minimumSize: Size.zero,
                               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             ),
@@ -5427,7 +5639,10 @@ class _NewsCard extends StatelessWidget {
   });
 
   static List<NewsLink> _fallbackLinksFromText(String text) {
-    final re = RegExp(r'(https?:\/\/[^\s)]+|www\.[^\s)]+)', caseSensitive: false);
+    final re = RegExp(
+      r'(https?:\/\/[^\s)]+|www\.[^\s)]+)',
+      caseSensitive: false,
+    );
     final urls = <String>{};
     for (final m in re.allMatches(text)) {
       final raw = m.group(0)?.trim() ?? '';

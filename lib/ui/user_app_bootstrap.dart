@@ -19,10 +19,7 @@ import 'package:minerva_app/ui/notifications/notification_service.dart';
 class UserAppBootstrap extends StatefulWidget {
   final Widget child;
 
-  const UserAppBootstrap({
-    super.key,
-    required this.child,
-  });
+  const UserAppBootstrap({super.key, required this.child});
 
   @override
   State<UserAppBootstrap> createState() => _UserAppBootstrapState();
@@ -54,8 +51,8 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     final provider = (appMeta['provider'] ?? '').toString().toLowerCase();
     final guestEmail = (dotenv.env['GUEST_EMAIL'] ?? '').trim().toLowerCase();
     final userEmail = (user.email ?? '').trim().toLowerCase();
-    final isAnonymousFlag = (appMeta['is_anonymous'] == true) ||
-        (userMeta['is_anonymous'] == true);
+    final isAnonymousFlag =
+        (appMeta['is_anonymous'] == true) || (userMeta['is_anonymous'] == true);
     final isGuestEmail = guestEmail.isNotEmpty && userEmail == guestEmail;
     return isAnonymousFlag || provider == 'anonymous' || isGuestEmail;
   }
@@ -122,7 +119,8 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     _loggedInProfileId = user.id;
     _email = user.email ?? '';
     // Keep metadata as a fallback, but prefer `profiles.display_name` where available.
-    _displayName = (user.userMetadata?['display_name']?.toString() ?? '').trim();
+    _displayName = (user.userMetadata?['display_name']?.toString() ?? '')
+        .trim();
     if (prevLoggedIn.isNotEmpty && prevLoggedIn != user.id) {
       _suppressOuderKindReload = true;
       try {
@@ -136,24 +134,31 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     _suppressOuderKindReload = true;
     try {
       final res = await _client.rpc('get_my_linked_child_profiles');
-      final list = (res as List<dynamic>?)
-          ?.map((e) {
-            final m = e as Map<String, dynamic>?;
-            if (m == null) return null;
-            final id = m['profile_id']?.toString();
-            final name = (m['display_name']?.toString() ?? '').trim();
-            if (id == null || id.isEmpty) return null;
-            return LinkedChild(profileId: id, displayName: name.isEmpty ? 'Kind' : name);
-          })
-          .whereType<LinkedChild>()
-          .toList() ??
+      final list =
+          (res as List<dynamic>?)
+              ?.map((e) {
+                final m = e as Map<String, dynamic>?;
+                if (m == null) return null;
+                final id = m['profile_id']?.toString();
+                final name = (m['display_name']?.toString() ?? '').trim();
+                if (id == null || id.isEmpty) return null;
+                return LinkedChild(
+                  profileId: id,
+                  displayName: name.isEmpty ? 'Kind' : name,
+                );
+              })
+              .whereType<LinkedChild>()
+              .toList() ??
           const [];
       _ouderKindNotifier.setChildren(list);
 
       // New desired behavior: if this account has linked profiles, default to "view as"
       // the first linked profile so the ouder/verzorger sees what the linked account sees.
       if (list.isNotEmpty && _ouderKindNotifier.viewingAsProfileId == null) {
-        _ouderKindNotifier.setViewingAs(list.first.profileId, list.first.displayName);
+        _ouderKindNotifier.setViewingAs(
+          list.first.profileId,
+          list.first.displayName,
+        );
       }
     } catch (_) {
       _ouderKindNotifier.setChildren(const []);
@@ -215,6 +220,19 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       if (!teamIds.contains(teamId)) teamIds.add(teamId);
     }
 
+    final memberTagsByTeamId = <int, String>{};
+    try {
+      final res = await _client.rpc('get_my_team_member_tags');
+      final rows = (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+      for (final row in rows) {
+        final teamId = (row['team_id'] as num?)?.toInt();
+        final tag = (row['member_tag']?.toString() ?? '').trim();
+        if (teamId != null && tag.isNotEmpty) memberTagsByTeamId[teamId] = tag;
+      }
+    } catch (_) {
+      // De app blijft werken wanneer het tagscript nog niet is uitgevoerd.
+    }
+
     // 3) Teamnamen (+ nevobo_code) ophalen. Eerst directe tabel, dan RPC-fallback (zelfde als Profiel).
     Map<int, String> teamNamesById = await _loadTeamNames(teamIds: teamIds);
     final nevoboCodeById = <int, String>{};
@@ -224,12 +242,14 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
           'get_team_names_for_app',
           params: {'p_team_ids': teamIds},
         );
-        final rows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+        final rows =
+            (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
         for (final r in rows) {
           final tid = (r['team_id'] as num?)?.toInt();
           if (tid == null) continue;
           final name = (r['team_name'] as String?) ?? '';
-          if (name.trim().isNotEmpty && (teamNamesById[tid] ?? '').trim().isEmpty) {
+          if (name.trim().isNotEmpty &&
+              (teamNamesById[tid] ?? '').trim().isEmpty) {
             teamNamesById = {...teamNamesById, tid: name.trim()};
           }
           final code = (r['nevobo_code'] as String?)?.trim();
@@ -252,13 +272,19 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       final raw = teamNamesById[teamId] ?? '';
       final teamName = raw.isEmpty ? raw : NevoboApi.displayTeamName(raw);
       final nevoboCode = nevoboCodeById[teamId];
-      memberships.add(TeamMembership(teamId: teamId, role: role, teamName: teamName, nevoboCode: nevoboCode));
+      memberships.add(
+        TeamMembership(
+          teamId: teamId,
+          role: role,
+          teamName: teamName,
+          nevoboCode: nevoboCode,
+          memberTag: memberTagsByTeamId[teamId],
+        ),
+      );
     }
 
     // Guardian roles (ouder/verzorger): include teams where ANY linked account is a player.
-    final seen = <String>{
-      for (final m in memberships) '${m.teamId}:${m.role}',
-    };
+    final seen = <String>{for (final m in memberships) '${m.teamId}:${m.role}'};
     for (final row in linkedTmRows) {
       final m = row as Map<String, dynamic>;
       final teamId = (m['team_id'] as num).toInt();
@@ -272,21 +298,24 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
       final linkedChildName = profileId.isEmpty
           ? null
           : _ouderKindNotifier.linkedChildren
-              .where((c) => c.profileId == profileId)
-              .map((c) => c.displayName.trim())
-              .where((s) => s.isNotEmpty)
-              .firstOrNull;
-      final key = '$teamId:guardian';
+                .where((c) => c.profileId == profileId)
+                .map((c) => c.displayName.trim())
+                .where((s) => s.isNotEmpty)
+                .firstOrNull;
+      final key = '$teamId:guardian:$profileId';
       if (seen.add(key)) {
         membershipTeamIds.add(teamId);
-        memberships.add(TeamMembership(
-          teamId: teamId,
-          role: 'guardian',
-          teamName: teamName,
-          nevoboCode: nevoboCode,
-          linkedChildDisplayName: linkedChildName,
-          linkedChildProfileId: profileId.isEmpty ? null : profileId,
-        ));
+        memberships.add(
+          TeamMembership(
+            teamId: teamId,
+            role: 'guardian',
+            teamName: teamName,
+            nevoboCode: nevoboCode,
+            linkedChildDisplayName: linkedChildName,
+            linkedChildProfileId: profileId.isEmpty ? null : profileId,
+            memberTag: memberTagsByTeamId[teamId],
+          ),
+        );
       }
     }
 
@@ -297,14 +326,16 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
           'get_all_teams_for_app',
           params: {'p_include_training_only': true},
         );
-        final allTeamsRows = (allTeamsRes as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
-        final allTeamIds = allTeamsRows
-            .map((r) => (r['team_id'] as num?)?.toInt())
-            .whereType<int>()
-            .where((tid) => !membershipTeamIds.contains(tid))
-            .toSet()
-            .toList()
-          ..sort();
+        final allTeamsRows =
+            (allTeamsRes as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+        final allTeamIds =
+            allTeamsRows
+                .map((r) => (r['team_id'] as num?)?.toInt())
+                .whereType<int>()
+                .where((tid) => !membershipTeamIds.contains(tid))
+                .toSet()
+                .toList()
+              ..sort();
         if (allTeamIds.isNotEmpty) {
           Map<int, String> allNames = {};
           final byId = <int, String>{};
@@ -321,14 +352,19 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
               'get_team_names_for_app',
               params: {'p_team_ids': allTeamIds},
             );
-            final nameRows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+            final nameRows =
+                (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
             for (final r in nameRows) {
               final tid = (r['team_id'] as num?)?.toInt();
               if (tid == null) continue;
               final code = (r['nevobo_code'] as String?)?.trim();
               if (code != null && code.isNotEmpty) nevoboById[tid] = code;
-              if ((allNames[tid] ?? '').trim().isEmpty && (r['team_name'] as String?)?.trim().isNotEmpty == true) {
-                allNames = {...allNames, tid: (r['team_name'] as String).trim()};
+              if ((allNames[tid] ?? '').trim().isEmpty &&
+                  (r['team_name'] as String?)?.trim().isNotEmpty == true) {
+                allNames = {
+                  ...allNames,
+                  tid: (r['team_name'] as String).trim(),
+                };
               }
             }
           } catch (_) {}
@@ -336,12 +372,14 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
             final name = allNames[tid]?.trim().isNotEmpty == true
                 ? NevoboApi.displayTeamName(allNames[tid]!)
                 : 'Team $tid';
-            memberships.add(TeamMembership(
-              teamId: tid,
-              role: 'admin',
-              teamName: name,
-              nevoboCode: nevoboById[tid],
-            ));
+            memberships.add(
+              TeamMembership(
+                teamId: tid,
+                role: 'admin',
+                teamName: name,
+                nevoboCode: nevoboById[tid],
+              ),
+            );
           }
         }
       } catch (_) {}
@@ -357,9 +395,12 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     try {
       final res = await _client.rpc(
         'get_profile_display_names',
-        params: {'profile_ids': [user.id]},
+        params: {
+          'profile_ids': [user.id],
+        },
       );
-      final rows = (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? const [];
+      final rows =
+          (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? const [];
       if (rows.isNotEmpty) {
         final name = (rows.first['display_name'] ?? '').toString().trim();
         if (name.isNotEmpty) profileName = name;
@@ -380,22 +421,13 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     // Algemeen admin: toon altijd "Admin" als weergavenaam.
     if (isGlobalAdmin) displayName = 'Admin';
 
-    // If this user only has the ouder/verzorger role (no own team memberships),
-    // show a clearer label: "Naam (ouder/verzorger 'Gekoppeld account')".
-    if (ownTmRows.isEmpty && _ouderKindNotifier.linkedChildren.isNotEmpty) {
-      final linkedName =
-          (_ouderKindNotifier.viewingAsDisplayName ??
-                  _ouderKindNotifier.linkedChildren.first.displayName)
-              .trim();
-      final suffix = linkedName.isNotEmpty ? linkedName : 'Gekoppeld account';
-      displayName = "$displayName (ouder/verzorger '$suffix')";
-    }
-
     if (!mounted) return;
     setState(() {
       _isGlobalAdmin = isGlobalAdmin;
       _isCommitteePowerAdmin = isCommitteePowerAdmin;
-      _memberships = mergeTeamMembershipsByTeamId(memberships);
+      _memberships = mergeTeamMembershipsPreservingGuardianProfiles(
+        memberships,
+      );
       _committees = committees;
       _displayName = displayName;
       _loading = false;
@@ -501,7 +533,6 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
     }
   }
 
-
   @override
   Widget build(BuildContext context) {
     final hasSession = _client.auth.currentUser != null;
@@ -520,8 +551,8 @@ class _UserAppBootstrapState extends State<UserAppBootstrap> {
                   Text(
                     'Laden…',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
+                      color: AppColors.textSecondary,
+                    ),
                   ),
                 ],
               ),

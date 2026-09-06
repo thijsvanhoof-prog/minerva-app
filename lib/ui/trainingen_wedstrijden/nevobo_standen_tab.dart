@@ -9,6 +9,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/display_name_overrides.dart'
     show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/trainingen_wedstrijden/match_task_roles.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/match_travel.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 
@@ -39,12 +40,14 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
   final Map<String, String> _matchesErrorByTeam = {};
   final Map<String, List<String>> _refereeNamesByMatchKey = {};
   final Map<String, List<String>> _tellerNamesByMatchKey = {};
+  final Map<String, List<String>> _tweedeScheidsrechterNamesByMatchKey = {};
 
   /// Accordion state: only one expanded at a time.
   final Set<String> _expandedTeamCodes = {};
 
   /// Per team: show all upcoming matches, or only next 3.
   final Map<String, bool> _showAllUpcomingByTeam = {};
+
   /// Per team: show all past results, or only last 3.
   final Map<String, bool> _showAllPastByTeam = {};
 
@@ -65,8 +68,16 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     if (extracted == null || extracted.isEmpty) return false;
     final a = extracted.trim().toUpperCase();
     final b = teamCode.trim().toUpperCase();
-    if (a.startsWith('XR') && b.startsWith('MR') && a.substring(2) == b.substring(2)) return true;
-    if (b.startsWith('XR') && a.startsWith('MR') && b.substring(2) == a.substring(2)) return true;
+    if (a.startsWith('XR') &&
+        b.startsWith('MR') &&
+        a.substring(2) == b.substring(2)) {
+      return true;
+    }
+    if (b.startsWith('XR') &&
+        a.startsWith('MR') &&
+        b.substring(2) == a.substring(2)) {
+      return true;
+    }
     return a == b;
   }
 
@@ -78,8 +89,16 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     final a = extracted.trim().toUpperCase();
     final b = teamCode.trim().toUpperCase();
     // Display alias: app shows XR for MR (recreanten); API may return "Minerva MR1"
-    if (a.startsWith('XR') && b.startsWith('MR') && a.substring(2) == b.substring(2)) return true;
-    if (b.startsWith('XR') && a.startsWith('MR') && b.substring(2) == a.substring(2)) return true;
+    if (a.startsWith('XR') &&
+        b.startsWith('MR') &&
+        a.substring(2) == b.substring(2)) {
+      return true;
+    }
+    if (b.startsWith('XR') &&
+        a.startsWith('MR') &&
+        b.substring(2) == a.substring(2)) {
+      return true;
+    }
     return a == b;
   }
 
@@ -87,7 +106,12 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
   /// Maximaal één team per leaderboard wordt gehighlight (het team van deze sectie).
   bool _standingMatchesTeamByPath(NevoboStandingEntry entry, String teamCode) {
     final resolved = NevoboApi.resolvedTeamPath(teamCode);
-    if (resolved == null || resolved.isEmpty || entry.teamPath == null || entry.teamPath!.isEmpty) return false;
+    if (resolved == null ||
+        resolved.isEmpty ||
+        entry.teamPath == null ||
+        entry.teamPath!.isEmpty) {
+      return false;
+    }
     final a = entry.teamPath!.trim().toLowerCase().replaceAll(r'\', '/');
     final b = resolved.trim().toLowerCase().replaceAll(r'\', '/');
     return a == b;
@@ -97,7 +121,9 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
   /// Match by name (Minerva + code) or by team path (ckm0v2o/dames/1).
   int? _minervaPosition(List<NevoboStandingEntry>? standings, String teamCode) {
     if (standings == null || standings.isEmpty) return null;
-    final normPath = NevoboApi.resolvedTeamPath(teamCode)?.trim().toLowerCase().replaceAll(r'\', '/');
+    final normPath = NevoboApi.resolvedTeamPath(
+      teamCode,
+    )?.trim().toLowerCase().replaceAll(r'\', '/');
     for (final s in standings) {
       if (_standingMatchesTeam(s, teamCode)) return s.position;
       if (normPath != null &&
@@ -136,8 +162,13 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
 
   /// Highlight alleen het Minerva-team dat exact bij [teamCode] hoort (bijv. HS1 → alleen "Minerva HS1").
   /// Zonder teamCode: eerste Minerva-segment highlighten (fallback).
-  Widget _buildMatchSummaryText(String summary, {TextStyle? style, String? teamCode}) {
-    final base = style ??
+  Widget _buildMatchSummaryText(
+    String summary, {
+    TextStyle? style,
+    String? teamCode,
+  }) {
+    final base =
+        style ??
         const TextStyle(
           color: AppColors.onBackground,
           fontWeight: FontWeight.w800,
@@ -157,13 +188,22 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
       for (var i = 0; i < parts.length; i++) {
         if (i > 0) spans.add(TextSpan(text: sep, style: base));
         final segment = parts[i].trim();
-        final highlight = _segmentMatchesTeamCode(segment, teamCode) ||
-            (isInternalMinervaMatch && segment.toLowerCase().contains('minerva'));
+        final highlight =
+            _segmentMatchesTeamCode(segment, teamCode) ||
+            (isInternalMinervaMatch &&
+                segment.toLowerCase().contains('minerva'));
         if (highlight) anyExactMatch = true;
-        spans.add(TextSpan(
-          text: parts[i],
-          style: highlight ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900) : base,
-        ));
+        spans.add(
+          TextSpan(
+            text: parts[i],
+            style: highlight
+                ? base.copyWith(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w900,
+                  )
+                : base,
+          ),
+        );
       }
       // Fallback: als exacte teamcode niet matcht, highlight alsnog eerste "Minerva"-segment.
       if (!anyExactMatch) {
@@ -172,14 +212,20 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
         for (var i = 0; i < parts.length; i++) {
           if (i > 0) spans.add(TextSpan(text: sep, style: base));
           final raw = parts[i];
-          final isMinervaSegment = !highlighted && raw.toLowerCase().contains('minerva');
+          final isMinervaSegment =
+              !highlighted && raw.toLowerCase().contains('minerva');
           if (isMinervaSegment) highlighted = true;
-          spans.add(TextSpan(
-            text: raw,
-            style: isMinervaSegment
-                ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)
-                : base,
-          ));
+          spans.add(
+            TextSpan(
+              text: raw,
+              style: isMinervaSegment
+                  ? base.copyWith(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w900,
+                    )
+                  : base,
+            ),
+          );
         }
       }
       return RichText(
@@ -192,7 +238,9 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     final lower = summary.toLowerCase();
     final idx = lower.indexOf('minerva');
     if (idx < 0) return Text(summary, style: base);
-    final endIdx = summary.indexOf(sep, idx) >= 0 ? summary.indexOf(sep, idx) : summary.length;
+    final endIdx = summary.indexOf(sep, idx) >= 0
+        ? summary.indexOf(sep, idx)
+        : summary.length;
     final before = summary.substring(0, idx);
     final mid = summary.substring(idx, endIdx);
     final after = summary.substring(endIdx);
@@ -201,7 +249,13 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
         style: base,
         children: [
           if (before.isNotEmpty) TextSpan(text: before),
-          TextSpan(text: mid, style: base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)),
+          TextSpan(
+            text: mid,
+            style: base.copyWith(
+              color: AppColors.primary,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
           if (after.isNotEmpty) TextSpan(text: after),
         ],
       ),
@@ -267,7 +321,9 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     return '${names.take(2).join(', ')} +${names.length - 2}';
   }
 
-  Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
+  Future<Map<String, String>> _loadProfileDisplayNames(
+    Set<String> profileIds,
+  ) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
 
@@ -299,7 +355,10 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
       'id, email',
     ]) {
       try {
-        final res = await _client.from('profiles').select(select).inFilter('id', ids);
+        final res = await _client
+            .from('profiles')
+            .select(select)
+            .inFilter('id', ids);
         rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
         break;
       } catch (_) {}
@@ -322,20 +381,22 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
   Future<void> _loadRefereesForMatchKeys(List<String> keys) async {
     if (keys.isEmpty) return;
     try {
-      final linksRes = await _client
-          .from('nevobo_home_matches')
-          .select('match_key, fluiten_task_id, tellen_task_id')
-          .inFilter('match_key', keys);
+      final linksRes = await _selectMatchTaskLinksForKeys(keys);
       final linkRows = (linksRes as List<dynamic>).cast<Map<String, dynamic>>();
 
       final refereeTaskIdByKey = <String, int>{};
       final tellerTaskIdByKey = <String, int>{};
+      final tweedeScheidsrechterTaskIdByKey = <String, int>{};
       final taskIds = <int>{};
       for (final row in linkRows) {
         final key = (row['match_key'] ?? '').toString();
         if (key.isEmpty) continue;
-        final fluitenTaskId = (row['fluiten_task_id'] as num?)?.toInt();
-        final tellenTaskId = (row['tellen_task_id'] as num?)?.toInt();
+        final fluitenTaskId = taskIdFromLinkRow(row, kMatchTaskRoleFluiten);
+        final tellenTaskId = taskIdFromLinkRow(row, kMatchTaskRoleTellen);
+        final tweedeTaskId = taskIdFromLinkRow(
+          row,
+          kMatchTaskRoleTweedeScheidsrechter,
+        );
         if (fluitenTaskId != null) {
           refereeTaskIdByKey[key] = fluitenTaskId;
           taskIds.add(fluitenTaskId);
@@ -343,6 +404,10 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
         if (tellenTaskId != null) {
           tellerTaskIdByKey[key] = tellenTaskId;
           taskIds.add(tellenTaskId);
+        }
+        if (tweedeTaskId != null) {
+          tweedeScheidsrechterTaskIdByKey[key] = tweedeTaskId;
+          taskIds.add(tweedeTaskId);
         }
       }
 
@@ -352,6 +417,7 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
           for (final key in keys) {
             _refereeNamesByMatchKey[key] = const [];
             _tellerNamesByMatchKey[key] = const [];
+            _tweedeScheidsrechterNamesByMatchKey[key] = const [];
           }
         });
         return;
@@ -361,7 +427,8 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
           .from('club_task_signups')
           .select('task_id, profile_id')
           .inFilter('task_id', taskIds.toList());
-      final signupRows = (signupRes as List<dynamic>).cast<Map<String, dynamic>>();
+      final signupRows = (signupRes as List<dynamic>)
+          .cast<Map<String, dynamic>>();
 
       final profileIds = <String>{};
       for (final row in signupRows) {
@@ -387,12 +454,16 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
         for (final key in keys) {
           final refereeTaskId = refereeTaskIdByKey[key];
           final tellerTaskId = tellerTaskIdByKey[key];
+          final tweedeTaskId = tweedeScheidsrechterTaskIdByKey[key];
           _refereeNamesByMatchKey[key] = refereeTaskId == null
               ? const []
               : (namesByTaskId[refereeTaskId] ?? const []);
           _tellerNamesByMatchKey[key] = tellerTaskId == null
               ? const []
               : (namesByTaskId[tellerTaskId] ?? const []);
+          _tweedeScheidsrechterNamesByMatchKey[key] = tweedeTaskId == null
+              ? const []
+              : (namesByTaskId[tweedeTaskId] ?? const []);
         }
       });
     } catch (_) {
@@ -400,8 +471,29 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     }
   }
 
+  Future<Object> _selectMatchTaskLinksForKeys(List<String> keys) async {
+    try {
+      return await _client
+          .from('nevobo_home_matches')
+          .select(kNevoboHomeMatchesTaskKeySelectColumns)
+          .inFilter('match_key', keys);
+    } catch (e) {
+      if (!isMissingTweedeScheidsrechterColumn(e)) rethrow;
+      return await _client
+          .from('nevobo_home_matches')
+          .select(kNevoboHomeMatchesTaskKeySelectColumnsLegacy)
+          .inFilter('match_key', keys);
+    }
+  }
+
   /// Compact mode chip that stays on one line (no wrapping like SegmentedButton).
-  Widget _modeChip(BuildContext context, NevoboTeam team, int value, String label, int selected) {
+  Widget _modeChip(
+    BuildContext context,
+    NevoboTeam team,
+    int value,
+    String label,
+    int selected,
+  ) {
     final isSelected = selected == value;
     return Material(
       color: isSelected ? AppColors.primary : Colors.transparent,
@@ -428,7 +520,9 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
   }
 
   void _showMatchDetail(NevoboMatch m, {String? teamCode}) {
-    final when = m.start == null ? 'Onbekende datum' : _formatDateTime(m.start!);
+    final when = m.start == null
+        ? 'Onbekende datum'
+        : _formatDateTime(m.start!);
     final where = (m.location ?? '').trim();
     final uitslag = _parseUitslagDisplay(m);
     final minervaHome = _isMinervaHomeInSummary(m.summary, teamCode: teamCode);
@@ -454,7 +548,12 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
               children: [
                 Icon(Icons.schedule, size: 18, color: AppColors.textSecondary),
                 const SizedBox(width: 8),
-                Expanded(child: Text(when, style: const TextStyle(color: AppColors.textSecondary))),
+                Expanded(
+                  child: Text(
+                    when,
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                ),
               ],
             ),
             if (where.isNotEmpty) ...[
@@ -462,9 +561,18 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(Icons.location_on, size: 18, color: AppColors.textSecondary),
+                  Icon(
+                    Icons.location_on,
+                    size: 18,
+                    color: AppColors.textSecondary,
+                  ),
                   const SizedBox(width: 8),
-                  Expanded(child: Text(where, style: const TextStyle(color: AppColors.textSecondary))),
+                  Expanded(
+                    child: Text(
+                      where,
+                      style: const TextStyle(color: AppColors.textSecondary),
+                    ),
+                  ),
                 ],
               ),
               MatchTravelRow(location: where),
@@ -490,7 +598,9 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
             ],
             if (uitslag.setScores.isNotEmpty) ...[
               const SizedBox(height: 8),
-              ...uitslag.setScores.take(10).map(
+              ...uitslag.setScores
+                  .take(10)
+                  .map(
                     (s) => Padding(
                       padding: const EdgeInsets.only(bottom: 4),
                       child: _buildSetScoreText(s, isMinervaHome: minervaHome),
@@ -534,7 +644,11 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                         ),
                       ),
                       const SizedBox(width: 4),
-                      Icon(Icons.open_in_new, size: 16, color: AppColors.primary),
+                      Icon(
+                        Icons.open_in_new,
+                        size: 16,
+                        color: AppColors.primary,
+                      ),
                     ],
                   ),
                 ),
@@ -552,7 +666,9 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     );
   }
 
-  ({String? matchScore, List<String> setScores}) _parseUitslagDisplay(NevoboMatch m) {
+  ({String? matchScore, List<String> setScores}) _parseUitslagDisplay(
+    NevoboMatch m,
+  ) {
     final raw = (m.volledigeUitslag ?? '').trim();
 
     String? matchScore;
@@ -577,7 +693,8 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     }
 
     // Fallback: use eindstand when volledigeUitslag is empty/missing.
-    if (matchScore == null && (m.eindstand != null && m.eindstand!.length >= 2)) {
+    if (matchScore == null &&
+        (m.eindstand != null && m.eindstand!.length >= 2)) {
       matchScore = '${m.eindstand![0]}-${m.eindstand![1]}';
     }
 
@@ -596,7 +713,9 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
 
     try {
       // Use the competition API here so uitslagen are reliable.
-      final matches = await NevoboApi.fetchMatchesForTeamViaCompetitionApi(team: team);
+      final matches = await NevoboApi.fetchMatchesForTeamViaCompetitionApi(
+        team: team,
+      );
       final now = DateTime.now();
       final upcomingKeys = matches
           .where((m) {
@@ -654,7 +773,10 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
       if (list == null) return;
       if (!mounted) return;
       setState(() {
-        _favoriteTeamCodes = list.map((e) => e.toString().trim()).where((s) => s.isNotEmpty).toList();
+        _favoriteTeamCodes = list
+            .map((e) => e.toString().trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
       });
     } catch (_) {}
   }
@@ -692,7 +814,10 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
           child: SizedBox(
             height: 18,
             width: 18,
-            child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: AppColors.primary,
+            ),
           ),
         ),
       );
@@ -705,15 +830,27 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     }
 
     final now = DateTime.now();
-    final upcoming = matches
-        .where((m) => (m.start ?? DateTime(2100)).isAfter(now.subtract(const Duration(hours: 2))))
-        .toList()
-      ..sort((a, b) => (a.start ?? DateTime(2100)).compareTo(b.start ?? DateTime(2100)));
+    final upcoming =
+        matches
+            .where(
+              (m) => (m.start ?? DateTime(2100)).isAfter(
+                now.subtract(const Duration(hours: 2)),
+              ),
+            )
+            .toList()
+          ..sort(
+            (a, b) => (a.start ?? DateTime(2100)).compareTo(
+              b.start ?? DateTime(2100),
+            ),
+          );
 
     if (upcoming.isEmpty) {
       return const Padding(
         padding: EdgeInsets.only(top: 10),
-        child: Text('Geen programma gevonden.', style: TextStyle(color: AppColors.textSecondary)),
+        child: Text(
+          'Geen programma gevonden.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
       );
     }
 
@@ -724,44 +861,63 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         ...visibleUpcoming.map((m) {
-        final when = m.start == null ? 'Onbekende datum' : _formatDateTime(m.start!);
-        final key = m.start == null ? null : _matchKey(teamCode: code, start: m.start!);
-        final referees = key == null ? const <String>[] : (_refereeNamesByMatchKey[key] ?? const <String>[]);
-        final tellers = key == null ? const <String>[] : (_tellerNamesByMatchKey[key] ?? const <String>[]);
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => _showMatchDetail(m, teamCode: code),
-          child: GlassCard(
-            margin: const EdgeInsets.only(top: 10),
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildMatchSummaryText(
-                  NevoboApi.displayTeamName(m.summary),
-                  style: const TextStyle(
-                    color: AppColors.onBackground,
-                    fontWeight: FontWeight.w800,
+          final when = m.start == null
+              ? 'Onbekende datum'
+              : _formatDateTime(m.start!);
+          final key = m.start == null
+              ? null
+              : _matchKey(teamCode: code, start: m.start!);
+          final referees = key == null
+              ? const <String>[]
+              : (_refereeNamesByMatchKey[key] ?? const <String>[]);
+          final tellers = key == null
+              ? const <String>[]
+              : (_tellerNamesByMatchKey[key] ?? const <String>[]);
+          final tweedeScheidsrechters = key == null
+              ? const <String>[]
+              : (_tweedeScheidsrechterNamesByMatchKey[key] ?? const <String>[]);
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => _showMatchDetail(m, teamCode: code),
+            child: GlassCard(
+              margin: const EdgeInsets.only(top: 10),
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildMatchSummaryText(
+                    NevoboApi.displayTeamName(m.summary),
+                    style: const TextStyle(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w800,
+                    ),
+                    teamCode: code,
                   ),
-                  teamCode: code,
-                ),
-                const SizedBox(height: 4),
-                Text(when, style: const TextStyle(color: AppColors.textSecondary)),
-                const SizedBox(height: 4),
-                Text(
-                  'Scheidsrechter: ${_formatRoleNames(referees)}',
-                  style: const TextStyle(color: AppColors.textSecondary),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Teller: ${_formatRoleNames(tellers)}',
-                  style: const TextStyle(color: AppColors.textSecondary),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  Text(
+                    when,
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Scheidsrechter: ${_formatRoleNames(referees)}',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '2de scheidsrechter: ${_formatRoleNames(tweedeScheidsrechters)}',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Teller: ${_formatRoleNames(tellers)}',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                ],
+              ),
             ),
-          ),
-        );
-      }),
+          );
+        }),
         if (upcoming.length > 3) ...[
           const SizedBox(height: 10),
           Align(
@@ -797,7 +953,10 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
           child: SizedBox(
             height: 18,
             width: 18,
-            child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: AppColors.primary,
+            ),
           ),
         ),
       );
@@ -810,15 +969,27 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     }
 
     final now = DateTime.now();
-    final past = matches
-        .where((m) => (m.start ?? DateTime(2100)).isBefore(now.subtract(const Duration(hours: 2))))
-        .toList()
-      ..sort((a, b) => (b.start ?? DateTime(1900)).compareTo(a.start ?? DateTime(1900)));
+    final past =
+        matches
+            .where(
+              (m) => (m.start ?? DateTime(2100)).isBefore(
+                now.subtract(const Duration(hours: 2)),
+              ),
+            )
+            .toList()
+          ..sort(
+            (a, b) => (b.start ?? DateTime(1900)).compareTo(
+              a.start ?? DateTime(1900),
+            ),
+          );
 
     if (past.isEmpty) {
       return const Padding(
         padding: EdgeInsets.only(top: 10),
-        child: Text('Geen uitslagen gevonden.', style: TextStyle(color: AppColors.textSecondary)),
+        child: Text(
+          'Geen uitslagen gevonden.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
       );
     }
 
@@ -829,77 +1000,98 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         ...visiblePast.map((m) {
-        final when = m.start == null ? 'Onbekende datum' : _formatDateTime(m.start!);
-        final uitslag = _parseUitslagDisplay(m);
-        final minervaHome = _isMinervaHomeInSummary(m.summary, teamCode: code);
-        final scoreMatch =
-            RegExp(r'^\s*([0-5])\s*-\s*([0-5])\s*$').firstMatch(uitslag.matchScore ?? '');
-        final homeSets = scoreMatch == null ? null : int.tryParse(scoreMatch.group(1)!);
-        final awaySets = scoreMatch == null ? null : int.tryParse(scoreMatch.group(2)!);
-        final minervaWon = (homeSets != null && awaySets != null)
-            ? (minervaHome ? (homeSets > awaySets) : (awaySets > homeSets))
-            : null;
+          final when = m.start == null
+              ? 'Onbekende datum'
+              : _formatDateTime(m.start!);
+          final uitslag = _parseUitslagDisplay(m);
+          final minervaHome = _isMinervaHomeInSummary(
+            m.summary,
+            teamCode: code,
+          );
+          final scoreMatch = RegExp(
+            r'^\s*([0-5])\s*-\s*([0-5])\s*$',
+          ).firstMatch(uitslag.matchScore ?? '');
+          final homeSets = scoreMatch == null
+              ? null
+              : int.tryParse(scoreMatch.group(1)!);
+          final awaySets = scoreMatch == null
+              ? null
+              : int.tryParse(scoreMatch.group(2)!);
+          final minervaWon = (homeSets != null && awaySets != null)
+              ? (minervaHome ? (homeSets > awaySets) : (awaySets > homeSets))
+              : null;
 
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => _showMatchDetail(m, teamCode: code),
-          child: GlassCard(
-            margin: const EdgeInsets.only(top: 10),
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: _buildMatchSummaryText(
-                        NevoboApi.displayTeamName(m.summary),
-                        style: const TextStyle(
-                          color: AppColors.onBackground,
-                          fontWeight: FontWeight.w800,
-                        ),
-                        teamCode: code,
-                      ),
-                    ),
-                    if (uitslag.matchScore != null)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: minervaWon == null
-                              ? AppColors.darkBlue
-                              : (minervaWon ? AppColors.success : AppColors.error),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: Text(
-                          uitslag.matchScore!,
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => _showMatchDetail(m, teamCode: code),
+            child: GlassCard(
+              margin: const EdgeInsets.only(top: 10),
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildMatchSummaryText(
+                          NevoboApi.displayTeamName(m.summary),
                           style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w900,
+                            color: AppColors.onBackground,
+                            fontWeight: FontWeight.w800,
+                          ),
+                          teamCode: code,
+                        ),
+                      ),
+                      if (uitslag.matchScore != null)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: minervaWon == null
+                                ? AppColors.darkBlue
+                                : (minervaWon
+                                      ? AppColors.success
+                                      : AppColors.error),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            uitslag.matchScore!,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w900,
+                            ),
                           ),
                         ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(when, style: const TextStyle(color: AppColors.textSecondary)),
-                if (uitslag.setScores.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  ...uitslag.setScores.take(5).map(
-                        (s) => _buildSetScoreText(s, isMinervaHome: minervaHome),
-                      ),
-                ],
-                if (uitslag.matchScore == null) ...[
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Uitslag nog niet beschikbaar.',
-                    style: TextStyle(color: AppColors.textSecondary),
+                    ],
                   ),
+                  const SizedBox(height: 4),
+                  Text(
+                    when,
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                  if (uitslag.setScores.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    ...uitslag.setScores
+                        .take(5)
+                        .map(
+                          (s) =>
+                              _buildSetScoreText(s, isMinervaHome: minervaHome),
+                        ),
+                  ],
+                  if (uitslag.matchScore == null) ...[
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Uitslag nog niet beschikbaar.',
+                      style: TextStyle(color: AppColors.textSecondary),
+                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
-          ),
-        );
-      }),
+          );
+        }),
         if (past.length > 3) ...[
           const SizedBox(height: 10),
           Align(
@@ -957,11 +1149,12 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
           client: _client,
           excludeTrainingOnly: true,
         );
-        final other = allRows
-            .where((t) => !mainTeamIds.contains(t.teamId))
-            .map((t) => t.name)
-            .toList()
-          ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+        final other =
+            allRows
+                .where((t) => !mainTeamIds.contains(t.teamId))
+                .map((t) => t.name)
+                .toList()
+              ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
         if (mounted) setState(() => _otherTeamNames = other);
       } catch (_) {
         // fallback: overige teams uit directe query
@@ -1033,7 +1226,8 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
           final lower = raw.toLowerCase();
           final code = NevoboApi.extractCodeFromTeamName(raw);
           // Anything without a Nevobo code and explicitly non-competition: show it.
-          final isNonCompetitionLabel = lower.contains('volleystars') ||
+          final isNonCompetitionLabel =
+              lower.contains('volleystars') ||
               lower.contains('recreanten (niet competitie)') ||
               lower == 'recreanten trainingsgroep';
           if (code == null && isNonCompetitionLabel) {
@@ -1102,7 +1296,10 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
                     decoration: BoxDecoration(
                       color: AppColors.darkBlue,
                       borderRadius: BorderRadius.circular(AppColors.cardRadius),
@@ -1110,9 +1307,9 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                     child: Text(
                       name,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w900,
-                          ),
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w900,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -1144,14 +1341,20 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                     child: Row(
                       children: [
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
                           decoration: BoxDecoration(
                             color: AppColors.darkBlue,
-                            borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                            borderRadius: BorderRadius.circular(
+                              AppColors.cardRadius,
+                            ),
                           ),
                           child: Text(
                             NevoboApi.displayTeamCode(team.code),
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(
                                   color: AppColors.primary,
                                   fontWeight: FontWeight.w900,
                                 ),
@@ -1160,16 +1363,22 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                         if (standings != null && standings.isNotEmpty) ...[
                           Builder(
                             builder: (_) {
-                              final pos = _minervaPosition(standings, team.code);
-                              if (pos == null || pos <= 0) return const SizedBox.shrink();
+                              final pos = _minervaPosition(
+                                standings,
+                                team.code,
+                              );
+                              if (pos == null || pos <= 0) {
+                                return const SizedBox.shrink();
+                              }
                               return Padding(
                                 padding: const EdgeInsets.only(left: 12),
                                 child: Text(
                                   _positionLabel(pos),
-                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                    color: AppColors.textSecondary,
-                                    fontWeight: FontWeight.w600,
-                                  ),
+                                  style: Theme.of(context).textTheme.titleMedium
+                                      ?.copyWith(
+                                        color: AppColors.textSecondary,
+                                        fontWeight: FontWeight.w600,
+                                      ),
                                 ),
                               );
                             },
@@ -1194,7 +1403,9 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                             padding: EdgeInsets.zero,
                           ),
                         ),
-                        if (_loading && (standings == null && error == null) && expanded)
+                        if (_loading &&
+                            (standings == null && error == null) &&
+                            expanded)
                           const SizedBox(
                             height: 16,
                             width: 16,
@@ -1216,7 +1427,10 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                 if (expanded) ...[
                   const SizedBox(height: 10),
                   GlassCard(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
                     child: SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
                       child: Row(
@@ -1256,15 +1470,41 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                             padding: const EdgeInsets.only(bottom: 8),
                             child: Row(
                               children: [
-                                const SizedBox(width: 28, child: Text('', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600))),
-                                const Expanded(child: Text('Team', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600))),
+                                const SizedBox(
+                                  width: 28,
+                                  child: Text(
+                                    '',
+                                    style: TextStyle(
+                                      color: AppColors.textSecondary,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                const Expanded(
+                                  child: Text(
+                                    'Team',
+                                    style: TextStyle(
+                                      color: AppColors.textSecondary,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
                                 const SizedBox(width: 8),
                                 SizedBox(
                                   width: 36,
                                   child: FittedBox(
                                     fit: BoxFit.scaleDown,
                                     alignment: Alignment.centerRight,
-                                    child: const Text('Wedstr.', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600)),
+                                    child: const Text(
+                                      'Wedstr.',
+                                      style: TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
                                   ),
                                 ),
                                 const SizedBox(width: 10),
@@ -1273,79 +1513,99 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
                                   child: FittedBox(
                                     fit: BoxFit.scaleDown,
                                     alignment: Alignment.centerRight,
-                                    child: const Text('Punten', style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w600)),
+                                    child: const Text(
+                                      'Punten',
+                                      style: TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ],
                             ),
                           ),
                           ...standings.map((s) {
-                          final isOurTeam = _standingMatchesTeam(s, team.code) || _standingMatchesTeamByPath(s, team.code);
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 6),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: isOurTeam
-                                    ? AppColors.primary.withValues(alpha: 0.12)
-                                    : Colors.transparent,
-                                borderRadius: BorderRadius.circular(12),
-                                border: isOurTeam
-                                    ? Border.all(
-                                        color: AppColors.primary.withValues(alpha: 0.35),
-                                      )
-                                    : null,
+                            final isOurTeam =
+                                _standingMatchesTeam(s, team.code) ||
+                                _standingMatchesTeamByPath(s, team.code);
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isOurTeam
+                                      ? AppColors.primary.withValues(
+                                          alpha: 0.12,
+                                        )
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: isOurTeam
+                                      ? Border.all(
+                                          color: AppColors.primary.withValues(
+                                            alpha: 0.35,
+                                          ),
+                                        )
+                                      : null,
+                                ),
+                                child: Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 28,
+                                      child: Text(
+                                        s.position > 0 ? '${s.position}.' : '-',
+                                        style: const TextStyle(
+                                          color: AppColors.textSecondary,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: Text(
+                                        NevoboApi.displayTeamName(s.teamName),
+                                        style: TextStyle(
+                                          color: isOurTeam
+                                              ? AppColors.primary
+                                              : AppColors.onBackground,
+                                          fontWeight: isOurTeam
+                                              ? FontWeight.w900
+                                              : FontWeight.w700,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    SizedBox(
+                                      width: 36,
+                                      child: Text(
+                                        '${s.played}',
+                                        textAlign: TextAlign.right,
+                                        style: const TextStyle(
+                                          color: AppColors.textSecondary,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    SizedBox(
+                                      width: 36,
+                                      child: Text(
+                                        '${s.points}',
+                                        textAlign: TextAlign.right,
+                                        style: const TextStyle(
+                                          color: AppColors.primary,
+                                          fontWeight: FontWeight.w900,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
-                              child: Row(
-                                children: [
-                                  SizedBox(
-                                    width: 28,
-                                    child: Text(
-                                      s.position > 0 ? '${s.position}.' : '-',
-                                      style: const TextStyle(
-                                        color: AppColors.textSecondary,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                  ),
-                                  Expanded(
-                                    child: Text(
-                                      NevoboApi.displayTeamName(s.teamName),
-                                      style: TextStyle(
-                                        color: isOurTeam ? AppColors.primary : AppColors.onBackground,
-                                        fontWeight: isOurTeam ? FontWeight.w900 : FontWeight.w700,
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  SizedBox(
-                                    width: 36,
-                                    child: Text(
-                                      '${s.played}',
-                                      textAlign: TextAlign.right,
-                                      style: const TextStyle(
-                                        color: AppColors.textSecondary,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  SizedBox(
-                                    width: 36,
-                                    child: Text(
-                                      '${s.points}',
-                                      textAlign: TextAlign.right,
-                                      style: const TextStyle(
-                                        color: AppColors.primary,
-                                        fontWeight: FontWeight.w900,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }),
+                            );
+                          }),
                         ],
                       ),
                   ] else if (mode == 1) ...[
@@ -1362,4 +1622,3 @@ class _NevoboStandenTabState extends State<NevoboStandenTab> {
     );
   }
 }
-

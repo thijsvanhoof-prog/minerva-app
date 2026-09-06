@@ -4,53 +4,31 @@ import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/tab_page_header.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
-import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/display_name_overrides.dart'
+    show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/notifications/notification_service.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/match_task_roles.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/match_travel.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 const _matchTaskPushTitle = 'Nieuwe wedstrijdtaak';
 
-String _matchTaskPushBody({required bool fluiten, required bool tellen}) {
-  if (fluiten && tellen) {
-    return 'Er zijn wedstrijdtaken gekoppeld aan jouw team.';
-  }
-  if (fluiten) return 'Fluiten is gekoppeld aan jouw team.';
-  if (tellen) return 'Tellen is gekoppeld aan jouw team.';
-  return 'Er is een wedstrijdtaak gekoppeld aan jouw team.';
-}
-
-String _matchTaskPushDedupeKey({
-  required String matchKey,
-  required int teamId,
-  required bool fluiten,
-  required bool tellen,
-}) {
-  final kinds = [
-    if (fluiten) 'fluiten',
-    if (tellen) 'tellen',
-  ].join('+');
-  return 'match-task:$matchKey:$teamId:$kinds';
-}
-
-/// Best-effort team-push na koppelen van fluiten/tellen aan een team.
+/// Best-effort team-push na koppelen van wedstrijdtaken aan een team.
 Future<void> _notifyTeamMatchTasksLinked({
   required int teamId,
   required String matchKey,
-  required bool fluiten,
-  required bool tellen,
+  required Set<String> linkedRoles,
 }) async {
-  if (!fluiten && !tellen) return;
+  if (linkedRoles.isEmpty) return;
   await NotificationService.sendTeamUpdate(
     title: _matchTaskPushTitle,
-    body: _matchTaskPushBody(fluiten: fluiten, tellen: tellen),
+    body: matchTaskPushBody(linkedRoles: linkedRoles),
     teamId: teamId,
-    dedupeKey: _matchTaskPushDedupeKey(
+    dedupeKey: matchTaskPushDedupeKey(
       matchKey: matchKey,
       teamId: teamId,
-      fluiten: fluiten,
-      tellen: tellen,
+      linkedRoles: linkedRoles,
     ),
   );
 }
@@ -65,8 +43,10 @@ class MyTasksTab extends StatelessWidget {
 
   /// Als true (bijv. vanuit Commissies > WZ): altijd Teamtaken + Overzicht tonen.
   final bool forceFullView;
+
   /// Als true: toon alleen het wedstrijd-aanmeldoverzicht zonder "Taken" header/tabbalk.
   final bool compactView;
+
   /// Als true: toon Taken -> Overzicht direct, met S/T signup op alle wedstrijden.
   final bool stOverviewMode;
 
@@ -102,17 +82,30 @@ class MyTasksTab extends StatelessWidget {
                 child: Text(
                   'Taken',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.w800,
-                      ),
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
               Expanded(
-                child: _TaskAccessEmptyState(onRefresh: () => _refreshTasks(context)),
+                child: _TaskAccessEmptyState(
+                  onRefresh: () => _refreshTasks(context),
+                ),
               ),
             ],
           ),
         ),
+      );
+    }
+
+    if (stOverviewMode) {
+      return _OverviewHomeMatchesView(
+        allowManage: false,
+        allowSignupForAll: allowOpenSignupInStOverview(
+          stOverviewMode: true,
+          isInScheidsrechtersTellers: ctx.isInScheidsrechtersTellers,
+        ),
+        showTechnicalErrors: false,
       );
     }
 
@@ -131,23 +124,15 @@ class MyTasksTab extends StatelessWidget {
                 child: Text(
                   'Taken',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.w800,
-                      ),
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
               const Expanded(child: _TeamTasksView(showTechnicalErrors: false)),
             ],
           ),
         ),
-      );
-    }
-
-    if (stOverviewMode) {
-      return const _OverviewHomeMatchesView(
-        allowManage: false,
-        allowSignupForAll: true,
-        showTechnicalErrors: false,
       );
     }
 
@@ -177,15 +162,18 @@ class MyTasksTab extends StatelessWidget {
                 child: Text(
                   'Taken',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.w800,
-                      ),
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
               Padding(
                 padding: AppColors.tabContentPadding,
                 child: GlassCard(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   showBorder: false,
                   showShadow: false,
                   child: TabBar(
@@ -248,9 +236,9 @@ class _TaskAccessEmptyState extends StatelessWidget {
             tasksEmptyMessage,
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: AppColors.onBackground,
-                  fontWeight: FontWeight.w600,
-                ),
+              color: AppColors.onBackground,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 12),
           Center(
@@ -314,6 +302,30 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
     await _load(ctx: userContext);
   }
 
+  Future<List<Map<String, dynamic>>> _queryHomeMatchRows({
+    required DateTime now,
+  }) async {
+    final cutoff = homeMatchActiveCutoffUtc(now: now).toIso8601String();
+
+    Future<Object> runQuery(String select) {
+      return _client
+          .from('nevobo_home_matches')
+          .select(select)
+          .gte('starts_at', cutoff)
+          .order('starts_at', ascending: true)
+          .timeout(const Duration(seconds: 20));
+    }
+
+    try {
+      final res = await runQuery(kNevoboHomeMatchesTaskSelectColumns);
+      return (res as List<dynamic>).cast<Map<String, dynamic>>();
+    } catch (e) {
+      if (!isMissingTweedeScheidsrechterColumn(e)) rethrow;
+      final res = await runQuery(kNevoboHomeMatchesTaskSelectColumnsLegacy);
+      return (res as List<dynamic>).cast<Map<String, dynamic>>();
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -350,14 +362,18 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       }
 
       final userContext = ctx ?? AppUserContext.of(context);
-      final targetProfileId = userContext.attendanceProfileId;
-      final allowOpenRefereeTellerSignup = userContext.isInScheidsrechtersTellers;
+      final openStSignup = userContext.isInScheidsrechtersTellers;
+      final signupProfileId = matchTaskSignupProfileId(
+        openScheidsrechtersTellersSignup: openStSignup,
+        loggedInProfileId: userContext.loggedInProfileId,
+        attendanceProfileId: userContext.attendanceProfileId,
+      );
       final taskTeamIds = taskAccessTeamMemberships(
         userContext.memberships,
         viewingAsProfileId: userContext.viewingAsProfileId,
       ).map((m) => m.teamId).toSet();
       List<int> myTeamIds = [];
-      if (!allowOpenRefereeTellerSignup) {
+      if (!openStSignup) {
         if (taskTeamIds.isEmpty) {
           if (!mounted) return;
           setState(() {
@@ -372,8 +388,8 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         }
         myTeamIds = taskTeamIds.toList()..sort();
         final rpcTeamIds = await _loadMyTeamIdsFromRpc();
-        final allowedRpc =
-            rpcTeamIds.where(taskTeamIds.contains).toList()..sort();
+        final allowedRpc = rpcTeamIds.where(taskTeamIds.contains).toList()
+          ..sort();
         if (allowedRpc.isNotEmpty) {
           myTeamIds = {...myTeamIds, ...allowedRpc}.toList()..sort();
         }
@@ -383,7 +399,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
 
       // Voor Teamtaken bepalen we eerst welke fluit/tel taken aan mijn teams zijn gekoppeld.
       final assignedTeamIdsByTaskId = <int, Set<int>>{};
-      if (!allowOpenRefereeTellerSignup && myTeamIds.isNotEmpty) {
+      if (!openStSignup && myTeamIds.isNotEmpty) {
         final aRes = await _client
             .from('club_task_team_assignments')
             .select('task_id, team_id')
@@ -398,25 +414,8 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         }
       }
 
-      // Standaard: alle (aankomende) gekoppelde wedstrijden ophalen en lokaal filteren op taak-toewijzing.
-      // Scheidsrechters/Tellers: mogen op alle wedstrijden inschrijven.
       final now = DateTime.now().toUtc();
-      final mRes = await (allowOpenRefereeTellerSignup
-              ? _client
-                  .from('nevobo_home_matches')
-                  .select(
-                    'match_key, team_code, starts_at, summary, location, linked_team_id, fluiten_task_id, tellen_task_id',
-                  )
-                  .order('starts_at', ascending: true)
-              : _client
-                  .from('nevobo_home_matches')
-                  .select(
-                    'match_key, team_code, starts_at, summary, location, linked_team_id, fluiten_task_id, tellen_task_id',
-                  )
-                  .gte('starts_at', now.subtract(const Duration(days: 1)).toIso8601String())
-                  .order('starts_at', ascending: true))
-          .timeout(const Duration(seconds: 20));
-      final mRows = (mRes as List<dynamic>).cast<Map<String, dynamic>>();
+      final mRows = await _queryHomeMatchRows(now: now);
 
       final matches = <_LinkedMatchTasks>[];
       final taskIds = <int>{};
@@ -426,17 +425,24 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         final matchKey = (row['match_key'] ?? '').toString();
         if (matchKey.isEmpty) continue;
         final startsAt = DateTime.tryParse((row['starts_at'] ?? '').toString());
-        if (startsAt == null) continue;
+        if (startsAt == null || !isHomeMatchStillActive(startsAt, now: now)) {
+          continue;
+        }
         final rawLinkedTeamId = (row['linked_team_id'] as num?)?.toInt();
 
-        final fluitenId = (row['fluiten_task_id'] as num?)?.toInt();
-        final tellenId = (row['tellen_task_id'] as num?)?.toInt();
+        final fluitenId = taskIdFromLinkRow(row, kMatchTaskRoleFluiten);
+        final tellenId = taskIdFromLinkRow(row, kMatchTaskRoleTellen);
+        final tweedeScheidsrechterId = taskIdFromLinkRow(
+          row,
+          kMatchTaskRoleTweedeScheidsrechter,
+        );
         if (fluitenId != null) taskIds.add(fluitenId);
         if (tellenId != null) taskIds.add(tellenId);
+        if (tweedeScheidsrechterId != null) taskIds.add(tweedeScheidsrechterId);
         matchKeys.add(matchKey);
 
         int? linkedTeamId = rawLinkedTeamId;
-        if (!allowOpenRefereeTellerSignup) {
+        if (!openStSignup) {
           // Koppel de wedstrijd aan het team waarvoor deze taak echt is toegewezen.
           final teamFromFluiten = fluitenId == null
               ? null
@@ -446,14 +452,27 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
               ? null
               : (assignedTeamIdsByTaskId[tellenId]?.toList() ?? <int>[]);
           teamFromTellen?.sort();
+          final teamFromTweedeScheidsrechter = tweedeScheidsrechterId == null
+              ? null
+              : (assignedTeamIdsByTaskId[tweedeScheidsrechterId]?.toList() ??
+                    <int>[]);
+          teamFromTweedeScheidsrechter?.sort();
           if (teamFromFluiten != null && teamFromFluiten.isNotEmpty) {
             linkedTeamId = teamFromFluiten.first;
           } else if (teamFromTellen != null && teamFromTellen.isNotEmpty) {
             linkedTeamId = teamFromTellen.first;
+          } else if (teamFromTweedeScheidsrechter != null &&
+              teamFromTweedeScheidsrechter.isNotEmpty) {
+            linkedTeamId = teamFromTweedeScheidsrechter.first;
           }
         }
-        if (linkedTeamId == null) continue;
-        linkedTeamIds.add(linkedTeamId);
+        if (shouldSkipMatchWithoutTeamLink(
+          openScheidsrechtersTellersSignup: openStSignup,
+          linkedTeamId: linkedTeamId,
+        )) {
+          continue;
+        }
+        if (linkedTeamId != null) linkedTeamIds.add(linkedTeamId);
 
         matches.add(
           _LinkedMatchTasks(
@@ -465,26 +484,25 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
             linkedTeamId: linkedTeamId,
             fluitenTaskId: fluitenId,
             tellenTaskId: tellenId,
+            tweedeScheidsrechterTaskId: tweedeScheidsrechterId,
           ),
         );
       }
 
-      // Alleen taken tonen waarop dit profiel mag inschrijven:
-      // - S/T commissie: alle gekoppelde fluit/tel taken
-      // - Overig: alleen taken die aan (een van) mijn teams zijn toegewezen
-      Set<int> assignableTaskIds;
-      if (allowOpenRefereeTellerSignup) {
-        assignableTaskIds = {...taskIds};
-      } else {
-        assignableTaskIds = assignedTeamIdsByTaskId.keys.toSet();
-      }
+      final assignableTaskIds = assignableTaskIdsForUser(
+        openScheidsrechtersTellersSignup: openStSignup,
+        allTaskIdsInMatches: taskIds,
+        teamAssignedTaskIds: assignedTeamIdsByTaskId.keys.toSet(),
+      );
 
       final visibleMatches = matches.where((m) {
-        final canFluiten = m.fluitenTaskId != null &&
-            assignableTaskIds.contains(m.fluitenTaskId);
-        final canTellen = m.tellenTaskId != null &&
-            assignableTaskIds.contains(m.tellenTaskId);
-        return canFluiten || canTellen;
+        return isMatchVisibleForUser(
+          openScheidsrechtersTellersSignup: openStSignup,
+          fluitenTaskId: m.fluitenTaskId,
+          tellenTaskId: m.tellenTaskId,
+          tweedeScheidsrechterTaskId: m.tweedeScheidsrechterTaskId,
+          assignableTaskIds: assignableTaskIds,
+        );
       }).toList();
 
       // My signups (only need signed/unsigned state)
@@ -493,7 +511,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         final sRes = await _client
             .from('club_task_signups')
             .select('task_id')
-            .eq('profile_id', targetProfileId)
+            .eq('profile_id', signupProfileId)
             .inFilter('task_id', taskIds.toList())
             .timeout(const Duration(seconds: 20));
         final sRows = (sRes as List<dynamic>).cast<Map<String, dynamic>>();
@@ -504,20 +522,20 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       }
 
       final allTeamIds = linkedTeamIds.toList()..sort();
-      final teamNameById = await _loadTeamNames(teamIds: allTeamIds).timeout(
-        const Duration(seconds: 20),
-        onTimeout: () => <int, String>{},
-      );
+      final teamNameById = await _loadTeamNames(
+        teamIds: allTeamIds,
+      ).timeout(const Duration(seconds: 20), onTimeout: () => <int, String>{});
 
-      final signupNamesByTaskId = await _loadSignupNamesByTaskId(matchKeys: matchKeys).timeout(
-        const Duration(seconds: 20),
-        onTimeout: () => <int, List<String>>{},
-      );
-      final myNames = await _loadProfileDisplayNames({targetProfileId}).timeout(
+      final signupNamesByTaskId =
+          await _loadSignupNamesByTaskId(matchKeys: matchKeys).timeout(
+            const Duration(seconds: 20),
+            onTimeout: () => <int, List<String>>{},
+          );
+      final myNames = await _loadProfileDisplayNames({signupProfileId}).timeout(
         const Duration(seconds: 20),
         onTimeout: () => <String, String>{},
       );
-      final myDisplayName = myNames[targetProfileId] ?? unknownUserName;
+      final myDisplayName = myNames[signupProfileId] ?? unknownUserName;
 
       if (!mounted) return;
       setState(() {
@@ -536,11 +554,16 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       if (!mounted) return;
       setState(() {
         _error = msg;
-        _schemaMissing = msg.contains('PGRST205') ||
+        _schemaMissing =
+            msg.contains('PGRST205') ||
             msg.contains('schema cache') ||
             msg.contains("Could not find the table 'public.club_tasks'") ||
-            msg.contains("Could not find the table 'public.club_task_signups'") ||
-            msg.contains("Could not find the table 'public.nevobo_home_matches'");
+            msg.contains(
+              "Could not find the table 'public.club_task_signups'",
+            ) ||
+            msg.contains(
+              "Could not find the table 'public.nevobo_home_matches'",
+            );
         _loading = false;
       });
     }
@@ -551,16 +574,22 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
     await _load(ctx: ctx);
   }
 
-  Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
+  Future<Map<String, String>> _loadProfileDisplayNames(
+    Set<String> profileIds,
+  ) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
     final me = _client.auth.currentUser;
     final myId = me?.id ?? '';
-    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '').trim();
+    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '')
+        .trim();
 
     // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
     try {
-      final res = await _client.rpc('get_profile_display_names', params: {'profile_ids': ids});
+      final res = await _client.rpc(
+        'get_profile_display_names',
+        params: {'profile_ids': ids},
+      );
       final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
       final map = <String, String>{};
       for (final r in rows) {
@@ -587,7 +616,10 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       'id, email',
     ]) {
       try {
-        final res = await _client.from('profiles').select(select).inFilter('id', ids);
+        final res = await _client
+            .from('profiles')
+            .select(select)
+            .inFilter('id', ids);
         rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
         break;
       } catch (_) {
@@ -634,15 +666,27 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         final key = (r['match_key'] ?? '').toString();
         if (key.isEmpty || !wanted.contains(key)) continue;
 
-        final flTaskId = (r['fluiten_task_id'] as num?)?.toInt();
-        final teTaskId = (r['tellen_task_id'] as num?)?.toInt();
+        final flTaskId = taskIdFromLinkRow(r, kMatchTaskRoleFluiten);
+        final teTaskId = taskIdFromLinkRow(r, kMatchTaskRoleTellen);
+        final tsTaskId = taskIdFromLinkRow(
+          r,
+          kMatchTaskRoleTweedeScheidsrechter,
+        );
 
-        final fl = (r['fluiten_names'] as List<dynamic>?)
+        final fl =
+            (r['fluiten_names'] as List<dynamic>?)
                 ?.map((e) => e.toString().trim())
                 .where((s) => s.isNotEmpty)
                 .toList() ??
             const [];
-        final te = (r['tellen_names'] as List<dynamic>?)
+        final te =
+            (r['tellen_names'] as List<dynamic>?)
+                ?.map((e) => e.toString().trim())
+                .where((s) => s.isNotEmpty)
+                .toList() ??
+            const [];
+        final ts =
+            (r['tweede_scheidsrechter_names'] as List<dynamic>?)
                 ?.map((e) => e.toString().trim())
                 .where((s) => s.isNotEmpty)
                 .toList() ??
@@ -650,6 +694,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
 
         if (flTaskId != null) out[flTaskId] = fl;
         if (teTaskId != null) out[teTaskId] = te;
+        if (tsTaskId != null) out[tsTaskId] = ts;
       }
       return out;
     } catch (_) {
@@ -661,6 +706,7 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
       for (final m in _matches) ...[
         if (m.fluitenTaskId != null) m.fluitenTaskId!,
         if (m.tellenTaskId != null) m.tellenTaskId!,
+        if (m.tweedeScheidsrechterTaskId != null) m.tweedeScheidsrechterTaskId!,
       ],
     }.toList();
     if (taskIds.isEmpty) return {};
@@ -734,7 +780,12 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
     if (user == null) return;
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (messenger == null) return;
-    final targetProfileId = AppUserContext.of(context).attendanceProfileId;
+    final ctx = AppUserContext.of(context);
+    final targetProfileId = matchTaskSignupProfileId(
+      openScheidsrechtersTellersSignup: ctx.isInScheidsrechtersTellers,
+      loggedInProfileId: ctx.loggedInProfileId,
+      attendanceProfileId: ctx.attendanceProfileId,
+    );
 
     final signedUp = _signedUpTaskIds.contains(taskId);
     String myName = _myDisplayName ?? '';
@@ -785,7 +836,11 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         _signedUpTaskIds = prevSignedUp;
         _signupNamesByTaskId = prevNames;
       });
-      showTopMessageWithMessenger(messenger, 'Kan aanmelding niet wijzigen: $e', isError: true);
+      showTopMessageWithMessenger(
+        messenger,
+        'Kan aanmelding niet wijzigen: $e',
+        isError: true,
+      );
     }
   }
 
@@ -906,6 +961,8 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
     if (_matches.isEmpty) {
       final emptyMessage = _noTeamMembership
           ? tasksEmptyMessage
+          : ctx.isInScheidsrechtersTellers
+          ? 'Geen actuele wedstrijden met open taken.\n\nSwipe omlaag om te verversen.'
           : 'Wedstrijdzaken heeft nog geen wedstrijden aan jouw team(s) gekoppeld.\n\nSwipe omlaag om te verversen.';
       return RefreshIndicator(
         color: AppColors.primary,
@@ -939,10 +996,16 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
         separatorBuilder: (_, _) => const SizedBox(height: 12),
         itemBuilder: (context, index) {
           final m = _matches[index];
-          final raw = (_teamNameById[m.linkedTeamId] ?? '').trim();
-          final teamLabel = raw.isEmpty
-              ? '(naam ontbreekt)'
-              : (raw.startsWith('Team ') ? raw : NevoboApi.displayTeamName(raw));
+          final openStSignup = ctx.isInScheidsrechtersTellers;
+          final teamLabel = m.linkedTeamId == null
+              ? null
+              : () {
+                  final raw = (_teamNameById[m.linkedTeamId] ?? '').trim();
+                  if (raw.isEmpty) return '(naam ontbreekt)';
+                  return raw.startsWith('Team ')
+                      ? raw
+                      : NevoboApi.displayTeamName(raw);
+                }();
 
           return GlassCard(
             child: Padding(
@@ -987,47 +1050,80 @@ class _TeamTasksViewState extends State<_TeamTasksView> {
                     MatchTravelRow(location: m.location),
                   ],
                   const SizedBox(height: 8),
-                  Text(
-                    'Toegewezen aan: $teamLabel',
-                    style: const TextStyle(color: AppColors.textSecondary),
-                  ),
+                  if (teamLabel != null)
+                    Text(
+                      'Toegewezen aan: $teamLabel',
+                      style: const TextStyle(color: AppColors.textSecondary),
+                    )
+                  else if (openStSignup)
+                    const Text(
+                      'Nog niet aan een team gekoppeld',
+                      style: TextStyle(color: AppColors.textSecondary),
+                    ),
                   const SizedBox(height: 12),
                   (() {
-                    final canFluiten = m.fluitenTaskId != null &&
+                    final canFluiten =
+                        m.fluitenTaskId != null &&
                         _assignableTaskIds.contains(m.fluitenTaskId);
-                    final canTellen = m.tellenTaskId != null &&
+                    final canTellen =
+                        m.tellenTaskId != null &&
                         _assignableTaskIds.contains(m.tellenTaskId);
+
+                    final canTweedeScheidsrechter =
+                        m.tweedeScheidsrechterTaskId != null &&
+                        _assignableTaskIds.contains(
+                          m.tweedeScheidsrechterTaskId,
+                        );
 
                     final buttons = <Widget>[
                       if (canFluiten)
-                        Expanded(
-                          child: _TaskSignupButton(
-                            label: 'Fluiten',
-                            taskId: m.fluitenTaskId,
-                            signedUp: m.fluitenTaskId != null &&
-                                _signedUpTaskIds.contains(m.fluitenTaskId),
-                            onToggle: () => _toggleSignup(m.fluitenTaskId!),
-                            subtitle:
-                                'Aangemeld: ${_formatNames(_signupNamesByTaskId[m.fluitenTaskId!] ?? const [])}',
-                          ),
+                        _TaskSignupButton(
+                          label: matchTaskDisplayLabel(kMatchTaskRoleFluiten),
+                          taskId: m.fluitenTaskId,
+                          signedUp:
+                              m.fluitenTaskId != null &&
+                              _signedUpTaskIds.contains(m.fluitenTaskId),
+                          onToggle: () => _toggleSignup(m.fluitenTaskId!),
+                          subtitle:
+                              'Aangemeld: ${_formatNames(_signupNamesByTaskId[m.fluitenTaskId!] ?? const [])}',
                         ),
-                      if (canFluiten && canTellen) const SizedBox(width: 10),
                       if (canTellen)
-                        Expanded(
-                          child: _TaskSignupButton(
-                            label: 'Tellen',
-                            taskId: m.tellenTaskId,
-                            signedUp: m.tellenTaskId != null &&
-                                _signedUpTaskIds.contains(m.tellenTaskId),
-                            onToggle: () => _toggleSignup(m.tellenTaskId!),
-                            subtitle:
-                                'Aangemeld: ${_formatNames(_signupNamesByTaskId[m.tellenTaskId!] ?? const [])}',
+                        _TaskSignupButton(
+                          label: matchTaskDisplayLabel(kMatchTaskRoleTellen),
+                          taskId: m.tellenTaskId,
+                          signedUp:
+                              m.tellenTaskId != null &&
+                              _signedUpTaskIds.contains(m.tellenTaskId),
+                          onToggle: () => _toggleSignup(m.tellenTaskId!),
+                          subtitle:
+                              'Aangemeld: ${_formatNames(_signupNamesByTaskId[m.tellenTaskId!] ?? const [])}',
+                        ),
+                      if (canTweedeScheidsrechter)
+                        _TaskSignupButton(
+                          label: matchTaskDisplayLabel(
+                            kMatchTaskRoleTweedeScheidsrechter,
                           ),
+                          taskId: m.tweedeScheidsrechterTaskId,
+                          signedUp:
+                              m.tweedeScheidsrechterTaskId != null &&
+                              _signedUpTaskIds.contains(
+                                m.tweedeScheidsrechterTaskId,
+                              ),
+                          onToggle: () =>
+                              _toggleSignup(m.tweedeScheidsrechterTaskId!),
+                          subtitle:
+                              'Aangemeld: ${_formatNames(_signupNamesByTaskId[m.tweedeScheidsrechterTaskId!] ?? const [])}',
                         ),
                     ];
 
                     if (buttons.isEmpty) return const SizedBox.shrink();
-                    return Row(children: buttons);
+                    return Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: buttons
+                          .map((button) => SizedBox(width: 170, child: button))
+                          .toList(),
+                    );
                   })(),
                 ],
               ),
@@ -1045,9 +1141,10 @@ class _LinkedMatchTasks {
   final DateTime startsAt;
   final String summary;
   final String location;
-  final int linkedTeamId;
+  final int? linkedTeamId;
   final int? fluitenTaskId;
   final int? tellenTaskId;
+  final int? tweedeScheidsrechterTaskId;
 
   const _LinkedMatchTasks({
     required this.matchKey,
@@ -1058,6 +1155,7 @@ class _LinkedMatchTasks {
     required this.linkedTeamId,
     required this.fluitenTaskId,
     required this.tellenTaskId,
+    required this.tweedeScheidsrechterTaskId,
   });
 }
 
@@ -1128,13 +1226,16 @@ class _OverviewHomeMatchesView extends StatefulWidget {
 
   /// Bij commissies: true (koppelen/verdelen). Bij Taken-overzicht: false (alleen weergave).
   final bool allowManage;
-  /// S/T-modus: iedereen in deze view mag zich aanmelden op fluiten/tellen.
+
+  /// S/T-modus: echte S/T-leden mogen zich voor alle drie de functies aanmelden.
   final bool allowSignupForAll;
+
   /// Alleen true voor Commissies > Wedstrijdzaken (technische foutdetails tonen).
   final bool showTechnicalErrors;
 
   @override
-  State<_OverviewHomeMatchesView> createState() => _OverviewHomeMatchesViewState();
+  State<_OverviewHomeMatchesView> createState() =>
+      _OverviewHomeMatchesViewState();
 }
 
 class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
@@ -1148,7 +1249,8 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
   bool _supabaseLinkTableMissing = false;
   Map<String, Map<String, dynamic>> _linkRowsByKey = const {};
   Map<String, _MatchSignupSummary> _signupsByKey = const {};
-  Map<int, int> _teamIdByTaskId = const {}; // task_id -> team_id (from club_task_team_assignments)
+  Map<int, int> _teamIdByTaskId =
+      const {}; // task_id -> team_id (from club_task_team_assignments)
   Set<int> _mySignedUpTaskIds = const {};
 
   bool _teamsLoading = false;
@@ -1187,25 +1289,50 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     try {
       if (widget.allowSignupForAll) {
         final now = DateTime.now();
-        final res = await _client
-            .from('nevobo_home_matches')
-            .select('match_key, team_code, starts_at, summary, location, linked_team_id, fluiten_task_id, tellen_task_id')
-            .order('starts_at', ascending: true)
-            .limit(2000);
-        final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        final cutoff = homeMatchActiveCutoffUtc(now: now).toIso8601String();
+        List<Map<String, dynamic>> rows;
+        try {
+          final res = await _client
+              .from('nevobo_home_matches')
+              .select(kNevoboHomeMatchesTaskSelectColumns)
+              .gte('starts_at', cutoff)
+              .order('starts_at', ascending: true)
+              .limit(2000);
+          rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        } catch (e) {
+          if (!isMissingTweedeScheidsrechterColumn(e)) rethrow;
+          final res = await _client
+              .from('nevobo_home_matches')
+              .select(kNevoboHomeMatchesTaskSelectColumnsLegacy)
+              .gte('starts_at', cutoff)
+              .order('starts_at', ascending: true)
+              .limit(2000);
+          rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        }
         final out = <_HomeMatch>[];
         final linkRows = <String, Map<String, dynamic>>{};
         for (final row in rows) {
           final key = (row['match_key'] ?? '').toString().trim();
           final teamCode = (row['team_code'] ?? '').toString().trim();
-          final startsAt = DateTime.tryParse((row['starts_at'] ?? '').toString());
+          final startsAt = DateTime.tryParse(
+            (row['starts_at'] ?? '').toString(),
+          );
           if (key.isEmpty || teamCode.isEmpty || startsAt == null) continue;
-          final localStart = startsAt.toLocal();
-          if (localStart.isBefore(now)) continue;
+          if (!isHomeMatchStillActive(startsAt, now: now)) continue;
+          if (!hasAnyMatchTaskId(
+            fluitenTaskId: taskIdFromLinkRow(row, kMatchTaskRoleFluiten),
+            tellenTaskId: taskIdFromLinkRow(row, kMatchTaskRoleTellen),
+            tweedeScheidsrechterTaskId: taskIdFromLinkRow(
+              row,
+              kMatchTaskRoleTweedeScheidsrechter,
+            ),
+          )) {
+            continue;
+          }
           out.add(
             _HomeMatch(
               teamCode: teamCode,
-              start: localStart,
+              start: startsAt.toLocal(),
               summary: (row['summary'] ?? '').toString().trim(),
               location: (row['location'] ?? '').toString().trim(),
             ),
@@ -1215,8 +1342,13 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         out.sort((a, b) => a.start.compareTo(b.start));
         final keys = out.map(_matchKey).toList();
         final teamIdByTaskId = await _loadTeamAssignmentsForLinkRows(linkRows);
-        final signups = await _loadSignupsByMatchKey(keys: keys, linkRows: linkRows);
-        final mySignedUpTaskIds = await _loadMySignedUpTaskIds(linkRows: linkRows);
+        final signups = await _loadSignupsByMatchKey(
+          keys: keys,
+          linkRows: linkRows,
+        );
+        final mySignedUpTaskIds = await _loadMySignedUpTaskIds(
+          linkRows: linkRows,
+        );
         if (!mounted) return;
         setState(() {
           _matches = out;
@@ -1292,7 +1424,11 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
 
       final statuses = linkRows == null
           ? <String, _MatchLinkStatus>{}
-          : _statusesFromLinkRows(keys: keys, rows: linkRows, teamIdByTaskId: teamIdByTaskId);
+          : _statusesFromLinkRows(
+              keys: keys,
+              rows: linkRows,
+              teamIdByTaskId: teamIdByTaskId,
+            );
 
       final signups = linkRows == null
           ? <String, _MatchSignupSummary>{}
@@ -1329,13 +1465,17 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     required Map<String, Map<String, dynamic>> linkRows,
   }) async {
     final ctx = AppUserContext.of(context);
-    final targetProfileId = ctx.attendanceProfileId;
+    final targetProfileId = matchTaskSignupProfileId(
+      openScheidsrechtersTellersSignup: widget.allowSignupForAll,
+      loggedInProfileId: ctx.loggedInProfileId,
+      attendanceProfileId: ctx.attendanceProfileId,
+    );
     final taskIds = <int>{};
     for (final row in linkRows.values) {
-      final fl = (row['fluiten_task_id'] as num?)?.toInt();
-      final te = (row['tellen_task_id'] as num?)?.toInt();
-      if (fl != null) taskIds.add(fl);
-      if (te != null) taskIds.add(te);
+      for (final role in kMatchTaskRoles) {
+        final id = taskIdFromLinkRow(row, role);
+        if (id != null) taskIds.add(id);
+      }
     }
     if (taskIds.isEmpty) return {};
     try {
@@ -1358,7 +1498,11 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
 
   Future<void> _toggleSignupForTask(int taskId) async {
     final ctx = AppUserContext.of(context);
-    final profileId = ctx.attendanceProfileId;
+    final profileId = matchTaskSignupProfileId(
+      openScheidsrechtersTellersSignup: widget.allowSignupForAll,
+      loggedInProfileId: ctx.loggedInProfileId,
+      attendanceProfileId: ctx.attendanceProfileId,
+    );
     final signed = _mySignedUpTaskIds.contains(taskId);
     try {
       if (signed) {
@@ -1394,55 +1538,19 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     return 'Aanmelden mislukt: $e';
   }
 
-  Future<int?> _ensureTaskForMatchRole(_HomeMatch match, String role) async {
-    final user = _client.auth.currentUser;
-    if (user == null) return null;
-    final key = _matchKey(match);
-    final link = _linkRowsByKey[key];
-    final existing = role == 'fluiten'
-        ? (link?['fluiten_task_id'] as num?)?.toInt()
-        : (link?['tellen_task_id'] as num?)?.toInt();
-    if (existing != null) return existing;
-
-    final titlePrefix = role == 'fluiten' ? 'Fluiten' : 'Tellen';
-    final inserted = await _client
-        .from('club_tasks')
-        .insert({
-          'title': '$titlePrefix (${NevoboApi.displayTeamCode(match.teamCode)})',
-          'type': role,
-          'required': true,
-          'starts_at': match.start.toUtc().toIso8601String(),
-          'location': match.location,
-          'notes': [
-            key,
-            'kind:$role',
-            NevoboApi.displayTeamName(match.summary),
-            if (match.location.isNotEmpty) 'Locatie: ${match.location}',
-          ].join('\n'),
-          'created_by': user.id,
-        })
-        .select('task_id')
-        .single();
-    final taskId = (inserted['task_id'] as num).toInt();
-
-    await _client.from('nevobo_home_matches').upsert({
-      'match_key': key,
-      'team_code': match.teamCode,
-      'starts_at': match.start.toUtc().toIso8601String(),
-      'summary': match.summary,
-      'location': match.location,
-      if (role == 'fluiten') 'fluiten_task_id': taskId,
-      if (role == 'tellen') 'tellen_task_id': taskId,
-      'linked_by': user.id,
-    });
-    await _refreshLinkRowForKey(key);
-    return taskId;
-  }
-
   Future<void> _signupForMatchRole(_HomeMatch match, String role) async {
+    final link = _linkRowsByKey[_matchKey(match)];
+    final taskId = taskIdFromLinkRow(link, role);
+    if (taskId == null) {
+      if (!mounted) return;
+      showTopMessage(
+        context,
+        'Deze taak is nog niet beschikbaar. Wedstrijdzaken moet deze eerst koppelen.',
+        isError: true,
+      );
+      return;
+    }
     try {
-      final taskId = await _ensureTaskForMatchRole(match, role);
-      if (taskId == null) return;
       await _toggleSignupForTask(taskId);
     } catch (e) {
       if (!mounted) return;
@@ -1467,16 +1575,22 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     return 'nevobo_match:${m.teamCode}:$utc';
   }
 
-  Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
+  Future<Map<String, String>> _loadProfileDisplayNames(
+    Set<String> profileIds,
+  ) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
     final me = _client.auth.currentUser;
     final myId = me?.id ?? '';
-    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '').trim();
+    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '')
+        .trim();
 
     // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
     try {
-      final res = await _client.rpc('get_profile_display_names', params: {'profile_ids': ids});
+      final res = await _client.rpc(
+        'get_profile_display_names',
+        params: {'profile_ids': ids},
+      );
       final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
       final map = <String, String>{};
       for (final r in rows) {
@@ -1503,7 +1617,10 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       'id, email',
     ]) {
       try {
-        final res = await _client.from('profiles').select(select).inFilter('id', ids);
+        final res = await _client
+            .from('profiles')
+            .select(select)
+            .inFilter('id', ids);
         rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
         break;
       } catch (_) {
@@ -1543,38 +1660,46 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         final key = (r['match_key'] ?? '').toString();
         if (key.isEmpty || !wanted.contains(key)) continue;
 
-        final fl = (r['fluiten_names'] as List<dynamic>?)
+        final fl =
+            (r['fluiten_names'] as List<dynamic>?)
                 ?.map((e) => e.toString().trim())
                 .where((s) => s.isNotEmpty)
                 .toList() ??
             const [];
-        final te = (r['tellen_names'] as List<dynamic>?)
+        final te =
+            (r['tellen_names'] as List<dynamic>?)
                 ?.map((e) => e.toString().trim())
                 .where((s) => s.isNotEmpty)
                 .toList() ??
             const [];
-        out[key] = _MatchSignupSummary(fluitenNames: fl, tellenNames: te);
+        final ts =
+            (r['tweede_scheidsrechter_names'] as List<dynamic>?)
+                ?.map((e) => e.toString().trim())
+                .where((s) => s.isNotEmpty)
+                .toList() ??
+            const [];
+        out[key] = _MatchSignupSummary(
+          fluitenNames: fl,
+          tellenNames: te,
+          tweedeScheidsrechterNames: ts,
+        );
       }
       return out;
     } catch (_) {
       // fallback below
     }
 
-    // Fallback: load signups by task_id and resolve names best-effort.
     final taskIds = <int>{};
     final taskIdToKeyAndType = <int, (String, String)>{};
     for (final entry in linkRows.entries) {
       final key = entry.key;
       final row = entry.value;
-      final fl = (row['fluiten_task_id'] as num?)?.toInt();
-      final te = (row['tellen_task_id'] as num?)?.toInt();
-      if (fl != null) {
-        taskIds.add(fl);
-        taskIdToKeyAndType[fl] = (key, 'fluiten');
-      }
-      if (te != null) {
-        taskIds.add(te);
-        taskIdToKeyAndType[te] = (key, 'tellen');
+      for (final role in kMatchTaskRoles) {
+        final id = taskIdFromLinkRow(row, role);
+        if (id != null) {
+          taskIds.add(id);
+          taskIdToKeyAndType[id] = (key, role);
+        }
       }
     }
 
@@ -1594,8 +1719,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
 
     final namesById = await _loadProfileDisplayNames(profileIds);
 
-    final flByKey = <String, List<String>>{};
-    final teByKey = <String, List<String>>{};
+    final namesByKeyAndRole = <String, Map<String, List<String>>>{};
     for (final r in rows) {
       final taskId = (r['task_id'] as num?)?.toInt();
       final profileId = r['profile_id']?.toString() ?? '';
@@ -1605,21 +1729,29 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       final key = mapping.$1;
       final type = mapping.$2;
       final name = (namesById[profileId] ?? unknownUserName).trim();
-      if (type == 'fluiten') {
-        flByKey.putIfAbsent(key, () => []).add(name);
-      } else if (type == 'tellen') {
-        teByKey.putIfAbsent(key, () => []).add(name);
-      }
+      namesByKeyAndRole
+          .putIfAbsent(key, () => {})
+          .putIfAbsent(type, () => [])
+          .add(name);
     }
 
     final out = <String, _MatchSignupSummary>{};
     for (final key in keys) {
-      final fl = flByKey[key] ?? const [];
-      final te = teByKey[key] ?? const [];
-      if (fl.isEmpty && te.isEmpty) continue;
+      final byRole = namesByKeyAndRole[key] ?? const {};
+      final fl = List<String>.from(byRole[kMatchTaskRoleFluiten] ?? const []);
+      final te = List<String>.from(byRole[kMatchTaskRoleTellen] ?? const []);
+      final ts = List<String>.from(
+        byRole[kMatchTaskRoleTweedeScheidsrechter] ?? const [],
+      );
+      if (fl.isEmpty && te.isEmpty && ts.isEmpty) continue;
       fl.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
       te.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-      out[key] = _MatchSignupSummary(fluitenNames: fl, tellenNames: te);
+      ts.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      out[key] = _MatchSignupSummary(
+        fluitenNames: fl,
+        tellenNames: te,
+        tweedeScheidsrechterNames: ts,
+      );
     }
     return out;
   }
@@ -1630,24 +1762,64 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
   ) async {
     final taskIds = <int>{};
     for (final row in linkRows.values) {
-      final fl = (row['fluiten_task_id'] as num?)?.toInt();
-      final te = (row['tellen_task_id'] as num?)?.toInt();
-      if (fl != null) taskIds.add(fl);
-      if (te != null) taskIds.add(te);
+      for (final role in kMatchTaskRoles) {
+        final id = taskIdFromLinkRow(row, role);
+        if (id != null) taskIds.add(id);
+      }
     }
     return _loadTeamAssignmentsForTaskIds(taskIds.toList());
   }
 
-  int? _linkedTeamIdForFluiten(_HomeMatch m) {
+  int? _linkedTeamIdForRole(_HomeMatch m, String role) {
     final row = _linkRowsByKey[_matchKey(m)];
-    final taskId = (row?['fluiten_task_id'] as num?)?.toInt();
+    final taskId = taskIdFromLinkRow(row, role);
     return taskId != null ? _teamIdByTaskId[taskId] : null;
   }
 
-  int? _linkedTeamIdForTellen(_HomeMatch m) {
-    final row = _linkRowsByKey[_matchKey(m)];
-    final taskId = (row?['tellen_task_id'] as num?)?.toInt();
-    return taskId != null ? _teamIdByTaskId[taskId] : null;
+  Future<Map<String, Map<String, dynamic>>?> _selectLinkRowsForKeys(
+    List<String> keys,
+  ) async {
+    try {
+      final res = await _client
+          .from('nevobo_home_matches')
+          .select(kNevoboHomeMatchesLinkSelectColumns)
+          .inFilter('match_key', keys);
+      return _linkRowsMapFromList(res);
+    } catch (e) {
+      if (!isMissingTweedeScheidsrechterColumn(e)) rethrow;
+      final res = await _client
+          .from('nevobo_home_matches')
+          .select(kNevoboHomeMatchesLinkSelectColumnsLegacy)
+          .inFilter('match_key', keys);
+      return _linkRowsMapFromList(res);
+    }
+  }
+
+  Map<String, Map<String, dynamic>> _linkRowsMapFromList(Object res) {
+    final list = (res as List<dynamic>).cast<Map<String, dynamic>>();
+    final map = <String, Map<String, dynamic>>{};
+    for (final r in list) {
+      final k = (r['match_key'] ?? '').toString();
+      if (k.isNotEmpty) map[k] = r;
+    }
+    return map;
+  }
+
+  Future<Map<String, dynamic>?> _selectLinkRowForKey(String key) async {
+    try {
+      return await _client
+          .from('nevobo_home_matches')
+          .select(kNevoboHomeMatchesLinkSelectColumns)
+          .eq('match_key', key)
+          .maybeSingle();
+    } catch (e) {
+      if (!isMissingTweedeScheidsrechterColumn(e)) rethrow;
+      return await _client
+          .from('nevobo_home_matches')
+          .select(kNevoboHomeMatchesLinkSelectColumnsLegacy)
+          .eq('match_key', key)
+          .maybeSingle();
+    }
   }
 
   Future<void> _ensureTeamsLoaded() async {
@@ -1703,7 +1875,9 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       // Table missing / schema cache
       if (msg.contains('PGRST205') ||
           msg.contains('schema cache') ||
-          msg.contains("Could not find the table 'public.nevobo_home_matches'")) {
+          msg.contains(
+            "Could not find the table 'public.nevobo_home_matches'",
+          )) {
         return null;
       }
       // RLS/other errors -> still return null and show warning
@@ -1713,17 +1887,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     // Load rows for our keys
     final keys = matches.map(_matchKey).toSet().toList();
     try {
-      final res = await _client
-          .from('nevobo_home_matches')
-          .select('match_key, linked_team_id, fluiten_task_id, tellen_task_id')
-          .inFilter('match_key', keys);
-      final list = (res as List<dynamic>).cast<Map<String, dynamic>>();
-      final map = <String, Map<String, dynamic>>{};
-      for (final r in list) {
-        final k = (r['match_key'] ?? '').toString();
-        if (k.isNotEmpty) map[k] = r;
-      }
-      return map;
+      return await _selectLinkRowsForKeys(keys);
     } catch (_) {
       return null;
     }
@@ -1737,19 +1901,18 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     final out = <String, _MatchLinkStatus>{};
     for (final key in keys) {
       final r = rows[key];
-      final fluitenId = (r?['fluiten_task_id'] as num?)?.toInt();
-      final tellenId = (r?['tellen_task_id'] as num?)?.toInt();
-
-      final hasFluiten = fluitenId != null;
-      final hasTellen = tellenId != null;
-      final fluitenAssigned = hasFluiten && teamIdByTaskId[fluitenId] != null;
-      final tellenAssigned = hasTellen && teamIdByTaskId[tellenId] != null;
+      final fluitenId = taskIdFromLinkRow(r, kMatchTaskRoleFluiten);
+      final tellenId = taskIdFromLinkRow(r, kMatchTaskRoleTellen);
+      final tweedeId = taskIdFromLinkRow(r, kMatchTaskRoleTweedeScheidsrechter);
 
       out[key] = _MatchLinkStatus(
-        hasFluiten: hasFluiten,
-        hasTellen: hasTellen,
-        fluitenAssigned: fluitenAssigned,
-        tellenAssigned: tellenAssigned,
+        hasFluiten: fluitenId != null,
+        hasTellen: tellenId != null,
+        hasTweedeScheidsrechter: tweedeId != null,
+        fluitenAssigned: fluitenId != null && teamIdByTaskId[fluitenId] != null,
+        tellenAssigned: tellenId != null && teamIdByTaskId[tellenId] != null,
+        tweedeScheidsrechterAssigned:
+            tweedeId != null && teamIdByTaskId[tweedeId] != null,
       );
     }
     return out;
@@ -1757,11 +1920,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
 
   Future<void> _refreshStatusForKey(String key) async {
     final byKind = await _taskIdByKindForMatchKey(key);
-    final fluitenId = byKind['fluiten'];
-    final tellenId = byKind['tellen'];
-    final ids = <int>[
-      ...([fluitenId, tellenId].whereType<int>()),
-    ];
+    final ids = byKind.values.toList();
 
     final assigned = <int>{};
     if (ids.isNotEmpty) {
@@ -1780,11 +1939,17 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       }
     }
 
+    final fluitenId = byKind[kMatchTaskRoleFluiten];
+    final tellenId = byKind[kMatchTaskRoleTellen];
+    final tweedeId = byKind[kMatchTaskRoleTweedeScheidsrechter];
     final status = _MatchLinkStatus(
       hasFluiten: fluitenId != null,
       hasTellen: tellenId != null,
+      hasTweedeScheidsrechter: tweedeId != null,
       fluitenAssigned: fluitenId != null && assigned.contains(fluitenId),
       tellenAssigned: tellenId != null && assigned.contains(tellenId),
+      tweedeScheidsrechterAssigned:
+          tweedeId != null && assigned.contains(tweedeId),
     );
 
     if (!mounted) return;
@@ -1795,20 +1960,11 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
 
   Future<void> _refreshLinkRowForKey(String key) async {
     try {
-      final res = await _client
-          .from('nevobo_home_matches')
-          .select('match_key, linked_team_id, fluiten_task_id, tellen_task_id')
-          .eq('match_key', key)
-          .maybeSingle();
-      final Map<String, dynamic>? row = res;
+      final Map<String, dynamic>? row = await _selectLinkRowForKey(key);
       if (!mounted) return;
       if (row == null) return;
 
-      final flId = (row['fluiten_task_id'] as num?)?.toInt();
-      final teId = (row['tellen_task_id'] as num?)?.toInt();
-      final taskIds = <int>[
-        ...([flId, teId].whereType<int>()),
-      ];
+      final taskIds = <int>[...taskIdsByRoleFromLinkRow(row).values];
       final teamIdByTaskId = taskIds.isNotEmpty
           ? await _loadTeamAssignmentsForTaskIds(taskIds)
           : <int, int>{};
@@ -1828,7 +1984,9 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     }
   }
 
-  Future<Map<int, int>> _loadTeamAssignmentsForTaskIds(List<int> taskIds) async {
+  Future<Map<int, int>> _loadTeamAssignmentsForTaskIds(
+    List<int> taskIds,
+  ) async {
     if (taskIds.isEmpty) return {};
     try {
       final res = await _client
@@ -1850,24 +2008,17 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     }
   }
 
-  Widget _statusButtonsForMatch(
-    _HomeMatch match,
-    int? linkedTeamIdFluiten,
-    int? linkedTeamIdTellen,
-    AppUserContext ctx,
-  ) {
+  Widget _statusButtonsForMatch(_HomeMatch match, AppUserContext ctx) {
     final key = _matchKey(match);
     final s = _statusByKey[key] ?? const _MatchLinkStatus.empty();
 
     final canTap = widget.allowManage && ctx.canManageTasks;
 
-    Widget linkButton(
-      String label,
-      bool assigned,
-      String teamTextUnder, {
-      required bool onlyFluiten,
-      required bool onlyTellen,
-    }) {
+    Widget linkButton(String role, bool assigned, int? linkedTeamId) {
+      final label = matchTaskDisplayLabel(role);
+      final teamTextUnder = linkedTeamId != null
+          ? _teamLabel(linkedTeamId)
+          : 'Niet gekoppeld';
       final border = assigned ? AppColors.primary : AppColors.textSecondary;
       final text = assigned ? AppColors.primary : AppColors.textSecondary;
       return Column(
@@ -1878,16 +2029,14 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
             color: Colors.transparent,
             child: InkWell(
               onTap: canTap
-                  ? () => _openLinkSheet(
-                        ctx: ctx,
-                        match: match,
-                        initialFluiten: onlyFluiten,
-                        initialTellen: onlyTellen,
-                      )
+                  ? () => _openLinkSheet(ctx: ctx, match: match, role: role)
                   : null,
               borderRadius: BorderRadius.circular(999),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(999),
                   border: Border.all(color: border.withValues(alpha: 0.6)),
@@ -1925,25 +2074,18 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       );
     }
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return Wrap(
+      spacing: 12,
+      runSpacing: 8,
+      alignment: WrapAlignment.end,
+      crossAxisAlignment: WrapCrossAlignment.start,
       children: [
-        linkButton(
-          'Fluiten',
-          s.fluitenAssigned,
-          linkedTeamIdFluiten != null ? _teamLabel(linkedTeamIdFluiten) : 'Niet gekoppeld',
-          onlyFluiten: true,
-          onlyTellen: false,
-        ),
-        const SizedBox(width: 12),
-        linkButton(
-          'Tellen',
-          s.tellenAssigned,
-          linkedTeamIdTellen != null ? _teamLabel(linkedTeamIdTellen) : 'Niet gekoppeld',
-          onlyFluiten: false,
-          onlyTellen: true,
-        ),
+        for (final role in kMatchTaskRoles)
+          linkButton(
+            role,
+            s.isAssigned(role),
+            _linkedTeamIdForRole(match, role),
+          ),
       ],
     );
   }
@@ -1951,21 +2093,15 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
   Future<void> _openLinkSheet({
     required AppUserContext ctx,
     required _HomeMatch match,
-    bool? initialFluiten,
-    bool? initialTellen,
+    required String role,
   }) async {
     if (!ctx.canManageTasks) return;
     await _ensureTeamsLoaded();
     if (!mounted) return;
 
-    final fluiten = initialFluiten == true;
-    final tellen = initialTellen == true;
-    final currentLinked = fluiten
-        ? _linkedTeamIdForFluiten(match)
-        : tellen
-            ? _linkedTeamIdForTellen(match)
-            : null;
+    final currentLinked = _linkedTeamIdForRole(match, role);
     final suggested = _teamIdByCode[match.teamCode.trim().toUpperCase()];
+    final taskLabel = matchTaskDisplayLabel(role);
     if (!mounted) return;
 
     final result = await showModalBottomSheet<bool>(
@@ -1974,11 +2110,9 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       backgroundColor: Colors.transparent,
       builder: (sheetContext) {
         var selectedTeamId =
-            currentLinked ?? suggested ?? (_teams.isNotEmpty ? _teams.first.teamId : 0);
-        // Alleen de gekozen taak: Fluiten-knop → fluiten, Tellen-knop → tellen
-        final fluiten = initialFluiten == true;
-        final tellen = initialTellen == true;
-        final taskLabel = fluiten ? 'Fluiten' : 'Tellen';
+            currentLinked ??
+            suggested ??
+            (_teams.isNotEmpty ? _teams.first.teamId : 0);
 
         return SafeArea(
           child: Padding(
@@ -2006,7 +2140,8 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                           ),
                           const Spacer(),
                           IconButton(
-                            onPressed: () => Navigator.of(sheetContext).pop(false),
+                            onPressed: () =>
+                                Navigator.of(sheetContext).pop(false),
                             icon: const Icon(Icons.close),
                           ),
                         ],
@@ -2033,7 +2168,9 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                         const SizedBox(height: 4),
                         Text(
                           match.location,
-                          style: const TextStyle(color: AppColors.textSecondary),
+                          style: const TextStyle(
+                            color: AppColors.textSecondary,
+                          ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -2059,14 +2196,19 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                               fontWeight: FontWeight.w900,
                             ),
                           ),
-                          trailing: const Icon(Icons.search, color: AppColors.primary),
+                          trailing: const Icon(
+                            Icons.search,
+                            color: AppColors.primary,
+                          ),
                           onTap: () async {
                             final picked = await _pickTeamId(
                               context: sheetContext,
                               initialTeamId: selectedTeamId,
                               suggestedTeamId: suggested,
                             );
-                            if (picked != null) setState(() => selectedTeamId = picked);
+                            if (picked != null) {
+                              setState(() => selectedTeamId = picked);
+                            }
                           },
                         ),
                       ),
@@ -2083,12 +2225,13 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                                     ctx: ctx,
                                     match: match,
                                     teamId: selectedTeamId,
-                                    fluiten: fluiten,
-                                    tellen: tellen,
+                                    role: role,
                                   );
                                 },
                           icon: const Icon(Icons.link),
-                          label: Text('Koppel $taskLabel aan ${_teamLabel(selectedTeamId)}'),
+                          label: Text(
+                            'Koppel $taskLabel aan ${_teamLabel(selectedTeamId)}',
+                          ),
                         ),
                       ),
                       if (currentLinked != null) ...[
@@ -2101,8 +2244,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                               await _unlinkMatchTask(
                                 ctx: ctx,
                                 match: match,
-                                fluiten: fluiten,
-                                tellen: tellen,
+                                role: role,
                               );
                             },
                             icon: const Icon(Icons.link_off),
@@ -2131,25 +2273,19 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
   Future<void> _unlinkMatchTask({
     required AppUserContext ctx,
     required _HomeMatch match,
-    required bool fluiten,
-    required bool tellen,
+    required String role,
   }) async {
     if (!ctx.canManageTasks) return;
     if (_client.auth.currentUser == null) return;
+    if (!kMatchTaskRoles.contains(role)) return;
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (messenger == null) return;
 
     final key = _matchKey(match);
-    final kind = fluiten
-        ? 'fluiten'
-        : tellen
-            ? 'tellen'
-            : null;
-    if (kind == null) return;
 
     try {
       final byKind = await _taskIdByKindForMatchKey(key);
-      final taskId = byKind[kind];
+      final taskId = byKind[role];
       if (taskId == null) {
         if (!mounted) return;
         showTopMessageWithMessenger(
@@ -2163,7 +2299,10 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       try {
         await _client.from('club_task_signups').delete().eq('task_id', taskId);
       } catch (_) {}
-      await _client.from('club_task_team_assignments').delete().eq('task_id', taskId);
+      await _client
+          .from('club_task_team_assignments')
+          .delete()
+          .eq('task_id', taskId);
 
       await _maybeClearLinkedTeamIdForMatch(key);
 
@@ -2175,7 +2314,11 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       showTopMessageWithMessenger(messenger, 'Ontkoppeld.');
     } catch (e) {
       if (!mounted) return;
-      showTopMessageWithMessenger(messenger, 'Ontkoppelen mislukt: $e', isError: true);
+      showTopMessageWithMessenger(
+        messenger,
+        'Ontkoppelen mislukt: $e',
+        isError: true,
+      );
     }
   }
 
@@ -2188,12 +2331,15 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       final assignments = await _loadTeamAssignmentsForTaskIds(taskIds);
       if (assignments.isNotEmpty) return;
 
-      await _client.from('nevobo_home_matches').update({
-        'linked_team_id': null,
-        'linked_by': null,
-        'linked_at': null,
-        'updated_by': _client.auth.currentUser?.id,
-      }).eq('match_key', key);
+      await _client
+          .from('nevobo_home_matches')
+          .update({
+            'linked_team_id': null,
+            'linked_by': null,
+            'linked_at': null,
+            'updated_by': _client.auth.currentUser?.id,
+          })
+          .eq('match_key', key);
     } catch (_) {}
   }
 
@@ -2243,7 +2389,8 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                           ),
                           const Spacer(),
                           IconButton(
-                            onPressed: () => Navigator.of(sheetContext).pop(null),
+                            onPressed: () =>
+                                Navigator.of(sheetContext).pop(null),
                             icon: const Icon(Icons.close),
                           ),
                         ],
@@ -2265,8 +2412,10 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                             final t = filtered[index];
                             final isSelected = t.teamId == selected;
                             final code = (t.code ?? '').trim();
-                            final showSubtitle = code.isNotEmpty &&
-                                code.toLowerCase() != t.label.trim().toLowerCase();
+                            final showSubtitle =
+                                code.isNotEmpty &&
+                                code.toLowerCase() !=
+                                    t.label.trim().toLowerCase();
 
                             return ListTile(
                               dense: true,
@@ -2280,13 +2429,19 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                               subtitle: showSubtitle
                                   ? Text(
                                       code,
-                                      style: const TextStyle(color: AppColors.textSecondary),
+                                      style: const TextStyle(
+                                        color: AppColors.textSecondary,
+                                      ),
                                     )
                                   : null,
                               trailing: isSelected
-                                  ? const Icon(Icons.check, color: AppColors.primary)
+                                  ? const Icon(
+                                      Icons.check,
+                                      color: AppColors.primary,
+                                    )
                                   : null,
-                              onTap: () => Navigator.of(sheetContext).pop(t.teamId),
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop(t.teamId),
                             );
                           },
                         ),
@@ -2306,19 +2461,18 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     required AppUserContext ctx,
     required _HomeMatch match,
     required int teamId,
-    required bool fluiten,
-    required bool tellen,
+    required String role,
   }) async {
     if (!ctx.canManageTasks) return;
+    if (!kMatchTaskRoles.contains(role)) return;
     final user = _client.auth.currentUser;
     if (user == null) return;
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (messenger == null) return;
 
     final key = _matchKey(match);
-    int created = 0;
-    var linkedFluiten = false;
-    var linkedTellen = false;
+    var created = 0;
+    final linkedRoles = <String>{};
 
     Future<int> createTask(String type, String title) async {
       final inserted = await _client
@@ -2356,8 +2510,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
           'linked_team_id': teamId,
           'linked_by': user.id,
           'linked_at': DateTime.now().toUtc().toIso8601String(),
-          if (type == 'fluiten') 'fluiten_task_id': taskId,
-          if (type == 'tellen') 'tellen_task_id': taskId,
+          matchTaskIdColumnForRole(type): taskId,
           'updated_by': user.id,
           'created_by': user.id,
         });
@@ -2369,38 +2522,34 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       final existingTaskIds = await _taskIdByKindForMatchKey(key);
       final toAssign = <int>[];
 
-      // Alleen de gekozen taak aanpassen; de andere laten we met rust.
-      if (fluiten) {
-        final existing = existingTaskIds['fluiten'];
-        if (existing != null) {
-          toAssign.add(existing);
-          linkedFluiten = true;
-        } else {
-          await createTask('fluiten', 'Fluiten (${NevoboApi.displayTeamCode(match.teamCode)})');
-          linkedFluiten = true;
-        }
-      }
-
-      if (tellen) {
-        final existing = existingTaskIds['tellen'];
-        if (existing != null) {
-          toAssign.add(existing);
-          linkedTellen = true;
-        } else {
-          await createTask('tellen', 'Tellen (${NevoboApi.displayTeamCode(match.teamCode)})');
-          linkedTellen = true;
-        }
+      final existing = existingTaskIds[role];
+      if (existing != null) {
+        toAssign.add(existing);
+        linkedRoles.add(role);
+      } else {
+        await createTask(
+          role,
+          '${matchTaskTitlePrefix(role)} (${NevoboApi.displayTeamCode(match.teamCode)})',
+        );
+        linkedRoles.add(role);
       }
 
       if (toAssign.isNotEmpty) {
-        await _setAssignmentForTaskIds(taskIds: toAssign, teamId: teamId, assignedBy: user.id);
+        await _setAssignmentForTaskIds(
+          taskIds: toAssign,
+          teamId: teamId,
+          assignedBy: user.id,
+        );
         try {
-          await _client.from('nevobo_home_matches').update({
-            'linked_team_id': teamId,
-            'linked_by': user.id,
-            'linked_at': DateTime.now().toUtc().toIso8601String(),
-            'updated_by': user.id,
-          }).eq('match_key', key);
+          await _client
+              .from('nevobo_home_matches')
+              .update({
+                'linked_team_id': teamId,
+                'linked_by': user.id,
+                'linked_at': DateTime.now().toUtc().toIso8601String(),
+                'updated_by': user.id,
+              })
+              .eq('match_key', key);
         } catch (_) {}
       }
 
@@ -2409,18 +2558,24 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
       if (!mounted) return;
       await _refreshStatusForKey(key);
       if (!mounted) return;
-      if (linkedFluiten || linkedTellen) {
+      if (linkedRoles.isNotEmpty) {
         await _notifyTeamMatchTasksLinked(
           teamId: teamId,
           matchKey: key,
-          fluiten: linkedFluiten,
-          tellen: linkedTellen,
+          linkedRoles: linkedRoles,
         );
       }
-      showTopMessageWithMessenger(messenger, 'Gekoppeld. ($created aangemaakt)');
+      showTopMessageWithMessenger(
+        messenger,
+        'Gekoppeld. ($created aangemaakt)',
+      );
     } catch (e) {
       if (!mounted) return;
-      showTopMessageWithMessenger(messenger, 'Koppelen mislukt: $e', isError: true);
+      showTopMessageWithMessenger(
+        messenger,
+        'Koppelen mislukt: $e',
+        isError: true,
+      );
     }
   }
 
@@ -2432,19 +2587,28 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         excludeTrainingOnly: false,
       );
       if (all.isNotEmpty) {
-        final list = all
-            .map((t) => _TeamOption(
-                  teamId: t.teamId,
-                  label: t.name,
-                  code: NevoboApi.extractCodeFromTeamName(t.name),
-                ))
-            .toList()
-          ..sort((a, b) {
-            final ac = a.code;
-            final bc = b.code;
-            if (ac != null && bc != null) return NevoboApi.compareTeamCodes(ac, bc);
-            return NevoboApi.compareTeamNames(a.label, b.label, volleystarsLast: true);
-          });
+        final list =
+            all
+                .map(
+                  (t) => _TeamOption(
+                    teamId: t.teamId,
+                    label: t.name,
+                    code: NevoboApi.extractCodeFromTeamName(t.name),
+                  ),
+                )
+                .toList()
+              ..sort((a, b) {
+                final ac = a.code;
+                final bc = b.code;
+                if (ac != null && bc != null) {
+                  return NevoboApi.compareTeamCodes(ac, bc);
+                }
+                return NevoboApi.compareTeamNames(
+                  a.label,
+                  b.label,
+                  volleystarsLast: true,
+                );
+              });
         return list;
       }
     } catch (_) {}
@@ -2462,7 +2626,9 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     for (final idField in idFields) {
       for (final nameField in candidates) {
         try {
-          final res = await _client.from('teams').select('$idField, $nameField');
+          final res = await _client
+              .from('teams')
+              .select('$idField, $nameField');
           final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
           final list = <_TeamOption>[];
           for (final row in rows) {
@@ -2482,8 +2648,14 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
             list.sort((a, b) {
               final ac = a.code;
               final bc = b.code;
-              if (ac != null && bc != null) return NevoboApi.compareTeamCodes(ac, bc);
-              return NevoboApi.compareTeamNames(a.label, b.label, volleystarsLast: true);
+              if (ac != null && bc != null) {
+                return NevoboApi.compareTeamCodes(ac, bc);
+              }
+              return NevoboApi.compareTeamNames(
+                a.label,
+                b.label,
+                volleystarsLast: true,
+              );
             });
             return list;
           }
@@ -2498,22 +2670,27 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
   Future<Map<String, int>> _taskIdByKindForMatchKey(String key) async {
     // Prefer the dedicated Supabase table (for spreadsheet syncing).
     try {
-      final res = await _client
+      final row = await _client
           .from('nevobo_home_matches')
-          .select('fluiten_task_id, tellen_task_id')
+          .select(kNevoboHomeMatchesTaskIdSelectColumns)
           .eq('match_key', key)
           .maybeSingle();
-      final Map<String, dynamic>? row = res;
       if (row != null) {
-        final fluitenId = (row['fluiten_task_id'] as num?)?.toInt();
-        final tellenId = (row['tellen_task_id'] as num?)?.toInt();
-        return <String, int>{
-          ...? (fluitenId != null ? {'fluiten': fluitenId} : null),
-          ...? (tellenId != null ? {'tellen': tellenId} : null),
-        };
+        return taskIdsByRoleFromLinkRow(row);
       }
-    } catch (_) {
-      // ignore
+    } catch (e) {
+      if (!isMissingTweedeScheidsrechterColumn(e)) {
+        // ignore and try legacy/fallback below
+      } else {
+        try {
+          final row = await _client
+              .from('nevobo_home_matches')
+              .select(kNevoboHomeMatchesTaskIdSelectColumnsLegacy)
+              .eq('match_key', key)
+              .maybeSingle();
+          if (row != null) return taskIdsByRoleFromLinkRow(row);
+        } catch (_) {}
+      }
     }
 
     // Fallback: legacy method via notes on club_tasks.
@@ -2523,16 +2700,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
           .select('task_id, type, notes')
           .ilike('notes', '$key%');
       final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
-      final out = <String, int>{};
-      for (final row in rows) {
-        final notes = (row['notes'] ?? '').toString();
-        if (!notes.startsWith(key)) continue;
-        final type = (row['type'] ?? '').toString().trim().toLowerCase();
-        final id = (row['task_id'] as num?)?.toInt();
-        if (id == null || type.isEmpty) continue;
-        out[type] = id;
-      }
-      return out;
+      return taskIdsByRoleFromRows(rows);
     } catch (_) {
       return {};
     }
@@ -2546,11 +2714,23 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
     if (taskIds.isEmpty) return;
     // Bij koppelen aan ander team: reset fluiter/teller-aanmeldingen, zodat opnieuw ingedeeld moet worden.
     try {
-      await _client.from('club_task_signups').delete().inFilter('task_id', taskIds);
+      await _client
+          .from('club_task_signups')
+          .delete()
+          .inFilter('task_id', taskIds);
     } catch (_) {}
-    await _client.from('club_task_team_assignments').delete().inFilter('task_id', taskIds);
+    await _client
+        .from('club_task_team_assignments')
+        .delete()
+        .inFilter('task_id', taskIds);
     final rows = taskIds
-        .map((tid) => {'task_id': tid, 'team_id': teamId, 'assigned_by': assignedBy})
+        .map(
+          (tid) => {
+            'task_id': tid,
+            'team_id': teamId,
+            'assigned_by': assignedBy,
+          },
+        )
         .toList();
     await _client.from('club_task_team_assignments').insert(rows);
   }
@@ -2764,10 +2944,8 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
         ),
       );
       for (final m in byDate[d]!) {
-        final linkedTeamIdFluiten = _linkedTeamIdForFluiten(m);
-        final linkedTeamIdTellen = _linkedTeamIdForTellen(m);
         final signup = _signupsByKey[_matchKey(m)];
-          children.add(
+        children.add(
           GlassCard(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
@@ -2833,12 +3011,7 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                           child: FittedBox(
                             fit: BoxFit.scaleDown,
                             alignment: Alignment.centerRight,
-                            child: _statusButtonsForMatch(
-                              m,
-                              linkedTeamIdFluiten,
-                              linkedTeamIdTellen,
-                              ctx,
-                            ),
+                            child: _statusButtonsForMatch(m, ctx),
                           ),
                         ),
                     ],
@@ -2848,44 +3021,49 @@ class _OverviewHomeMatchesViewState extends State<_OverviewHomeMatchesView> {
                     Builder(
                       builder: (_) {
                         final link = _linkRowsByKey[_matchKey(m)];
-                        final flTaskId = (link?['fluiten_task_id'] as num?)?.toInt();
-                        final teTaskId = (link?['tellen_task_id'] as num?)?.toInt();
-                        return Row(
-                          children: [
-                            Expanded(
-                              child: _TaskSignupButton(
-                                label: 'Fluiten',
-                                taskId: flTaskId ?? -1,
-                                signedUp: flTaskId != null && _mySignedUpTaskIds.contains(flTaskId),
-                                onToggle: () => _signupForMatchRole(m, 'fluiten'),
-                                subtitle: null,
-                              ),
+                        final buttons = <Widget>[
+                          for (final role in kMatchTaskRoles)
+                            _TaskSignupButton(
+                              label: matchTaskDisplayLabel(role),
+                              taskId: taskIdFromLinkRow(link, role),
+                              signedUp: () {
+                                final taskId = taskIdFromLinkRow(link, role);
+                                return taskId != null &&
+                                    _mySignedUpTaskIds.contains(taskId);
+                              }(),
+                              onToggle: () => _signupForMatchRole(m, role),
+                              subtitle: null,
                             ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: _TaskSignupButton(
-                                label: 'Tellen',
-                                taskId: teTaskId ?? -1,
-                                signedUp: teTaskId != null && _mySignedUpTaskIds.contains(teTaskId),
-                                onToggle: () => _signupForMatchRole(m, 'tellen'),
-                                subtitle: null,
-                              ),
-                            ),
-                          ],
+                        ];
+                        return Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: buttons
+                              .map(
+                                (button) => SizedBox(width: 170, child: button),
+                              )
+                              .toList(),
                         );
                       },
                     ),
                   ],
                   const SizedBox(height: 10),
                   Text(
-                    'Fluiten: ${signup != null && signup.fluitenNames.isNotEmpty ? _formatNames(signup.fluitenNames) : '-'}',
+                    '${matchTaskDisplayLabel(kMatchTaskRoleFluiten)}: ${signup != null && signup.fluitenNames.isNotEmpty ? _formatNames(signup.fluitenNames) : '-'}',
                     style: const TextStyle(color: AppColors.textSecondary),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    'Tellen: ${signup != null && signup.tellenNames.isNotEmpty ? _formatNames(signup.tellenNames) : '-'}',
+                    '${matchTaskDisplayLabel(kMatchTaskRoleTweedeScheidsrechter)}: ${signup != null && signup.tweedeScheidsrechterNames.isNotEmpty ? _formatNames(signup.tweedeScheidsrechterNames) : '-'}',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${matchTaskDisplayLabel(kMatchTaskRoleTellen)}: ${signup != null && signup.tellenNames.isNotEmpty ? _formatNames(signup.tellenNames) : '-'}',
                     style: const TextStyle(color: AppColors.textSecondary),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
@@ -2949,32 +3127,54 @@ class _TeamOption {
 class _MatchLinkStatus {
   final bool hasFluiten;
   final bool hasTellen;
+  final bool hasTweedeScheidsrechter;
   final bool fluitenAssigned;
   final bool tellenAssigned;
+  final bool tweedeScheidsrechterAssigned;
 
   const _MatchLinkStatus({
     required this.hasFluiten,
     required this.hasTellen,
+    required this.hasTweedeScheidsrechter,
     required this.fluitenAssigned,
     required this.tellenAssigned,
+    required this.tweedeScheidsrechterAssigned,
   });
 
   const _MatchLinkStatus.empty()
-      : hasFluiten = false,
-        hasTellen = false,
-        fluitenAssigned = false,
-        tellenAssigned = false;
+    : hasFluiten = false,
+      hasTellen = false,
+      hasTweedeScheidsrechter = false,
+      fluitenAssigned = false,
+      tellenAssigned = false,
+      tweedeScheidsrechterAssigned = false;
+
+  bool isAssigned(String role) {
+    switch (role) {
+      case kMatchTaskRoleFluiten:
+        return fluitenAssigned;
+      case kMatchTaskRoleTellen:
+        return tellenAssigned;
+      case kMatchTaskRoleTweedeScheidsrechter:
+        return tweedeScheidsrechterAssigned;
+      default:
+        return false;
+    }
+  }
 }
 
 class _MatchSignupSummary {
   final List<String> fluitenNames;
   final List<String> tellenNames;
+  final List<String> tweedeScheidsrechterNames;
 
   const _MatchSignupSummary({
     required this.fluitenNames,
     required this.tellenNames,
+    required this.tweedeScheidsrechterNames,
   });
 }
+
 /* (oude Taken-implementatie staat hieronder; tijdelijk uitgecommentarieerd
    zodat we stap-voor-stap opnieuw kunnen ontwerpen)
 

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/widgets.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 
 TeamMembership _tm(
@@ -6,6 +7,7 @@ TeamMembership _tm(
   String role, {
   String? childName,
   String? childProfileId,
+  String? memberTag,
 }) {
   return TeamMembership(
     teamId: teamId,
@@ -13,10 +15,39 @@ TeamMembership _tm(
     teamName: 'Team $teamId',
     linkedChildDisplayName: childName,
     linkedChildProfileId: childProfileId,
+    memberTag: memberTag,
   );
 }
 
 void main() {
+  test('ouderactie gebruikt kind-id en niet oudernaam of lid-tag', () {
+    const context = AppUserContext(
+      profileId: 'parent-1',
+      email: 'ouder@example.nl',
+      displayName: 'Eigen accountnaam',
+      isGlobalAdmin: false,
+      memberships: [
+        TeamMembership(
+          teamId: 2,
+          role: 'guardian',
+          teamName: 'JB1',
+          linkedChildDisplayName: 'Jessie',
+          linkedChildProfileId: 'child-1',
+          memberTag: 'vader van Jessie',
+        ),
+      ],
+      committees: [],
+      loggedInProfileId: 'parent-1',
+      viewingAsProfileId: 'child-1',
+      viewingAsDisplayName: 'Jessie',
+      child: SizedBox.shrink(),
+    );
+
+    expect(context.displayName, 'Eigen accountnaam');
+    expect(context.attendanceProfileId, 'child-1');
+    expect(context.memberships.single.memberTag, 'vader van Jessie');
+  });
+
   group('mergeTeamMembershipsByTeamId', () {
     test('trainer wint boven speler voor hetzelfde team', () {
       final merged = mergeTeamMembershipsByTeamId([
@@ -43,9 +74,56 @@ void main() {
       final rolesB = {for (final m in b) m.teamId: m.role};
       expect(rolesA, rolesB);
     });
+
+    test('lid-tags blijven per team gescheiden', () {
+      final merged = mergeTeamMembershipsByTeamId([
+        _tm(1, 'player', memberTag: 'aanvoerder'),
+        _tm(2, 'guardian', memberTag: 'vader van Jessie'),
+      ]);
+      final tags = {for (final m in merged) m.teamId: m.memberTag};
+      expect(tags, {1: 'aanvoerder', 2: 'vader van Jessie'});
+    });
+
+    test('winnende teamrol behoudt tag van dubbele koppeling', () {
+      final merged = mergeTeamMembershipsByTeamId([
+        _tm(1, 'player', memberTag: 'aanvoerder'),
+        _tm(1, 'trainer'),
+      ]);
+      expect(merged.single.role, 'trainer');
+      expect(merged.single.memberTag, 'aanvoerder');
+    });
+  });
+
+  group('mergeTeamMembershipsPreservingGuardianProfiles', () {
+    test('bewaart twee kinderen uit hetzelfde team afzonderlijk', () {
+      final merged = mergeTeamMembershipsPreservingGuardianProfiles([
+        _tm(2, 'guardian', childName: 'Jessie', childProfileId: 'child-1'),
+        _tm(2, 'guardian', childName: 'Sam', childProfileId: 'child-2'),
+      ]);
+
+      expect(merged, hasLength(2));
+      expect(
+        merged.map((membership) => membership.linkedChildProfileId).toSet(),
+        {'child-1', 'child-2'},
+      );
+    });
   });
 
   group('splitTeamMembershipsForTrainingTabs', () {
+    test('geselecteerd kind krijgt eigen team bij gedeeld team', () {
+      final memberships = [
+        _tm(2, 'guardian', childName: 'Jessie', childProfileId: 'child-1'),
+        _tm(2, 'guardian', childName: 'Sam', childProfileId: 'child-2'),
+      ];
+
+      final split = splitTeamMembershipsForTrainingTabs(
+        memberships,
+        viewingAsProfileId: 'child-2',
+      );
+
+      expect(split.playerTeams, hasLength(1));
+      expect(split.playerTeams.single.linkedChildProfileId, 'child-2');
+    });
     test('alleen speler van B en E', () {
       final split = splitTeamMembershipsForTrainingTabs([
         _tm(2, 'player'),
@@ -117,76 +195,85 @@ void main() {
   });
 
   group('training tab empty state scenarios', () {
-    test('alleen speler → spelersteams zichtbaar, trainer-melding onder Trainers', () {
-      final split = splitTeamMembershipsForTrainingTabs([_tm(2, 'player')]);
-      expect(split.playerTeams, isNotEmpty);
-      expect(split.trainerTeams, isEmpty);
-      expect(
-        shouldShowTrainingRoleEmptyState(
-          teamsForTab: split.playerTeams,
-          isGlobalAdmin: false,
-        ),
-        isFalse,
-      );
-      expect(
-        shouldShowTrainingRoleEmptyState(
-          teamsForTab: split.trainerTeams,
-          isGlobalAdmin: false,
-        ),
-        isTrue,
-      );
-      expect(
-        trainingTabEmptyMessage(TrainingTabViewRole.trainer),
-        'Je bent niet gekoppeld als trainer aan een team.',
-      );
-    });
+    test(
+      'alleen speler → spelersteams zichtbaar, trainer-melding onder Trainers',
+      () {
+        final split = splitTeamMembershipsForTrainingTabs([_tm(2, 'player')]);
+        expect(split.playerTeams, isNotEmpty);
+        expect(split.trainerTeams, isEmpty);
+        expect(
+          shouldShowTrainingRoleEmptyState(
+            teamsForTab: split.playerTeams,
+            isGlobalAdmin: false,
+          ),
+          isFalse,
+        );
+        expect(
+          shouldShowTrainingRoleEmptyState(
+            teamsForTab: split.trainerTeams,
+            isGlobalAdmin: false,
+          ),
+          isTrue,
+        );
+        expect(
+          trainingTabEmptyMessage(TrainingTabViewRole.trainer),
+          'Je bent niet gekoppeld als trainer aan een team.',
+        );
+      },
+    );
 
-    test('alleen trainer → trainersteams zichtbaar, speler-melding onder Spelers', () {
-      final split = splitTeamMembershipsForTrainingTabs([_tm(1, 'trainer')]);
-      expect(split.trainerTeams, isNotEmpty);
-      expect(split.playerTeams, isEmpty);
-      expect(
-        shouldShowTrainingRoleEmptyState(
-          teamsForTab: split.playerTeams,
-          isGlobalAdmin: false,
-        ),
-        isTrue,
-      );
-      expect(
-        shouldShowTrainingRoleEmptyState(
-          teamsForTab: split.trainerTeams,
-          isGlobalAdmin: false,
-        ),
-        isFalse,
-      );
-      expect(
-        trainingTabEmptyMessage(TrainingTabViewRole.player),
-        'Je bent niet gekoppeld als speler aan een team.',
-      );
-    });
+    test(
+      'alleen trainer → trainersteams zichtbaar, speler-melding onder Spelers',
+      () {
+        final split = splitTeamMembershipsForTrainingTabs([_tm(1, 'trainer')]);
+        expect(split.trainerTeams, isNotEmpty);
+        expect(split.playerTeams, isEmpty);
+        expect(
+          shouldShowTrainingRoleEmptyState(
+            teamsForTab: split.playerTeams,
+            isGlobalAdmin: false,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldShowTrainingRoleEmptyState(
+            teamsForTab: split.trainerTeams,
+            isGlobalAdmin: false,
+          ),
+          isFalse,
+        );
+        expect(
+          trainingTabEmptyMessage(TrainingTabViewRole.player),
+          'Je bent niet gekoppeld als speler aan een team.',
+        );
+      },
+    );
 
-    test('speler én trainer bij verschillende teams → beide subtabs gevuld', () {
-      final split = splitTeamMembershipsForTrainingTabs([
-        _tm(1, 'trainer'),
-        _tm(2, 'player'),
-      ]);
-      expect(split.playerTeams, isNotEmpty);
-      expect(split.trainerTeams, isNotEmpty);
-      expect(
-        shouldShowTrainingRoleEmptyState(
-          teamsForTab: split.playerTeams,
-          isGlobalAdmin: false,
-        ),
-        isFalse,
-      );
-      expect(
-        shouldShowTrainingRoleEmptyState(
-          teamsForTab: split.trainerTeams,
-          isGlobalAdmin: false,
-        ),
-        isFalse,
-      );
-    });
+    test(
+      'speler én trainer bij verschillende teams → beide subtabs gevuld',
+      () {
+        final split = splitTeamMembershipsForTrainingTabs([
+          _tm(1, 'trainer'),
+          _tm(2, 'player'),
+        ]);
+        expect(split.playerTeams, isNotEmpty);
+        expect(split.trainerTeams, isNotEmpty);
+        expect(
+          shouldShowTrainingRoleEmptyState(
+            teamsForTab: split.playerTeams,
+            isGlobalAdmin: false,
+          ),
+          isFalse,
+        );
+        expect(
+          shouldShowTrainingRoleEmptyState(
+            teamsForTab: split.trainerTeams,
+            isGlobalAdmin: false,
+          ),
+          isFalse,
+        );
+      },
+    );
 
     test('geen teamrollen → beide rolgerichte meldingen', () {
       final split = splitTeamMembershipsForTrainingTabs(const []);
@@ -228,12 +315,18 @@ void main() {
 
   group('matchAccessTeamMemberships', () {
     test('alleen speler', () {
-      final teams = matchAccessTeamMemberships([_tm(2, 'player'), _tm(5, 'player')]);
+      final teams = matchAccessTeamMemberships([
+        _tm(2, 'player'),
+        _tm(5, 'player'),
+      ]);
       expect(teams.map((m) => m.teamId).toList()..sort(), [2, 5]);
     });
 
     test('alleen trainer', () {
-      final teams = matchAccessTeamMemberships([_tm(1, 'trainer'), _tm(4, 'trainer')]);
+      final teams = matchAccessTeamMemberships([
+        _tm(1, 'trainer'),
+        _tm(4, 'trainer'),
+      ]);
       expect(teams.map((m) => m.teamId).toList()..sort(), [1, 4]);
     });
 
@@ -265,7 +358,10 @@ void main() {
     test('alleen trainingslid → geen wedstrijdtoegang', () {
       expect(matchAccessTeamMemberships([_tm(1, 'trainingslid')]), isEmpty);
       expect(
-        shouldShowMatchAccessEmptyState(matchTeams: const [], isGlobalAdmin: false),
+        shouldShowMatchAccessEmptyState(
+          matchTeams: const [],
+          isGlobalAdmin: false,
+        ),
         isTrue,
       );
     });
@@ -276,20 +372,37 @@ void main() {
 
     test('geen team → lege melding', () {
       expect(matchAccessTeamMemberships(const []), isEmpty);
-      expect(matchAccessEmptyMessage,
-          'Je bent niet gekoppeld als speler of trainer/coach aan een team.');
+      expect(
+        matchAccessEmptyMessage,
+        'Je bent niet gekoppeld als speler of trainer/coach aan een team.',
+      );
     });
 
     test('guardian met geselecteerd kind → wedstrijden van kindteam', () {
-      final teams = matchAccessTeamMemberships(
-        [
-          _tm(2, 'guardian', childName: 'Kind', childProfileId: 'child-1'),
-          _tm(3, 'guardian', childName: 'Ander', childProfileId: 'child-2'),
-        ],
-        viewingAsProfileId: 'child-1',
-      );
+      final teams = matchAccessTeamMemberships([
+        _tm(2, 'guardian', childName: 'Kind', childProfileId: 'child-1'),
+        _tm(3, 'guardian', childName: 'Ander', childProfileId: 'child-2'),
+      ], viewingAsProfileId: 'child-1');
       expect(teams.map((m) => m.teamId), [2]);
     });
+
+    test(
+      'twee kinderen in hetzelfde team blijven afzonderlijk selecteerbaar',
+      () {
+        final memberships = [
+          _tm(2, 'guardian', childName: 'Jessie', childProfileId: 'child-1'),
+          _tm(2, 'guardian', childName: 'Sam', childProfileId: 'child-2'),
+        ];
+
+        final teams = matchAccessTeamMemberships(
+          memberships,
+          viewingAsProfileId: 'child-2',
+        );
+
+        expect(teams, hasLength(1));
+        expect(teams.single.linkedChildProfileId, 'child-2');
+      },
+    );
 
     test('committee power admin zonder team → lege melding', () {
       expect(
@@ -303,7 +416,10 @@ void main() {
 
     test('global admin → geen lege wedstrijdmelding', () {
       expect(
-        shouldShowMatchAccessEmptyState(matchTeams: const [], isGlobalAdmin: true),
+        shouldShowMatchAccessEmptyState(
+          matchTeams: const [],
+          isGlobalAdmin: true,
+        ),
         isFalse,
       );
     });
@@ -342,8 +458,10 @@ void main() {
 
     test('geen koppeling → exacte lege melding', () {
       expect(taskAccessTeamMemberships(const []), isEmpty);
-      expect(tasksEmptyMessage,
-          'Je bent niet gekoppeld als speler of trainer/coach aan een team.');
+      expect(
+        tasksEmptyMessage,
+        'Je bent niet gekoppeld als speler of trainer/coach aan een team.',
+      );
     });
 
     test('gewone gebruiker zonder team → lege melding', () {
@@ -407,17 +525,9 @@ void main() {
     });
 
     test('ouder/verzorger met geselecteerd kind → teamtaken kind', () {
-      final childTeams = taskAccessTeamMemberships(
-        [
-          _tm(
-            2,
-            'guardian',
-            childName: 'Kind',
-            childProfileId: 'child-1',
-          ),
-        ],
-        viewingAsProfileId: 'child-1',
-      );
+      final childTeams = taskAccessTeamMemberships([
+        _tm(2, 'guardian', childName: 'Kind', childProfileId: 'child-1'),
+      ], viewingAsProfileId: 'child-1');
       expect(childTeams.map((m) => m.teamId).toList(), [2]);
       expect(
         shouldShowTaskAccessEmptyState(

@@ -34,12 +34,14 @@ class _ProfielTabState extends State<ProfielTab> {
   List<Map<String, dynamic>> _teamRoles = [];
   Map<int, String> _teamNamesById = const {};
   List<String> _committeesInProfiel = const [];
+
   /// Future voor gekoppelde ouders (kind ziet met wie die is gekoppeld). Bij refresh opnieuw inladen.
   Future<List<Map<String, dynamic>>>? _linkedParentsFuture;
 
   final Set<String> _processingLinkRequestIds = {};
   String? _unlinkingChildId;
   bool _savingDisplayName = false;
+  int? _savingMemberTagTeamId;
 
   /// Fase B: 0 = Mijn gegevens, 1..n = tab voor gekoppeld kind.
   int _selectedProfileTabIndex = 0;
@@ -53,8 +55,8 @@ class _ProfielTabState extends State<ProfielTab> {
     final provider = (appMeta['provider'] ?? '').toString().toLowerCase();
     final guestEmail = (dotenv.env['GUEST_EMAIL'] ?? '').trim().toLowerCase();
     final userEmail = (user.email ?? '').trim().toLowerCase();
-    final isAnonymousFlag = (appMeta['is_anonymous'] == true) ||
-        (userMeta['is_anonymous'] == true);
+    final isAnonymousFlag =
+        (appMeta['is_anonymous'] == true) || (userMeta['is_anonymous'] == true);
     final isGuestEmail = guestEmail.isNotEmpty && userEmail == guestEmail;
     return isAnonymousFlag || provider == 'anonymous' || isGuestEmail;
   }
@@ -82,12 +84,17 @@ class _ProfielTabState extends State<ProfielTab> {
       final rpc = await _client.rpc('get_my_linked_parent_profiles');
       final rows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
       return rows
-          .map((r) => {
-                'profile_id': r['profile_id']?.toString(),
-                'display_name': (r['display_name']?.toString() ?? '').trim(),
-              })
-          .where((m) =>
-              m['profile_id'] != null && (m['profile_id'] as String).isNotEmpty)
+          .map(
+            (r) => {
+              'profile_id': r['profile_id']?.toString(),
+              'display_name': (r['display_name']?.toString() ?? '').trim(),
+            },
+          )
+          .where(
+            (m) =>
+                m['profile_id'] != null &&
+                (m['profile_id'] as String).isNotEmpty,
+          )
           .toList();
     } catch (_) {
       return [];
@@ -154,12 +161,13 @@ class _ProfielTabState extends State<ProfielTab> {
       }
 
       // 2b) Teamnamen ophalen (best-effort)
-      final teamIds = roles
-          .map((r) => (r['team_id'] as num?)?.toInt())
-          .whereType<int>()
-          .toSet()
-          .toList()
-        ..sort();
+      final teamIds =
+          roles
+              .map((r) => (r['team_id'] as num?)?.toInt())
+              .whereType<int>()
+              .toSet()
+              .toList()
+            ..sort();
 
       Map<int, String> teamNamesById = await _loadTeamNames(teamIds: teamIds);
       if (teamNamesById.isEmpty && teamIds.isNotEmpty) {
@@ -168,7 +176,8 @@ class _ProfielTabState extends State<ProfielTab> {
             'get_team_names_for_app',
             params: {'p_team_ids': teamIds},
           );
-          final rows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+          final rows =
+              (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
           final map = <int, String>{};
           for (final r in rows) {
             final tid = (r['team_id'] as num?)?.toInt();
@@ -185,14 +194,19 @@ class _ProfielTabState extends State<ProfielTab> {
       List<String> committeesInProfiel = const [];
       try {
         final rpc = await _client.rpc('get_my_committees');
-        final rows = (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+        final rows =
+            (rpc as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
         final set = <String>{};
         for (final row in rows) {
           final raw = row['committee_name']?.toString() ?? '';
           final n = normalizeCommitteeKey(raw);
           if (n.isNotEmpty) set.add(n);
         }
-        committeesInProfiel = set.toList()..sort((a, b) => _formatCommitteeName(a).compareTo(_formatCommitteeName(b)));
+        committeesInProfiel = set.toList()
+          ..sort(
+            (a, b) =>
+                _formatCommitteeName(a).compareTo(_formatCommitteeName(b)),
+          );
       } catch (_) {
         try {
           final cmRes = await _client
@@ -254,7 +268,8 @@ class _ProfielTabState extends State<ProfielTab> {
         params: {'child_profile_id': childId},
       );
       final res = await _client.rpc('get_my_linked_child_profiles');
-      final list = (res as List<dynamic>?)
+      final list =
+          (res as List<dynamic>?)
               ?.map((e) {
                 final m = e as Map<String, dynamic>?;
                 if (m == null) return null;
@@ -272,9 +287,9 @@ class _ProfielTabState extends State<ProfielTab> {
       notifier.setChildren(list);
     } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_shortError(e))),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_shortError(e))));
     } finally {
       _safeSetState(() => _unlinkingChildId = null);
     }
@@ -286,12 +301,41 @@ class _ProfielTabState extends State<ProfielTab> {
   }
 
   String _editableDisplayName(String displayName) {
-    // Strip the optional suffix added in UserAppBootstrap:
-    // "Naam (ouder/verzorger 'X')"
-    final s = displayName.trim();
-    final i = s.indexOf(" (ouder/verzorger '");
-    if (i > 0) return s.substring(0, i).trim();
-    return s;
+    return displayName.trim();
+  }
+
+  Future<void> _changeMemberTagFlow(TeamMembership membership) async {
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => _EditMemberTagDialog(
+        teamName: membership.displayLabel,
+        initialValue: membership.memberTag ?? '',
+      ),
+    );
+    if (value == null || !mounted) return;
+
+    _safeSetState(() => _savingMemberTagTeamId = membership.teamId);
+    try {
+      await _client.rpc(
+        'set_my_team_member_tag',
+        params: {'p_team_id': membership.teamId, 'p_member_tag': value.trim()},
+      );
+      if (!mounted) return;
+      showTopMessage(
+        context,
+        value.trim().isEmpty ? 'Lid-tag verwijderd.' : 'Lid-tag opgeslagen.',
+      );
+      await AppUserContext.of(context).reloadUserContext?.call();
+    } catch (e) {
+      if (!mounted) return;
+      showTopMessage(
+        context,
+        'Kon lid-tag niet opslaan: ${_shortError(e)}',
+        isError: true,
+      );
+    } finally {
+      _safeSetState(() => _savingMemberTagTeamId = null);
+    }
   }
 
   Future<void> _changeMyDisplayNameFlow() async {
@@ -342,7 +386,11 @@ class _ProfielTabState extends State<ProfielTab> {
       showTopMessage(context, e.message, isError: true);
     } catch (e) {
       if (!mounted) return;
-      showTopMessage(context, 'Kon gebruikersnaam niet wijzigen: $e', isError: true);
+      showTopMessage(
+        context,
+        'Kon gebruikersnaam niet wijzigen: $e',
+        isError: true,
+      );
     } finally {
       if (mounted) _safeSetState(() => _savingDisplayName = false);
     }
@@ -398,7 +446,9 @@ class _ProfielTabState extends State<ProfielTab> {
       final n = normalizeCommitteeKey(c);
       if (n.isNotEmpty && seen.add(n)) list.add(c);
     }
-    list.sort((a, b) => _formatCommitteeName(a).compareTo(_formatCommitteeName(b)));
+    list.sort(
+      (a, b) => _formatCommitteeName(a).compareTo(_formatCommitteeName(b)),
+    );
     return list;
   }
 
@@ -413,8 +463,10 @@ class _ProfielTabState extends State<ProfielTab> {
       final r = (row['role']?.toString() ?? '').toLowerCase();
       return r == 'trainingslid';
     });
-    final isOuder = ctx.isOuderVerzorger || ctx.memberships.any((m) => m.isGuardian);
-    final isTrainer = _isTrainerOrCoach || ctx.memberships.any((m) => m.canManageTeam);
+    final isOuder =
+        ctx.isOuderVerzorger || ctx.memberships.any((m) => m.isGuardian);
+    final isTrainer =
+        _isTrainerOrCoach || ctx.memberships.any((m) => m.canManageTeam);
 
     // Keep order: eerst teamrollen, dan commissies.
     if (isPlayer) roles.add('Speler');
@@ -526,18 +578,27 @@ class _ProfielTabState extends State<ProfielTab> {
     }
 
     Future<void> acceptRequest(String requestId) async {
-      await _client.rpc('accept_account_link_request', params: {'request_id': requestId});
+      await _client.rpc(
+        'accept_account_link_request',
+        params: {'request_id': requestId},
+      );
       // Best-effort: refresh linked list in the app context.
       try {
         final res = await _client.rpc('get_my_linked_child_profiles');
-        final list = (res as List<dynamic>?)
+        final list =
+            (res as List<dynamic>?)
                 ?.map((e) {
                   final m = e as Map<String, dynamic>?;
                   if (m == null) return null;
                   final id = m['profile_id']?.toString();
                   final name = m['display_name']?.toString().trim() ?? '';
                   if (id == null || id.isEmpty) return null;
-                  return LinkedChild(profileId: id, displayName: name.trim().isEmpty ? 'Gekoppeld account' : name);
+                  return LinkedChild(
+                    profileId: id,
+                    displayName: name.trim().isEmpty
+                        ? 'Gekoppeld account'
+                        : name,
+                  );
                 })
                 .whereType<LinkedChild>()
                 .toList() ??
@@ -547,7 +608,10 @@ class _ProfielTabState extends State<ProfielTab> {
     }
 
     Future<void> rejectRequest(String requestId) async {
-      await _client.rpc('reject_account_link_request', params: {'request_id': requestId});
+      await _client.rpc(
+        'reject_account_link_request',
+        params: {'request_id': requestId},
+      );
     }
 
     return GlassCard(
@@ -591,18 +655,25 @@ class _ProfielTabState extends State<ProfielTab> {
                     const SizedBox(height: 6),
                     ...rows.map((r) {
                       final requestId = (r['request_id'] ?? '').toString();
-                      final otherName = (r['other_display_name'] ?? '').toString().trim();
+                      final otherName = (r['other_display_name'] ?? '')
+                          .toString()
+                          .trim();
                       final role = (r['role'] ?? '').toString();
                       final subtitle = role == 'parent'
                           ? 'Deze koppeling maakt jou ouder/verzorger.'
                           : role == 'child'
-                              ? 'Deze koppeling maakt het andere account ouder/verzorger.'
-                              : 'Koppelingsverzoek';
-                      final isBusy = requestId.isNotEmpty && _processingLinkRequestIds.contains(requestId);
+                          ? 'Deze koppeling maakt het andere account ouder/verzorger.'
+                          : 'Koppelingsverzoek';
+                      final isBusy =
+                          requestId.isNotEmpty &&
+                          _processingLinkRequestIds.contains(requestId);
 
                       return GlassCard(
                         margin: const EdgeInsets.only(bottom: 10),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
                         child: Row(
                           children: [
                             Expanded(
@@ -610,7 +681,9 @@ class _ProfielTabState extends State<ProfielTab> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    otherName.isNotEmpty ? otherName : 'Account',
+                                    otherName.isNotEmpty
+                                        ? otherName
+                                        : 'Account',
                                     style: const TextStyle(
                                       color: AppColors.onBackground,
                                       fontWeight: FontWeight.w700,
@@ -619,7 +692,10 @@ class _ProfielTabState extends State<ProfielTab> {
                                   const SizedBox(height: 2),
                                   Text(
                                     subtitle,
-                                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                                    style: const TextStyle(
+                                      color: AppColors.textSecondary,
+                                      fontSize: 12,
+                                    ),
                                   ),
                                 ],
                               ),
@@ -629,26 +705,47 @@ class _ProfielTabState extends State<ProfielTab> {
                               onPressed: requestId.isEmpty
                                   ? null
                                   : isBusy
-                                      ? null
+                                  ? null
                                   : () async {
-                                      final messenger = ScaffoldMessenger.of(context);
+                                      final messenger = ScaffoldMessenger.of(
+                                        context,
+                                      );
                                       try {
-                                        setState(() => _processingLinkRequestIds.add(requestId));
+                                        setState(
+                                          () => _processingLinkRequestIds.add(
+                                            requestId,
+                                          ),
+                                        );
                                         await rejectRequest(requestId);
                                         if (!mounted) return;
-                                        showTopMessage(messenger.context, 'Verzoek geweigerd.');
-                                        setState(() => _processingLinkRequestIds.remove(requestId));
+                                        showTopMessage(
+                                          messenger.context,
+                                          'Verzoek geweigerd.',
+                                        );
+                                        setState(
+                                          () => _processingLinkRequestIds
+                                              .remove(requestId),
+                                        );
                                       } catch (e) {
                                         if (!mounted) return;
-                                        showTopMessage(messenger.context, 'Weigeren mislukt: $e', isError: true);
-                                        setState(() => _processingLinkRequestIds.remove(requestId));
+                                        showTopMessage(
+                                          messenger.context,
+                                          'Weigeren mislukt: $e',
+                                          isError: true,
+                                        );
+                                        setState(
+                                          () => _processingLinkRequestIds
+                                              .remove(requestId),
+                                        );
                                       }
                                     },
                               child: isBusy
                                   ? const SizedBox(
                                       height: 16,
                                       width: 16,
-                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
                                     )
                                   : const Text('Weigeren'),
                             ),
@@ -657,26 +754,47 @@ class _ProfielTabState extends State<ProfielTab> {
                               onPressed: requestId.isEmpty
                                   ? null
                                   : isBusy
-                                      ? null
+                                  ? null
                                   : () async {
-                                      final messenger = ScaffoldMessenger.of(context);
+                                      final messenger = ScaffoldMessenger.of(
+                                        context,
+                                      );
                                       try {
-                                        setState(() => _processingLinkRequestIds.add(requestId));
+                                        setState(
+                                          () => _processingLinkRequestIds.add(
+                                            requestId,
+                                          ),
+                                        );
                                         await acceptRequest(requestId);
                                         if (!mounted) return;
-                                        showTopMessage(messenger.context, 'Verzoek geaccepteerd.');
-                                        setState(() => _processingLinkRequestIds.remove(requestId));
+                                        showTopMessage(
+                                          messenger.context,
+                                          'Verzoek geaccepteerd.',
+                                        );
+                                        setState(
+                                          () => _processingLinkRequestIds
+                                              .remove(requestId),
+                                        );
                                       } catch (e) {
                                         if (!mounted) return;
-                                        showTopMessage(messenger.context, 'Accepteren mislukt: $e', isError: true);
-                                        setState(() => _processingLinkRequestIds.remove(requestId));
+                                        showTopMessage(
+                                          messenger.context,
+                                          'Accepteren mislukt: $e',
+                                          isError: true,
+                                        );
+                                        setState(
+                                          () => _processingLinkRequestIds
+                                              .remove(requestId),
+                                        );
                                       }
                                     },
                               child: isBusy
                                   ? const SizedBox(
                                       height: 16,
                                       width: 16,
-                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
                                     )
                                   : const Text('Accepteren'),
                             ),
@@ -706,7 +824,11 @@ class _ProfielTabState extends State<ProfielTab> {
                     padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
                     child: Row(
                       children: [
-                        Icon(Icons.person_outline, color: AppColors.iconMuted, size: 22),
+                        Icon(
+                          Icons.person_outline,
+                          color: AppColors.iconMuted,
+                          size: 22,
+                        ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
@@ -718,13 +840,16 @@ class _ProfielTabState extends State<ProfielTab> {
                           ),
                         ),
                         TextButton.icon(
-                          onPressed: _unlinkingChildId != null ? null
+                          onPressed: _unlinkingChildId != null
+                              ? null
                               : () => _unlinkChild(context, notifier, childId),
                           icon: isUnlinkingThis
                               ? const SizedBox(
                                   height: 16,
                                   width: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
                                 )
                               : const Icon(Icons.link_off, size: 20),
                           label: Text(
@@ -743,7 +868,8 @@ class _ProfielTabState extends State<ProfielTab> {
                 FutureBuilder<List<Map<String, dynamic>>>(
                   future: _linkedParentsFuture,
                   builder: (context, snapshot) {
-                    final parents = snapshot.data ?? const <Map<String, dynamic>>[];
+                    final parents =
+                        snapshot.data ?? const <Map<String, dynamic>>[];
                     if (parents.isEmpty) return const SizedBox.shrink();
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -761,13 +887,20 @@ class _ProfielTabState extends State<ProfielTab> {
                           ),
                         ),
                         ...parents.map((p) {
-                          final name = (p['display_name'] as String? ?? '').trim();
-                          final displayName = name.isEmpty ? 'Gekoppeld account' : name;
+                          final name = (p['display_name'] as String? ?? '')
+                              .trim();
+                          final displayName = name.isEmpty
+                              ? 'Gekoppeld account'
+                              : name;
                           return Padding(
                             padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
                             child: Row(
                               children: [
-                                Icon(Icons.person_outline, color: AppColors.iconMuted, size: 22),
+                                Icon(
+                                  Icons.person_outline,
+                                  color: AppColors.iconMuted,
+                                  size: 22,
+                                ),
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: Text(
@@ -786,7 +919,10 @@ class _ProfielTabState extends State<ProfielTab> {
                           padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
                           child: Text(
                             'Je bent gekoppeld aan bovenstaande ouder(s)/verzorger(s). Alleen zij kunnen de koppeling verbreken.',
-                            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                            style: TextStyle(
+                              color: AppColors.textSecondary,
+                              fontSize: 12,
+                            ),
                           ),
                         ),
                       ],
@@ -799,8 +935,10 @@ class _ProfielTabState extends State<ProfielTab> {
               widgets.add(
                 ListTile(
                   dense: true,
-                  leading:
-                      const Icon(Icons.person_add_outlined, color: AppColors.iconMuted),
+                  leading: const Icon(
+                    Icons.person_add_outlined,
+                    color: AppColors.iconMuted,
+                  ),
                   title: const Text(
                     'Account koppelen',
                     style: TextStyle(
@@ -814,12 +952,21 @@ class _ProfielTabState extends State<ProfielTab> {
                         : 'Nog een account toevoegen.',
                     style: const TextStyle(color: AppColors.textSecondary),
                   ),
-                  onTap: () {
-                    Navigator.of(context).push(
+                  onTap: () async {
+                    final reloadUserContext = AppUserContext.of(
+                      context,
+                    ).reloadUserContext;
+                    final linked = await Navigator.of(context).push<bool>(
                       MaterialPageRoute(
                         builder: (_) => const OuderKindKoppelPage(),
                       ),
                     );
+                    if (linked != true || !context.mounted) return;
+                    await _reload();
+                    if (!context.mounted) return;
+                    await reloadUserContext?.call();
+                    if (!context.mounted) return;
+                    showTopMessage(context, 'De accounts zijn gekoppeld.');
                   },
                 ),
               );
@@ -843,7 +990,9 @@ class _ProfielTabState extends State<ProfielTab> {
   /// Inhoud van een kind-tab: teams van dat kind + uitleg over aanwezigheid/agenda.
   List<Widget> _buildKindTabContent(LinkedChild child, AppUserContext ctx) {
     final teams = _teamsForChild(child, ctx);
-    final name = child.displayName.trim().isEmpty ? 'Gekoppeld kind' : child.displayName.trim();
+    final name = child.displayName.trim().isEmpty
+        ? 'Gekoppeld kind'
+        : child.displayName.trim();
     return [
       GlassCard(
         padding: const EdgeInsets.all(14),
@@ -865,21 +1014,26 @@ class _ProfielTabState extends State<ProfielTab> {
                 style: TextStyle(color: AppColors.textSecondary),
               )
             else
-              ...teams.map((m) => ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.groups_outlined, color: AppColors.iconMuted),
-                    title: Text(
-                      m.displayLabel,
-                      style: const TextStyle(
-                        color: AppColors.onBackground,
-                        fontWeight: FontWeight.w600,
-                      ),
+              ...teams.map(
+                (m) => ListTile(
+                  dense: true,
+                  leading: const Icon(
+                    Icons.groups_outlined,
+                    color: AppColors.iconMuted,
+                  ),
+                  title: Text(
+                    m.displayLabel,
+                    style: const TextStyle(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w600,
                     ),
-                    subtitle: Text(
-                      'Rol: ${m.role == 'guardian' ? 'Ouder/verzorger' : _roleLabel(m.role)}',
-                      style: const TextStyle(color: AppColors.textSecondary),
-                    ),
-                  )),
+                  ),
+                  subtitle: Text(
+                    'Rol: ${m.role == 'guardian' ? 'Ouder/verzorger' : _roleLabel(m.role)}',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -900,7 +1054,10 @@ class _ProfielTabState extends State<ProfielTab> {
             const SizedBox(height: 8),
             Text(
               'Aanwezigheid voor trainingen en wedstrijden van $name regel je in de tab Teams (Trainingen en Wedstrijden). Aanmeldingen voor activiteiten kun je doen op Home bij Agenda.',
-              style: const TextStyle(color: AppColors.textSecondary, height: 1.4),
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                height: 1.4,
+              ),
             ),
           ],
         ),
@@ -962,7 +1119,9 @@ class _ProfielTabState extends State<ProfielTab> {
     final email = ctx.email.trim().isNotEmpty
         ? ctx.email.trim()
         : (user?.email ?? 'Onbekend');
-    final displayName = ctx.displayName.trim().isNotEmpty ? ctx.displayName.trim() : (user?.email ?? 'Onbekend');
+    final displayName = ctx.displayName.trim().isNotEmpty
+        ? ctx.displayName.trim()
+        : (user?.email ?? 'Onbekend');
     final roleLabels = _buildRoleLabels(ctx);
 
     final linkedChildren = ctx.linkedChildProfiles;
@@ -984,9 +1143,9 @@ class _ProfielTabState extends State<ProfielTab> {
               child: Text(
                 'Profiel',
                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.w800,
-                    ),
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
             ),
             if (linkedChildren.isNotEmpty) ...[
@@ -1000,20 +1159,24 @@ class _ProfielTabState extends State<ProfielTab> {
                         context,
                         label: 'Mijn gegevens',
                         selected: _selectedProfileTabIndex == 0,
-                        onTap: () => setState(() => _selectedProfileTabIndex = 0),
+                        onTap: () =>
+                            setState(() => _selectedProfileTabIndex = 0),
                       ),
                       const SizedBox(width: 8),
                       ...linkedChildren.asMap().entries.map((e) {
                         final idx = e.key + 1;
                         final child = e.value;
-                        final name = child.displayName.trim().isEmpty ? 'Kind' : child.displayName.trim();
+                        final name = child.displayName.trim().isEmpty
+                            ? 'Kind'
+                            : child.displayName.trim();
                         return Padding(
                           padding: const EdgeInsets.only(right: 8),
                           child: _profileTabChip(
                             context,
                             label: name,
                             selected: _selectedProfileTabIndex == idx,
-                            onTap: () => setState(() => _selectedProfileTabIndex = idx),
+                            onTap: () =>
+                                setState(() => _selectedProfileTabIndex = idx),
                           ),
                         );
                       }),
@@ -1072,7 +1235,8 @@ class _ProfielTabState extends State<ProfielTab> {
                                       onPressed: () {
                                         Navigator.of(context).push(
                                           MaterialPageRoute<void>(
-                                            builder: (_) => const RegisterPage(),
+                                            builder: (_) =>
+                                                const RegisterPage(),
                                           ),
                                         );
                                       },
@@ -1093,7 +1257,8 @@ class _ProfielTabState extends State<ProfielTab> {
                       child: ListView(
                         physics: const AlwaysScrollableScrollPhysics(),
                         padding: padding,
-                        children: (linkedChildren.isNotEmpty &&
+                        children:
+                            (linkedChildren.isNotEmpty &&
                                 _selectedProfileTabIndex > 0)
                             ? _buildKindTabContent(
                                 linkedChildren[_selectedProfileTabIndex - 1],
@@ -1152,288 +1317,338 @@ class _ProfielTabState extends State<ProfielTab> {
       ];
     }
     return [
-                    GlassCard(
-                      child: ListTile(
-                        title: const Text(
-                          'Ingelogd als',
-                          style: TextStyle(
-                            color: AppColors.onBackground,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        subtitle: Text(
-                          displayName,
-                          style: const TextStyle(color: AppColors.onBackground),
-                        ),
-                      ),
+      GlassCard(
+        child: ListTile(
+          title: const Text(
+            'Ingelogd als',
+            style: TextStyle(
+              color: AppColors.onBackground,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          subtitle: Text(
+            displayName,
+            style: const TextStyle(color: AppColors.onBackground),
+          ),
+        ),
+      ),
+      const SizedBox(height: 12),
+
+      GlassCard(
+        child: ListTile(
+          leading: const Icon(Icons.edit_outlined, color: AppColors.iconMuted),
+          title: const Text(
+            'Gebruikersnaam wijzigen',
+            style: TextStyle(
+              color: AppColors.onBackground,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          subtitle: const Text(
+            'Pas aan hoe anderen jou zien in de app.',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+          onTap: _savingDisplayName ? null : _changeMyDisplayNameFlow,
+          trailing: _savingDisplayName
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : null,
+        ),
+      ),
+      const SizedBox(height: 12),
+
+      // Rollen: toon alleen als de gebruiker minstens één rol heeft.
+      if (roleLabels.isNotEmpty) ...[
+        GlassCard(
+          child: ListTile(
+            leading: Icon(
+              roleLabels.contains('Algemeen admin')
+                  ? Icons.verified
+                  : Icons.person_outline,
+              color: roleLabels.contains('Algemeen admin')
+                  ? AppColors.primary
+                  : AppColors.iconMuted,
+            ),
+            title: const Text(
+              'Rollen',
+              style: TextStyle(
+                color: AppColors.onBackground,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            subtitle: Text(
+              roleLabels.join(' • '),
+              style: const TextStyle(color: AppColors.onBackground),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+      ],
+
+      // Teams, rollen & commissies in één kaart
+      GlassCard(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          children: [
+            ListTile(
+              title: const Text(
+                'Teams, rollen & commissies',
+                style: TextStyle(
+                  color: AppColors.onBackground,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            if (_teamRoles.isEmpty && _mergedCommittees(ctx).isEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Text(
+                  'Geen teams of commissies gevonden voor dit account.',
+                  style: TextStyle(color: AppColors.textSecondary),
+                ),
+              )
+            else ...[
+              ..._teamRoles.map((row) {
+                final teamId = row['team_id'];
+                final role = row['role']?.toString() ?? 'player';
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(
+                    Icons.groups_outlined,
+                    color: AppColors.iconMuted,
+                  ),
+                  title: Text(
+                    _teamLabel(teamId),
+                    style: const TextStyle(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w600,
                     ),
-                    const SizedBox(height: 12),
-
-                    GlassCard(
-                      child: ListTile(
-                        leading: const Icon(Icons.edit_outlined, color: AppColors.iconMuted),
-                        title: const Text(
-                          'Gebruikersnaam wijzigen',
-                          style: TextStyle(
-                            color: AppColors.onBackground,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        subtitle: const Text(
-                          'Pas aan hoe anderen jou zien in de app.',
-                          style: TextStyle(color: AppColors.textSecondary),
-                        ),
-                        onTap: _savingDisplayName ? null : _changeMyDisplayNameFlow,
-                        trailing: _savingDisplayName
-                            ? const SizedBox(
-                                width: 24,
-                                height: 24,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : null,
-                      ),
+                  ),
+                  subtitle: Text(
+                    'Rol: ${_roleLabel(role)}',
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                );
+              }),
+              ..._mergedCommittees(ctx).map(
+                (slug) => ListTile(
+                  dense: true,
+                  leading: const Icon(
+                    Icons.badge_outlined,
+                    color: AppColors.iconMuted,
+                  ),
+                  title: Text(
+                    _formatCommitteeName(slug),
+                    style: const TextStyle(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w600,
                     ),
-                    const SizedBox(height: 12),
+                  ),
+                  subtitle: const Text(
+                    'Commissie',
+                    style: TextStyle(color: AppColors.textSecondary),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
 
-                    // Rollen: toon alleen als de gebruiker minstens één rol heeft.
-                    if (roleLabels.isNotEmpty) ...[
-                      GlassCard(
-                        child: ListTile(
-                          leading: Icon(
-                            roleLabels.contains('Algemeen admin')
-                                ? Icons.verified
-                                : Icons.person_outline,
-                            color: roleLabels.contains('Algemeen admin')
-                                ? AppColors.primary
-                                : AppColors.iconMuted,
-                          ),
-                          title: const Text(
-                            'Rollen',
-                            style: TextStyle(
-                              color: AppColors.onBackground,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          subtitle: Text(
-                            roleLabels.join(' • '),
-                            style: const TextStyle(color: AppColors.onBackground),
+      const SizedBox(height: 12),
+
+      if (ctx.memberships.isNotEmpty) ...[
+        GlassCard(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            children: [
+              const ListTile(
+                leading: Icon(Icons.label_outline, color: AppColors.iconMuted),
+                title: Text(
+                  'Lid-tags per team',
+                  style: TextStyle(
+                    color: AppColors.onBackground,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                subtitle: Text(
+                  'Voeg per team een korte omschrijving toe.',
+                  style: TextStyle(color: AppColors.textSecondary),
+                ),
+              ),
+              ...ctx.memberships.map((membership) {
+                final tag = membership.memberTag?.trim() ?? '';
+                final saving = _savingMemberTagTeamId == membership.teamId;
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(
+                    Icons.groups_outlined,
+                    color: AppColors.iconMuted,
+                  ),
+                  title: Text(
+                    membership.displayLabel,
+                    style: const TextStyle(
+                      color: AppColors.onBackground,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  subtitle: Text(
+                    tag.isEmpty ? 'Geen lid-tag' : tag,
+                    style: const TextStyle(color: AppColors.textSecondary),
+                  ),
+                  trailing: saving
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : IconButton(
+                          tooltip: 'Lid-tag wijzigen',
+                          icon: const Icon(Icons.edit_outlined),
+                          onPressed: () => _changeMemberTagFlow(membership),
+                        ),
+                );
+              }),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+      ],
+
+      // Ouder-kind account: wissel naar kind of terug naar eigen account
+      if (_showOuderKindSection(context)) ...[
+        _buildOuderKindCard(context),
+        const SizedBox(height: 12),
+      ],
+
+      GlassCard(
+        child: ListTile(
+          leading: const Icon(
+            Icons.notifications_outlined,
+            color: AppColors.iconMuted,
+          ),
+          title: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Notificaties',
+                  style: TextStyle(
+                    color: AppColors.onBackground,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Tooltip(
+                message:
+                    'Agenda: bij nieuwe of gewijzigde agenda-items. '
+                    'Nieuws: bij nieuwe berichten. Uitgelicht: bij nieuwe uitgelichte items. '
+                    'Stand: bij wijziging van de stand. Trainingen: bij nieuwe of gewijzigde trainingen.',
+                child: GestureDetector(
+                  onTap: () {
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('Wanneer krijg je notificaties?'),
+                        content: const SingleChildScrollView(
+                          child: Text(
+                            '• Agenda: bij nieuwe of gewijzigde agenda-items\n'
+                            '• Nieuws: bij nieuwe berichten op de homepagina\n'
+                            '• Uitgelicht: bij nieuwe uitgelichte items\n'
+                            '• Stand: bij wijziging van de stand van je team\n'
+                            '• Trainingen: bij nieuwe of gewijzigde trainingen',
+                            style: TextStyle(color: AppColors.onBackground),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 12),
-                    ],
-
-                    // Teams, rollen & commissies in één kaart
-                    GlassCard(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Column(
-                        children: [
-                          ListTile(
-                            title: const Text(
-                              'Teams, rollen & commissies',
-                              style: TextStyle(
-                                color: AppColors.onBackground,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text('Ok'),
                           ),
-                          if (_teamRoles.isEmpty && _mergedCommittees(ctx).isEmpty)
-                            const Padding(
-                              padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
-                              child: Text(
-                                'Geen teams of commissies gevonden voor dit account.',
-                                style: TextStyle(color: AppColors.textSecondary),
-                              ),
-                            )
-                          else
-                            ...[
-                              ..._teamRoles.map((row) {
-                                final teamId = row['team_id'];
-                                final role = row['role']?.toString() ?? 'player';
-                                return ListTile(
-                                  dense: true,
-                                  leading: const Icon(
-                                    Icons.groups_outlined,
-                                    color: AppColors.iconMuted,
-                                  ),
-                                  title: Text(
-                                    _teamLabel(teamId),
-                                    style: const TextStyle(
-                                      color: AppColors.onBackground,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  subtitle: Text(
-                                    'Rol: ${_roleLabel(role)}',
-                                    style: const TextStyle(
-                                      color: AppColors.textSecondary,
-                                    ),
-                                  ),
-                                );
-                              }),
-                              ..._mergedCommittees(ctx).map((slug) => ListTile(
-                                        dense: true,
-                                        leading: const Icon(
-                                          Icons.badge_outlined,
-                                          color: AppColors.iconMuted,
-                                        ),
-                                        title: Text(
-                                          _formatCommitteeName(slug),
-                                          style: const TextStyle(
-                                            color: AppColors.onBackground,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                        subtitle: const Text(
-                                          'Commissie',
-                                          style: TextStyle(
-                                            color: AppColors.textSecondary,
-                                          ),
-                                        ),
-                                      )),
-                            ],
                         ],
                       ),
-                    ),
+                    );
+                  },
+                  child: const Icon(
+                    Icons.info_outline,
+                    size: 20,
+                    color: AppColors.iconMuted,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          subtitle: const Text(
+            'Kies waar je meldingen van wilt krijgen.',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const NotificationSettingsPage(),
+              ),
+            );
+          },
+        ),
+      ),
 
-                    const SizedBox(height: 12),
+      const SizedBox(height: 12),
 
-                    // Ouder-kind account: wissel naar kind of terug naar eigen account
-                    if (_showOuderKindSection(context)) ...[
-                      _buildOuderKindCard(context),
-                      const SizedBox(height: 12),
-                    ],
+      // Email wijzigen
+      GlassCard(
+        child: ListTile(
+          leading: const Icon(Icons.email_outlined, color: AppColors.iconMuted),
+          title: const Text(
+            'E-mail wijzigen',
+            style: TextStyle(
+              color: AppColors.onBackground,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          subtitle: const Text(
+            'Er wordt altijd een bevestigingsmail gestuurd naar het nieuwe adres. Pas na bevestiging is de wijziging actief.',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+          onTap: () => _changeEmailFlow(currentEmail: email),
+        ),
+      ),
 
-                    GlassCard(
-                      child: ListTile(
-                        leading: const Icon(
-                          Icons.notifications_outlined,
-                          color: AppColors.iconMuted,
-                        ),
-                        title: Row(
-                          children: [
-                            const Expanded(
-                              child: Text(
-                                'Notificaties',
-                                style: TextStyle(
-                                  color: AppColors.onBackground,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                            Tooltip(
-                              message: 'Agenda: bij nieuwe of gewijzigde agenda-items. '
-                                  'Nieuws: bij nieuwe berichten. Uitgelicht: bij nieuwe uitgelichte items. '
-                                  'Stand: bij wijziging van de stand. Trainingen: bij nieuwe of gewijzigde trainingen.',
-                              child: GestureDetector(
-                                onTap: () {
-                                  showDialog(
-                                    context: context,
-                                    builder: (ctx) => AlertDialog(
-                                      title: const Text('Wanneer krijg je notificaties?'),
-                                      content: const SingleChildScrollView(
-                                        child: Text(
-                                          '• Agenda: bij nieuwe of gewijzigde agenda-items\n'
-                                          '• Nieuws: bij nieuwe berichten op de homepagina\n'
-                                          '• Uitgelicht: bij nieuwe uitgelichte items\n'
-                                          '• Stand: bij wijziging van de stand van je team\n'
-                                          '• Trainingen: bij nieuwe of gewijzigde trainingen',
-                                          style: TextStyle(color: AppColors.onBackground),
-                                        ),
-                                      ),
-                                      actions: [
-                                        TextButton(
-                                          onPressed: () => Navigator.pop(ctx),
-                                          child: const Text('Ok'),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                },
-                                child: const Icon(
-                                  Icons.info_outline,
-                                  size: 20,
-                                  color: AppColors.iconMuted,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        subtitle: const Text(
-                          'Kies waar je meldingen van wilt krijgen.',
-                          style: TextStyle(color: AppColors.textSecondary),
-                        ),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const NotificationSettingsPage(),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
+      const SizedBox(height: 12),
 
-                    const SizedBox(height: 12),
+      // Account verwijderen
+      GlassCard(
+        child: ListTile(
+          leading: const Icon(Icons.delete_outline, color: AppColors.error),
+          title: const Text(
+            'Account verwijderen',
+            style: TextStyle(
+              color: AppColors.onBackground,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          subtitle: const Text(
+            'Verwijdert je account en logt je uit.',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+          onTap: _deleteAccountFlow,
+        ),
+      ),
 
-                    // Email wijzigen
-                    GlassCard(
-                      child: ListTile(
-                        leading: const Icon(
-                          Icons.email_outlined,
-                          color: AppColors.iconMuted,
-                        ),
-                        title: const Text(
-                          'E-mail wijzigen',
-                          style: TextStyle(
-                            color: AppColors.onBackground,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        subtitle: const Text(
-                          'Er wordt altijd een bevestigingsmail gestuurd naar het nieuwe adres. Pas na bevestiging is de wijziging actief.',
-                          style: TextStyle(color: AppColors.textSecondary),
-                        ),
-                        onTap: () => _changeEmailFlow(currentEmail: email),
-                      ),
-                    ),
+      const SizedBox(height: 12),
 
-                    const SizedBox(height: 12),
-
-                    // Account verwijderen
-                    GlassCard(
-                      child: ListTile(
-                        leading: const Icon(
-                          Icons.delete_outline,
-                          color: AppColors.error,
-                        ),
-                        title: const Text(
-                          'Account verwijderen',
-                          style: TextStyle(
-                            color: AppColors.onBackground,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        subtitle: const Text(
-                          'Verwijdert je account en logt je uit.',
-                          style: TextStyle(color: AppColors.textSecondary),
-                        ),
-                        onTap: _deleteAccountFlow,
-                      ),
-                    ),
-
-                    const SizedBox(height: 12),
-
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary,
-                        foregroundColor: AppColors.background,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                      icon: const Icon(Icons.logout),
-                      label: const Text('Uitloggen'),
-                      onPressed: _signOut,
-                    ),
-                  ];
+      ElevatedButton.icon(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: AppColors.primary,
+          foregroundColor: AppColors.background,
+          padding: const EdgeInsets.symmetric(vertical: 14),
+        ),
+        icon: const Icon(Icons.logout),
+        label: const Text('Uitloggen'),
+        onPressed: _signOut,
+      ),
+    ];
   }
 
   Widget _profileTabChip(
@@ -1443,7 +1658,9 @@ class _ProfielTabState extends State<ProfielTab> {
     required VoidCallback onTap,
   }) {
     return Material(
-      color: selected ? AppColors.primary.withValues(alpha: 0.25) : Colors.transparent,
+      color: selected
+          ? AppColors.primary.withValues(alpha: 0.25)
+          : Colors.transparent,
       borderRadius: BorderRadius.circular(20),
       child: InkWell(
         onTap: onTap,
@@ -1501,7 +1718,11 @@ class _ProfielTabState extends State<ProfielTab> {
       return;
     }
     if (email.toLowerCase() == resolvedEmail.toLowerCase()) {
-      showTopMessage(context, 'Dit is al je huidige e-mailadres.', isError: true);
+      showTopMessage(
+        context,
+        'Dit is al je huidige e-mailadres.',
+        isError: true,
+      );
       return;
     }
 
@@ -1515,14 +1736,21 @@ class _ProfielTabState extends State<ProfielTab> {
       );
       await setPendingEmailChange(userId: user.id, email: email);
       if (!mounted) return;
-      showTopMessage(context, 'E-mail wijziging gestart. Check je mail om te bevestigen.');
+      showTopMessage(
+        context,
+        'E-mail wijziging gestart. Check je mail om te bevestigen.',
+      );
       await _reload();
     } on AuthException catch (e) {
       if (!mounted) return;
       showTopMessage(context, e.message, isError: true);
     } catch (e) {
       if (!mounted) return;
-      showTopMessage(context, 'Kon e-mail niet wijzigen. Probeer het later opnieuw.', isError: true);
+      showTopMessage(
+        context,
+        'Kon e-mail niet wijzigen. Probeer het later opnieuw.',
+        isError: true,
+      );
     }
   }
 
@@ -1627,6 +1855,67 @@ class _EditDisplayNameDialogState extends State<_EditDisplayNameDialog> {
         ),
       ),
       actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(null),
+          child: const Text('Annuleren'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: const Text('Opslaan'),
+        ),
+      ],
+    );
+  }
+}
+
+class _EditMemberTagDialog extends StatefulWidget {
+  final String teamName;
+  final String initialValue;
+
+  const _EditMemberTagDialog({
+    required this.teamName,
+    required this.initialValue,
+  });
+
+  @override
+  State<_EditMemberTagDialog> createState() => _EditMemberTagDialogState();
+}
+
+class _EditMemberTagDialogState extends State<_EditMemberTagDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialValue);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Lid-tag voor ${widget.teamName}'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        maxLength: 60,
+        textCapitalization: TextCapitalization.sentences,
+        decoration: const InputDecoration(
+          labelText: 'Lid-tag',
+          hintText: 'Bijv. aanvoerder of vader van Jessie',
+        ),
+      ),
+      actions: [
+        if (widget.initialValue.trim().isNotEmpty)
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(''),
+            child: const Text('Verwijderen'),
+          ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(null),
           child: const Text('Annuleren'),

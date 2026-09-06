@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:minerva_app/profiel/account_link_code.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 
 /// Pagina om twee bestaande accounts te koppelen (ouder/verzorger ↔ kind).
@@ -63,7 +64,9 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
       setState(() {
         _loading = false;
         _generatedCode = code.toUpperCase();
-        _expiresAt = expiresStr != null ? DateTime.tryParse(expiresStr)?.toLocal() : null;
+        _expiresAt = expiresStr != null
+            ? DateTime.tryParse(expiresStr)?.toLocal()
+            : null;
         _error = null;
       });
     } catch (e) {
@@ -77,10 +80,10 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
   }
 
   Future<void> _consumeCode() async {
-    final code = _codeController.text.trim().toUpperCase();
-    if (code.isEmpty) {
+    final code = normalizeAccountLinkCode(_codeController.text);
+    if (!isValidAccountLinkCode(code)) {
       setState(() {
-        _error = 'Voer de 6-cijferige code in.';
+        _error = 'Voer de volledige code van 6 tekens in.';
         _success = null;
       });
       return;
@@ -95,12 +98,7 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
     try {
       await _client.rpc('consume_link_code', params: {'p_code': code});
       if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _success = 'De accounts zijn gekoppeld. Herstart de app op beide apparaten om de koppeling te activeren.';
-        _codeController.clear();
-        _error = null;
-      });
+      Navigator.of(context).pop(true);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -113,11 +111,19 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
 
   String _formatError(dynamic e) {
     final msg = e.toString();
-    if (msg.contains('Code niet gevonden')) return 'Code niet gevonden. Controleer de code of vraag een nieuwe aan.';
-    if (msg.contains('verlopen')) return 'Deze code is verlopen. Vraag een nieuwe code aan.';
-    if (msg.contains('jezelf')) return 'Je kunt geen account met jezelf koppelen.';
+    if (msg.contains('Code niet gevonden')) {
+      return 'Code niet gevonden. Controleer de code of vraag een nieuwe aan.';
+    }
+    if (msg.contains('verlopen')) {
+      return 'Deze code is verlopen. Vraag een nieuwe code aan.';
+    }
+    if (msg.contains('jezelf')) {
+      return 'Je kunt geen account met jezelf koppelen.';
+    }
     if (msg.contains('Ongeldige code')) return 'Voer een geldige code in.';
-    return msg.replaceFirst(RegExp(r'^Exception:?\s*', caseSensitive: false), '').trim();
+    return msg
+        .replaceFirst(RegExp(r'^Exception:?\s*', caseSensitive: false), '')
+        .trim();
   }
 
   @override
@@ -217,7 +223,8 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
                         ),
                       ],
                       selected: {_iAmParent},
-                      onSelectionChanged: (set) => setState(() => _iAmParent = set.first),
+                      onSelectionChanged: (set) =>
+                          setState(() => _iAmParent = set.first),
                     ),
                     const SizedBox(height: 16),
                     SizedBox(
@@ -245,12 +252,17 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
                       const SizedBox(height: 24),
                       const Text(
                         'Geef deze code aan de andere persoon (code is 15 min geldig):',
-                        style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                        style: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 13,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       InkWell(
                         onTap: () {
-                          Clipboard.setData(ClipboardData(text: _generatedCode!));
+                          Clipboard.setData(
+                            ClipboardData(text: _generatedCode!),
+                          );
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('Code gekopieerd')),
                           );
@@ -278,7 +290,10 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
                         const SizedBox(height: 8),
                         Text(
                           'Geldig tot ${_expiresAt!.hour.toString().padLeft(2, '0')}:${_expiresAt!.minute.toString().padLeft(2, '0')}',
-                          style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                          style: const TextStyle(
+                            color: AppColors.textSecondary,
+                            fontSize: 12,
+                          ),
                         ),
                       ],
                     ],
@@ -291,8 +306,15 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
                     TextField(
                       controller: _codeController,
                       textCapitalization: TextCapitalization.characters,
-                      maxLength: 8,
+                      maxLength: 6,
                       autocorrect: false,
+                      enableSuggestions: false,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                          RegExp(r'[0-9a-fA-F]'),
+                        ),
+                        LengthLimitingTextInputFormatter(6),
+                      ],
                       decoration: const InputDecoration(
                         labelText: 'Code',
                         hintText: 'ABC123',
@@ -303,11 +325,17 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
                     ),
                     if (_error != null) ...[
                       const SizedBox(height: 12),
-                      Text(_error!, style: const TextStyle(color: AppColors.error)),
+                      Text(
+                        _error!,
+                        style: const TextStyle(color: AppColors.error),
+                      ),
                     ],
                     if (_success != null) ...[
                       const SizedBox(height: 12),
-                      Text(_success!, style: TextStyle(color: Colors.green.shade700)),
+                      Text(
+                        _success!,
+                        style: TextStyle(color: Colors.green.shade700),
+                      ),
                     ],
                     const SizedBox(height: 16),
                     SizedBox(
@@ -334,7 +362,10 @@ class _OuderKindKoppelPageState extends State<OuderKindKoppelPage> {
                   ],
                   if (_error != null && _modeGenerate) ...[
                     const SizedBox(height: 12),
-                    Text(_error!, style: const TextStyle(color: AppColors.error)),
+                    Text(
+                      _error!,
+                      style: const TextStyle(color: AppColors.error),
+                    ),
                   ],
                 ],
               ),

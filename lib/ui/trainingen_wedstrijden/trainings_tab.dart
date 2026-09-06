@@ -6,9 +6,12 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart'; // TeamMembership
-import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/display_name_overrides.dart'
+    show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/trainingen_wedstrijden/add_training_page.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/team_member_tag_display.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/training_attendance_status.dart';
 
 /// playing = speler, coach = trainer/coach, nietSpelend = aanwezig maar niet spelend, afgemeld = afgemeld.
 enum AttendanceStatus { playing, coach, nietSpelend, afgemeld }
@@ -16,6 +19,7 @@ enum AttendanceStatus { playing, coach, nietSpelend, afgemeld }
 class TrainingsTab extends StatefulWidget {
   final List<TeamMembership> manageableTeams;
   final TrainingTabViewRole viewRole;
+
   /// Global admin: geen rolgerichte lege melding.
   final bool suppressRoleEmptyState;
 
@@ -44,14 +48,17 @@ class _TrainingsTabState extends State<TrainingsTab> {
   final Map<int, List<String>> _afgemeldBySessionId = {};
   final Map<int, List<String>> _nietGereageerdBySessionId = {};
   final Set<int> _expandedSessionIds = {};
+
   /// Welke team-accordions open staan (teamId); bij één team altijd uitgeklapt.
   final Set<int> _expandedTrainingTeamIds = {};
   bool _didInitExpandedTraining = false;
   String? _myDisplayName;
+  Map<String, String> _memberTagsByTeamAndProfile = const {};
 
   bool _selectionMode = false;
   final Set<int> _selectedSessionIds = {};
   int _loadGeneration = 0;
+  String? _loadedAttendanceProfileId;
 
   @override
   void initState() {
@@ -63,6 +70,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final attendanceProfileId = AppUserContext.of(context).attendanceProfileId;
     // Gebruik de doorgegeven teams (Spelers- of Trainers-tab), samengevoegd per teamId.
     final mergedTeams = mergeTeamMembershipsByTeamId(widget.manageableTeams);
     final byTeamId = <int, TeamMembership>{
@@ -77,7 +85,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
         ),
       );
     final next = ordered.map((e) => e.key).toList();
-    if (_sameIntList(_allowedTeamIds, next)) return;
+    final profileChanged = _loadedAttendanceProfileId != attendanceProfileId;
+    if (_sameIntList(_allowedTeamIds, next) && !profileChanged) return;
+    _loadedAttendanceProfileId = attendanceProfileId;
     _allowedTeamIds = next;
     setState(() {
       _loadFuture = _loadData(teamIds: _allowedTeamIds);
@@ -107,8 +117,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
   }
 
   bool _personIdMatches(String personId, String targetProfileId) {
-    if (personId.trim().isEmpty || targetProfileId.trim().isEmpty) return false;
-    return personId.trim().toLowerCase() == targetProfileId.trim().toLowerCase();
+    final person = normalizeProfileId(personId);
+    final target = normalizeProfileId(targetProfileId);
+    return person.isNotEmpty && target.isNotEmpty && person == target;
   }
 
   Future<void> _loadData({required List<int> teamIds}) async {
@@ -145,13 +156,18 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
     if (loadGeneration != _loadGeneration) return;
 
-    final sessions = (sessionsRes as List<dynamic>).cast<Map<String, dynamic>>();
+    final sessions = (sessionsRes as List<dynamic>)
+        .cast<Map<String, dynamic>>();
     // Sorteer: eerst volgende datum bovenaan, verst onderaan.
     sessions.sort((a, b) {
       final rawA = a['start_datetime'] ?? a['start_timestamp'];
       final rawB = b['start_datetime'] ?? b['start_timestamp'];
-      final startA = rawA is DateTime ? rawA : DateTime.tryParse(rawA?.toString() ?? '');
-      final startB = rawB is DateTime ? rawB : DateTime.tryParse(rawB?.toString() ?? '');
+      final startA = rawA is DateTime
+          ? rawA
+          : DateTime.tryParse(rawA?.toString() ?? '');
+      final startB = rawB is DateTime
+          ? rawB
+          : DateTime.tryParse(rawB?.toString() ?? '');
       if (startA == null && startB == null) return 0;
       if (startA == null) return 1;
       if (startB == null) return -1;
@@ -172,30 +188,59 @@ class _TrainingsTabState extends State<TrainingsTab> {
     _nietGereageerdBySessionId.clear();
     if (_trainings.isEmpty) return;
 
-    final sessionIds =
-        _trainings.map((s) => (s['session_id'] as num).toInt()).toList();
+    final sessionIds = _trainings
+        .map((s) => (s['session_id'] as num).toInt())
+        .toList();
 
     List<Map<String, dynamic>> allRows = const [];
     try {
-      final res = await _client
-          .from('attendance')
-          .select('session_id, person_id, status')
-          .inFilter('session_id', sessionIds);
+      final res = await _client.rpc(
+        'get_visible_training_attendance',
+        params: {'p_session_ids': sessionIds},
+      );
       allRows = (res as List<dynamic>).cast<Map<String, dynamic>>();
-    } catch (_) {}
+    } catch (rpcError) {
+      debugPrint(
+        'TrainingsTab: get_visible_training_attendance mislukt, '
+        'directe fallback wordt gebruikt: $rpcError',
+      );
+      try {
+        final res = await _client
+            .from('attendance')
+            .select('session_id, person_id, status')
+            .inFilter('session_id', sessionIds);
+        allRows = (res as List<dynamic>).cast<Map<String, dynamic>>();
+      } catch (directError) {
+        debugPrint(
+          'TrainingsTab: attendance kon niet worden geladen: $directError',
+        );
+      }
+    }
 
     if (loadGeneration != _loadGeneration) return;
 
     final profileIds = <String>{};
     for (final r in allRows) {
-      final pid = r['person_id']?.toString() ?? '';
+      final pid = normalizeProfileId(r['person_id']);
       if (pid.isNotEmpty) profileIds.add(pid);
     }
     // Altijd naam van huidig profiel (zelf of kind) laden, ook als die nog nergens is aangemeld.
     if (targetProfileId.isNotEmpty) profileIds.add(targetProfileId);
     final namesById = await _loadProfileDisplayNames(profileIds);
+    final memberTags = await loadVisibleTeamMemberTags(
+      client: _client,
+      teamIds: teamIds,
+    );
 
     if (loadGeneration != _loadGeneration) return;
+
+    final teamIdBySessionId = <int, int>{
+      for (final session in _trainings)
+        if ((session['session_id'] as num?)?.toInt() != null &&
+            (session['team_id'] as num?)?.toInt() != null)
+          (session['session_id'] as num).toInt(): (session['team_id'] as num)
+              .toInt(),
+    };
 
     final playingBySid = <int, List<String>>{};
     final coachBySid = <int, List<String>>{};
@@ -206,23 +251,33 @@ class _TrainingsTabState extends State<TrainingsTab> {
     for (final r in allRows) {
       final sid = (r['session_id'] as num?)?.toInt();
       if (sid == null) continue;
-      final pid = r['person_id']?.toString() ?? '';
-      final status = (r['status'] ?? '').toString().trim().toLowerCase();
-      final name = pid.isEmpty ? '' : (namesById[pid] ?? unknownUserName);
+      final pid = normalizeProfileId(r['person_id']);
+      final status = parseTrainingAttendanceKind(r['status']);
+      final name = pid.isEmpty
+          ? ''
+          : displayNameWithTeamMemberTag(
+              displayName: namesById[pid] ?? unknownUserName,
+              profileId: pid,
+              teamId: teamIdBySessionId[sid],
+              tagsByTeamAndProfile: memberTags,
+            );
 
       if (_personIdMatches(pid, targetProfileId)) {
-        final s = _statusFromString(status);
+        final s = _attendanceStatusFromKind(status);
         if (s != null) statusBySid[sid] = s;
       }
       if (name.trim().isEmpty) continue;
-      if (status == 'playing' || status == 'aanwezig') {
-        playingBySid.putIfAbsent(sid, () => []).add(name);
-      } else if (status == 'coach') {
-        coachBySid.putIfAbsent(sid, () => []).add(name);
-      } else if (status == 'niet_spelend' || status == 'nietspelend') {
-        nietSpelendBySid.putIfAbsent(sid, () => []).add(name);
-      } else if (status == 'afgemeld') {
-        afgemeldBySid.putIfAbsent(sid, () => []).add(name);
+      switch (status) {
+        case TrainingAttendanceKind.playing:
+          playingBySid.putIfAbsent(sid, () => []).add(name);
+        case TrainingAttendanceKind.coach:
+          coachBySid.putIfAbsent(sid, () => []).add(name);
+        case TrainingAttendanceKind.notPlaying:
+          nietSpelendBySid.putIfAbsent(sid, () => []).add(name);
+        case TrainingAttendanceKind.declined:
+          afgemeldBySid.putIfAbsent(sid, () => []).add(name);
+        case null:
+          break;
       }
     }
 
@@ -244,7 +299,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
     for (final r in allRows) {
       final sid = (r['session_id'] as num?)?.toInt();
       if (sid == null) continue;
-      final pid = r['person_id']?.toString() ?? '';
+      final pid = normalizeProfileId(r['person_id']);
       if (pid.isEmpty) continue;
       respondedBySid.putIfAbsent(sid, () => {}).add(pid);
     }
@@ -278,11 +333,19 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
     for (final sid in nietGereageerdBySid.keys) {
       final ids = nietGereageerdBySid[sid]!;
-      final names = ids
-          .map((p) => allNamesById[p] ?? unknownUserName)
-          .where((n) => n.trim().isNotEmpty)
-          .toList()
-        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      final names =
+          ids
+              .map(
+                (p) => displayNameWithTeamMemberTag(
+                  displayName: allNamesById[p] ?? unknownUserName,
+                  profileId: p,
+                  teamId: teamIdBySessionId[sid],
+                  tagsByTeamAndProfile: memberTags,
+                ),
+              )
+              .where((n) => n.trim().isNotEmpty)
+              .toList()
+            ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
       nietGereageerdBySid[sid] = names;
     }
 
@@ -290,6 +353,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final myName = allNamesById[targetProfileId] ?? unknownUserName;
     setState(() {
       _myDisplayName = myName;
+      _memberTagsByTeamAndProfile = memberTags;
       _statusBySessionId
         ..clear()
         ..addAll(statusBySid);
@@ -311,7 +375,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
     });
   }
 
-  Future<Map<int, List<String>>> _loadVisibleTeamMemberIds(List<int> teamIds) async {
+  Future<Map<int, List<String>>> _loadVisibleTeamMemberIds(
+    List<int> teamIds,
+  ) async {
     if (teamIds.isEmpty) return {};
     final byTeamId = <int, List<String>>{};
 
@@ -323,7 +389,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
       final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
       for (final row in rows) {
         final tid = (row['team_id'] as num?)?.toInt();
-        final pid = row['profile_id']?.toString() ?? '';
+        final pid = normalizeProfileId(row['profile_id']);
         if (tid == null || pid.isEmpty) continue;
         byTeamId.putIfAbsent(tid, () => []).add(pid);
       }
@@ -340,7 +406,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
       final tmRows = (tmRes as List<dynamic>).cast<Map<String, dynamic>>();
       for (final row in tmRows) {
         final tid = (row['team_id'] as num?)?.toInt();
-        final pid = row['profile_id']?.toString() ?? '';
+        final pid = normalizeProfileId(row['profile_id']);
         if (tid == null || pid.isEmpty) continue;
         byTeamId.putIfAbsent(tid, () => []).add(pid);
       }
@@ -349,11 +415,26 @@ class _TrainingsTabState extends State<TrainingsTab> {
     return byTeamId;
   }
 
-  void _applyOptimisticAttendanceUpdate(int sessionId, AttendanceStatus? effective) {
-    final me = _myDisplayName ?? 'Ik';
+  void _applyOptimisticAttendanceUpdate(
+    int sessionId,
+    AttendanceStatus? effective,
+  ) {
+    final ctx = AppUserContext.of(context);
+    final teamId = _trainings
+        .where((s) => (s['session_id'] as num?)?.toInt() == sessionId)
+        .map((s) => (s['team_id'] as num?)?.toInt())
+        .firstOrNull;
+    final me = displayNameWithTeamMemberTag(
+      displayName: _myDisplayName ?? 'Ik',
+      profileId: ctx.attendanceProfileId,
+      teamId: teamId,
+      tagsByTeamAndProfile: _memberTagsByTeamAndProfile,
+    );
     final playing = List<String>.from(_playingBySessionId[sessionId] ?? []);
     final coaches = List<String>.from(_coachBySessionId[sessionId] ?? []);
-    final nietSpelend = List<String>.from(_nietSpelendBySessionId[sessionId] ?? []);
+    final nietSpelend = List<String>.from(
+      _nietSpelendBySessionId[sessionId] ?? [],
+    );
     final afgemeld = List<String>.from(_afgemeldBySessionId[sessionId] ?? []);
     playing.remove(me);
     coaches.remove(me);
@@ -398,11 +479,15 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final list = ids.toList();
     final me = _client.auth.currentUser;
     final myId = me?.id ?? '';
-    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '').trim();
+    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '')
+        .trim();
 
     // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
     try {
-      final res = await _client.rpc('get_profile_display_names', params: {'profile_ids': list});
+      final res = await _client.rpc(
+        'get_profile_display_names',
+        params: {'profile_ids': list},
+      );
       final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
       final map = <String, String>{};
       for (final r in rows) {
@@ -429,7 +514,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
       'id, email',
     ]) {
       try {
-        final res = await _client.from('profiles').select(select).inFilter('id', list);
+        final res = await _client
+            .from('profiles')
+            .select(select)
+            .inFilter('id', list);
         rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
         break;
       } catch (_) {}
@@ -438,9 +526,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
     for (final r in rows) {
       final id = r['id']?.toString() ?? '';
       if (id.isEmpty) continue;
-      final n = (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
-          .toString()
-          .trim();
+      final n =
+          (r['display_name'] ?? r['full_name'] ?? r['name'] ?? r['email'] ?? '')
+              .toString()
+              .trim();
       final name = applyDisplayNameOverrides(n);
       map[id] = name.isNotEmpty ? name : unknownUserName;
     }
@@ -450,32 +539,31 @@ class _TrainingsTabState extends State<TrainingsTab> {
     return map;
   }
 
-  AttendanceStatus? _statusFromString(String value) {
+  AttendanceStatus? _attendanceStatusFromKind(TrainingAttendanceKind? value) {
     switch (value) {
-      case 'playing':
+      case TrainingAttendanceKind.playing:
         return AttendanceStatus.playing;
-      case 'coach':
+      case TrainingAttendanceKind.coach:
         return AttendanceStatus.coach;
-      case 'aanwezig':
-        return AttendanceStatus.playing;
-      case 'niet_spelend':
-      case 'nietspelend':
+      case TrainingAttendanceKind.notPlaying:
         return AttendanceStatus.nietSpelend;
-      case 'afgemeld':
+      case TrainingAttendanceKind.declined:
         return AttendanceStatus.afgemeld;
-      default:
+      case null:
         return null;
     }
   }
 
   String _formatRange(dynamic startValue, dynamic endValue) {
     if (startValue == null) return '-';
-    final start =
-        startValue is DateTime ? startValue : DateTime.tryParse(startValue.toString());
+    final start = startValue is DateTime
+        ? startValue
+        : DateTime.tryParse(startValue.toString());
     if (start == null) return startValue.toString();
 
-    DateTime? end =
-        endValue is DateTime ? endValue : DateTime.tryParse(endValue?.toString() ?? '');
+    DateTime? end = endValue is DateTime
+        ? endValue
+        : DateTime.tryParse(endValue?.toString() ?? '');
     end ??= start.add(const Duration(hours: 2));
 
     final s = start.toLocal();
@@ -497,9 +585,11 @@ class _TrainingsTabState extends State<TrainingsTab> {
       .map((m) => m.teamId)
       .toSet();
 
-  bool _canManageTrainingsForTeam(int teamId) => _manageableTeamIds.contains(teamId);
+  bool _canManageTrainingsForTeam(int teamId) =>
+      _manageableTeamIds.contains(teamId);
 
-  bool _canDeleteTrainingForTeam(int teamId) => _canManageTrainingsForTeam(teamId);
+  bool _canDeleteTrainingForTeam(int teamId) =>
+      _canManageTrainingsForTeam(teamId);
 
   /// Trainingen die nog niet afgelopen zijn (niet geannuleerd, start in de toekomst).
   /// Gebruikt voor zowel de "Voor alle"-kaart als de lijst; verleden wordt niet getoond.
@@ -509,7 +599,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
       if (t['is_cancelled'] == true) return false;
       final start = t['start_datetime'] ?? t['start_timestamp'];
       if (start == null) return false;
-      final dt = start is DateTime ? start : DateTime.tryParse(start.toString());
+      final dt = start is DateTime
+          ? start
+          : DateTime.tryParse(start.toString());
       return dt != null && dt.toLocal().isAfter(now);
     }).toList();
   }
@@ -565,17 +657,22 @@ class _TrainingsTabState extends State<TrainingsTab> {
                 children: [
                   Expanded(
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
                       decoration: BoxDecoration(
                         color: AppColors.darkBlue,
-                        borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                        borderRadius: BorderRadius.circular(
+                          AppColors.cardRadius,
+                        ),
                       ),
                       child: Text(
                         _teamDisplayLabel(teamId),
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.w900,
-                            ),
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w900,
+                        ),
                         overflow: TextOverflow.ellipsis,
                         maxLines: 2,
                       ),
@@ -636,7 +733,13 @@ class _TrainingsTabState extends State<TrainingsTab> {
   }
 
   /// Toont één attendance-categorie (label, count, optionele namenlijst).
-  Widget _buildAttendanceCategory(String label, int count, List<String> names, bool expanded, TextStyle labelStyle) {
+  Widget _buildAttendanceCategory(
+    String label,
+    int count,
+    List<String> names,
+    bool expanded,
+    TextStyle labelStyle,
+  ) {
     if (count == 0) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -647,7 +750,12 @@ class _TrainingsTabState extends State<TrainingsTab> {
             padding: const EdgeInsets.only(left: 12, top: 2),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: names.map((n) => Text('- $n', style: labelStyle.copyWith(fontSize: 12))).toList(),
+              children: names
+                  .map(
+                    (n) =>
+                        Text('- $n', style: labelStyle.copyWith(fontSize: 12)),
+                  )
+                  .toList(),
             ),
           ),
       ],
@@ -663,7 +771,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final start = session['start_datetime'] ?? session['start_timestamp'];
     final end = session['end_timestamp'];
     final currentStatus = _statusBySessionId[sessionId];
-    final isPresent = currentStatus == AttendanceStatus.playing || currentStatus == AttendanceStatus.coach;
+    final isPresent =
+        currentStatus == AttendanceStatus.playing ||
+        currentStatus == AttendanceStatus.coach;
     final isNotPlaying = currentStatus == AttendanceStatus.nietSpelend;
     final isAfgemeld = currentStatus == AttendanceStatus.afgemeld;
     final ctx = AppUserContext.of(context);
@@ -674,7 +784,12 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final afgemeld = _afgemeldBySessionId[sessionId] ?? [];
     final nietGereageerd = _nietGereageerdBySessionId[sessionId] ?? [];
     final expanded = _expandedSessionIds.contains(sessionId);
-    final hasCounts = playing.isNotEmpty || coaches.isNotEmpty || nietSpelend.isNotEmpty || afgemeld.isNotEmpty || nietGereageerd.isNotEmpty;
+    final hasCounts =
+        playing.isNotEmpty ||
+        coaches.isNotEmpty ||
+        nietSpelend.isNotEmpty ||
+        afgemeld.isNotEmpty ||
+        nietGereageerd.isNotEmpty;
 
     return GlassCard(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -710,7 +825,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
                         ),
                         if (isCancelled)
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
                             decoration: BoxDecoration(
                               color: AppColors.error.withValues(alpha: 0.14),
                               borderRadius: BorderRadius.circular(999),
@@ -771,17 +889,20 @@ class _TrainingsTabState extends State<TrainingsTab> {
                       onPressed: isCancelled
                           ? null
                           : () => _updateAttendance(
-                                sessionId,
-                                canResetOwnStatus
-                                    ? null
-                                    : (_isTrainerOrCoachForTeam(teamId)
+                              sessionId,
+                              canResetOwnStatus
+                                  ? null
+                                  : (_isTrainerOrCoachForTeam(teamId)
                                         ? AttendanceStatus.coach
                                         : AttendanceStatus.playing),
-                              ),
+                            ),
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.success,
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -791,13 +912,16 @@ class _TrainingsTabState extends State<TrainingsTab> {
                       onPressed: isCancelled
                           ? null
                           : () => _updateAttendance(
-                                sessionId,
-                                _isTrainerOrCoachForTeam(teamId)
-                                    ? AttendanceStatus.coach
-                                    : AttendanceStatus.playing,
-                              ),
+                              sessionId,
+                              _isTrainerOrCoachForTeam(teamId)
+                                  ? AttendanceStatus.coach
+                                  : AttendanceStatus.playing,
+                            ),
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -809,13 +933,18 @@ class _TrainingsTabState extends State<TrainingsTab> {
                       onPressed: isCancelled
                           ? null
                           : () => _updateAttendance(
-                                sessionId,
-                                canResetOwnStatus ? null : AttendanceStatus.nietSpelend,
-                              ),
+                              sessionId,
+                              canResetOwnStatus
+                                  ? null
+                                  : AttendanceStatus.nietSpelend,
+                            ),
                       style: FilledButton.styleFrom(
                         backgroundColor: Colors.amber.shade600,
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -824,9 +953,15 @@ class _TrainingsTabState extends State<TrainingsTab> {
                   : OutlinedButton(
                       onPressed: isCancelled
                           ? null
-                          : () => _updateAttendance(sessionId, AttendanceStatus.nietSpelend),
+                          : () => _updateAttendance(
+                              sessionId,
+                              AttendanceStatus.nietSpelend,
+                            ),
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -868,13 +1003,19 @@ class _TrainingsTabState extends State<TrainingsTab> {
                                 ),
                               );
                               if (confirm == true && mounted) {
-                                _updateAttendance(sessionId, AttendanceStatus.afgemeld);
+                                _updateAttendance(
+                                  sessionId,
+                                  AttendanceStatus.afgemeld,
+                                );
                               }
                             },
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.error,
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -910,11 +1051,17 @@ class _TrainingsTabState extends State<TrainingsTab> {
                                 ),
                               );
                               if (confirm == true && mounted) {
-                                _updateAttendance(sessionId, AttendanceStatus.afgemeld);
+                                _updateAttendance(
+                                  sessionId,
+                                  AttendanceStatus.afgemeld,
+                                );
                               }
                             },
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -954,15 +1101,22 @@ class _TrainingsTabState extends State<TrainingsTab> {
                     playing.length + coaches.length,
                     [...playing, ...coaches],
                     expanded,
-                    const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                    const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                    ),
                   ),
-                  if (playing.isNotEmpty || coaches.isNotEmpty) const SizedBox(height: 4),
+                  if (playing.isNotEmpty || coaches.isNotEmpty)
+                    const SizedBox(height: 4),
                   _buildAttendanceCategory(
                     'Niet spelend',
                     nietSpelend.length,
                     nietSpelend,
                     expanded,
-                    const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                    const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                    ),
                   ),
                   if (nietSpelend.isNotEmpty) const SizedBox(height: 4),
                   _buildAttendanceCategory(
@@ -970,7 +1124,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
                     afgemeld.length,
                     afgemeld,
                     expanded,
-                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.9), fontSize: 13),
+                    TextStyle(
+                      color: AppColors.textSecondary.withValues(alpha: 0.9),
+                      fontSize: 13,
+                    ),
                   ),
                   if (afgemeld.isNotEmpty) const SizedBox(height: 4),
                   _buildAttendanceCategory(
@@ -978,7 +1135,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
                     nietGereageerd.length,
                     nietGereageerd,
                     expanded,
-                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.7), fontSize: 13),
+                    TextStyle(
+                      color: AppColors.textSecondary.withValues(alpha: 0.7),
+                      fontSize: 13,
+                    ),
                   ),
                 ],
               ),
@@ -1011,9 +1171,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
     // Alleen trainingen van teams waar deze gebruiker trainer/coach is mogen worden verwijderd.
     final toDelete = _selectedSessionIds.where((sessionId) {
-      final t = _trainings.cast<Map<String, dynamic>>().where(
-            (t) => (t['session_id'] as num?)?.toInt() == sessionId,
-          ).firstOrNull;
+      final t = _trainings
+          .cast<Map<String, dynamic>>()
+          .where((t) => (t['session_id'] as num?)?.toInt() == sessionId)
+          .firstOrNull;
       if (t == null) return false;
       final teamId = (t['team_id'] as num?)?.toInt() ?? 0;
       return _manageableTeamIds.contains(teamId);
@@ -1026,7 +1187,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Trainingen verwijderen'),
-        content: Text('Weet je zeker dat je $count training(en) wilt verwijderen?'),
+        content: Text(
+          'Weet je zeker dat je $count training(en) wilt verwijderen?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -1042,10 +1205,7 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
     if (confirmed != true) return;
 
-    await _client.from('sessions').delete().inFilter(
-          'session_id',
-          toDelete,
-        );
+    await _client.from('sessions').delete().inFilter('session_id', toDelete);
 
     if (!mounted) return;
     setState(() {
@@ -1056,7 +1216,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
   }
 
   Future<void> _openAddTraining() async {
-    final manageable = widget.manageableTeams.where((m) => m.canManageTeam).toList();
+    final manageable = widget.manageableTeams
+        .where((m) => m.canManageTeam)
+        .toList();
     if (manageable.isEmpty) return;
     final created = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
@@ -1069,7 +1231,10 @@ class _TrainingsTabState extends State<TrainingsTab> {
     }
   }
 
-  Future<void> _updateAttendance(int sessionId, AttendanceStatus? status) async {
+  Future<void> _updateAttendance(
+    int sessionId,
+    AttendanceStatus? status,
+  ) async {
     final user = _client.auth.currentUser;
     if (user == null) return;
     if (!mounted) return;
@@ -1080,10 +1245,15 @@ class _TrainingsTabState extends State<TrainingsTab> {
     final prevStatus = _statusBySessionId[sessionId];
     final prevPlaying = List<String>.from(_playingBySessionId[sessionId] ?? []);
     final prevCoaches = List<String>.from(_coachBySessionId[sessionId] ?? []);
-    final prevNietSpelend = List<String>.from(_nietSpelendBySessionId[sessionId] ?? []);
-    final prevAfgemeld = List<String>.from(_afgemeldBySessionId[sessionId] ?? []);
-    final prevNietGereageerd =
-        List<String>.from(_nietGereageerdBySessionId[sessionId] ?? []);
+    final prevNietSpelend = List<String>.from(
+      _nietSpelendBySessionId[sessionId] ?? [],
+    );
+    final prevAfgemeld = List<String>.from(
+      _afgemeldBySessionId[sessionId] ?? [],
+    );
+    final prevNietGereageerd = List<String>.from(
+      _nietGereageerdBySessionId[sessionId] ?? [],
+    );
 
     _applyOptimisticAttendanceUpdate(sessionId, status);
     if (!mounted) return;
@@ -1105,14 +1275,11 @@ class _TrainingsTabState extends State<TrainingsTab> {
         AttendanceStatus.nietSpelend => 'niet_spelend',
         AttendanceStatus.afgemeld => 'afgemeld',
       };
-      await _client.from('attendance').upsert(
-        {
-          'session_id': sessionId,
-          'person_id': targetProfileId,
-          'status': apiStatus,
-        },
-        onConflict: 'session_id,person_id',
-      );
+      await _client.from('attendance').upsert({
+        'session_id': sessionId,
+        'person_id': targetProfileId,
+        'status': apiStatus,
+      }, onConflict: 'session_id,person_id');
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -1144,10 +1311,12 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
     final prevStatus = Map<int, AttendanceStatus?>.from(_statusBySessionId);
     final prevPlaying = <int, List<String>>{
-      for (final e in _playingBySessionId.entries) e.key: List<String>.from(e.value),
+      for (final e in _playingBySessionId.entries)
+        e.key: List<String>.from(e.value),
     };
     final prevCoaches = <int, List<String>>{
-      for (final e in _coachBySessionId.entries) e.key: List<String>.from(e.value),
+      for (final e in _coachBySessionId.entries)
+        e.key: List<String>.from(e.value),
     };
 
     for (final t in upcoming) {
@@ -1168,14 +1337,11 @@ class _TrainingsTabState extends State<TrainingsTab> {
         final status = _isTrainerOrCoachForTeam(teamId)
             ? AttendanceStatus.coach
             : AttendanceStatus.playing;
-        await _client.from('attendance').upsert(
-          {
-            'session_id': sid,
-            'person_id': targetProfileId,
-            'status': status.name,
-          },
-          onConflict: 'session_id,person_id',
-        );
+        await _client.from('attendance').upsert({
+          'session_id': sid,
+          'person_id': targetProfileId,
+          'status': status.name,
+        }, onConflict: 'session_id,person_id');
       }
       if (!mounted) return;
       showTopMessage(
@@ -1195,12 +1361,19 @@ class _TrainingsTabState extends State<TrainingsTab> {
           ..clear()
           ..addAll(prevCoaches);
       });
-      showTopMessage(context, 'Kon aanwezigheid niet opslaan: $e', isError: true);
+      showTopMessage(
+        context,
+        'Kon aanwezigheid niet opslaan: $e',
+        isError: true,
+      );
     }
   }
 
   /// Rij "Aanmelden voor alle trainingen van dit team" (staat in de team-accordion).
-  Widget _buildTeamTrainingsAanwezigRow(int teamId, List<Map<String, dynamic>> upcoming) {
+  Widget _buildTeamTrainingsAanwezigRow(
+    int teamId,
+    List<Map<String, dynamic>> upcoming,
+  ) {
     final allPresent = upcoming.every((t) {
       final sid = (t['session_id'] as num?)?.toInt();
       return sid != null && _statusBySessionId[sid] != null;
@@ -1216,7 +1389,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
           const SizedBox(width: 12),
           allPresent
               ? FilledButton.icon(
-                  onPressed: () => _setMyStatusForAllTrainingsAanwezigForTeam(teamId),
+                  onPressed: () =>
+                      _setMyStatusForAllTrainingsAanwezigForTeam(teamId),
                   style: FilledButton.styleFrom(
                     backgroundColor: AppColors.success,
                     foregroundColor: Colors.white,
@@ -1225,7 +1399,8 @@ class _TrainingsTabState extends State<TrainingsTab> {
                   label: const Text('Aanwezig'),
                 )
               : OutlinedButton(
-                  onPressed: () => _setMyStatusForAllTrainingsAanwezigForTeam(teamId),
+                  onPressed: () =>
+                      _setMyStatusForAllTrainingsAanwezigForTeam(teamId),
                   child: const Text('Aanwezig'),
                 ),
         ],
@@ -1270,7 +1445,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
                   SizedBox(
                     height: 280,
                     child: Center(
-                      child: CircularProgressIndicator(color: AppColors.primary),
+                      child: CircularProgressIndicator(
+                        color: AppColors.primary,
+                      ),
                     ),
                   ),
                 ],
@@ -1303,7 +1480,9 @@ class _TrainingsTabState extends State<TrainingsTab> {
 
             if (teamIds.length > 1 && !_didInitExpandedTraining) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted && !_didInitExpandedTraining && _allowedTeamIds.isNotEmpty) {
+                if (mounted &&
+                    !_didInitExpandedTraining &&
+                    _allowedTeamIds.isNotEmpty) {
                   setState(() {
                     _expandedTrainingTeamIds.add(_allowedTeamIds.first);
                     _didInitExpandedTraining = true;
@@ -1413,9 +1592,9 @@ class TrainingRoleEmptyState extends StatelessWidget {
             trainingTabEmptyMessage(viewRole),
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: AppColors.onBackground,
-                  fontWeight: FontWeight.w600,
-                ),
+              color: AppColors.onBackground,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 12),
           Center(

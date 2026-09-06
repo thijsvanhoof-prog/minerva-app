@@ -45,6 +45,15 @@ android {
         }
     }
 
+    val isReleaseTask = gradle.startParameter.taskNames.any {
+        it.contains("release", ignoreCase = true)
+    }
+    if (isReleaseTask && keystoreFile == null) {
+        throw GradleException(
+            "Release signing ontbreekt. Voeg android/key.properties en de upload-keystore toe."
+        )
+    }
+
     signingConfigs {
         if (keystoreFile != null) {
             create("release") {
@@ -58,7 +67,8 @@ android {
 
     buildTypes {
         release {
-            // Gebruik release signing alleen als key.properties én keystore bestaan; anders debug.
+            // Debugtaken blijven configureerbaar zonder privésleutel; een echte
+            // releasetaak wordt hierboven expliciet geblokkeerd als die ontbreekt.
             signingConfig = if (keystoreFile != null)
                 signingConfigs.getByName("release")
             else

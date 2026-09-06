@@ -78,6 +78,7 @@ create table if not exists public.nevobo_home_matches (
   -- optional: created tasks for this match
   fluiten_task_id bigint null references public.club_tasks(task_id) on delete set null,
   tellen_task_id bigint null references public.club_tasks(task_id) on delete set null,
+  tweede_scheidsrechter_task_id bigint null references public.club_tasks(task_id) on delete set null,
 
   created_by uuid null references auth.users(id) on delete set null,
   updated_by uuid null references auth.users(id) on delete set null,

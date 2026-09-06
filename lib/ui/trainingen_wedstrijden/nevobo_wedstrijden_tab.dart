@@ -9,10 +9,13 @@ import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/app_colors.dart';
 import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
-import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/display_name_overrides.dart'
+    show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/trainingen_wedstrijden/match_key.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/match_task_roles.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/match_travel.dart';
 import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
+import 'package:minerva_app/ui/trainingen_wedstrijden/team_member_tag_display.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class NevoboWedstrijdenTab extends StatefulWidget {
@@ -41,7 +44,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   final Map<String, String> _matchErrorByTeam = {};
 
   // Availability state
-  final Map<String, String> _myStatusByMatchKey = {}; // match_key -> playing | coach | not_playing (null = nog geen keuze)
+  final Map<String, String> _myStatusByMatchKey =
+      {}; // match_key -> playing | coach | not_playing (null = nog geen keuze)
   final Map<String, List<String>> _playingNamesByMatchKey = {};
   final Map<String, List<String>> _coachNamesByMatchKey = {};
   final Map<String, List<String>> _notPlayingNamesByMatchKey = {};
@@ -49,10 +53,13 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   final Map<String, List<String>> _nietGereageerdByMatchKey = {};
   final Map<String, List<String>> _refereeNamesByMatchKey = {};
   final Map<String, List<String>> _tellerNamesByMatchKey = {};
-  final Map<String, bool> _cancelledByMatchKey = {}; // match_key -> true if cancelled
+  final Map<String, List<String>> _tweedeScheidsrechterNamesByMatchKey = {};
+  final Map<String, bool> _cancelledByMatchKey =
+      {}; // match_key -> true if cancelled
   final Map<String, String?> _cancelReasonByMatchKey = {};
   final Set<String> _expandedMatchKeys = {};
   String? _myDisplayName;
+  Map<String, String> _memberTagsByTeamAndProfile = const {};
 
   final Map<String, List<NevoboStandingEntry>> _leaderboardByTeam = {};
   final Map<String, String> _errorByTeam = {};
@@ -63,6 +70,11 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   /// Geselecteerde teamcodes voor weergave (opgeslagen in SharedPreferences).
   Set<String> _selectedTeamCodes = const {};
   static const _selectedTeamsKey = 'wedstrijden_selected_team_codes';
+  int _loadGeneration = 0;
+
+  bool _isCurrentLoad(int generation) {
+    return mounted && generation == _loadGeneration;
+  }
 
   @override
   void initState() {
@@ -143,8 +155,16 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     if (extracted == null || extracted.isEmpty) return false;
     final a = extracted.trim().toUpperCase();
     final b = teamCode.trim().toUpperCase();
-    if (a.startsWith('XR') && b.startsWith('MR') && a.substring(2) == b.substring(2)) return true;
-    if (b.startsWith('XR') && a.startsWith('MR') && b.substring(2) == a.substring(2)) return true;
+    if (a.startsWith('XR') &&
+        b.startsWith('MR') &&
+        a.substring(2) == b.substring(2)) {
+      return true;
+    }
+    if (b.startsWith('XR') &&
+        a.startsWith('MR') &&
+        b.substring(2) == a.substring(2)) {
+      return true;
+    }
     return a == b;
   }
 
@@ -166,8 +186,13 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   }
 
   /// Highlight alleen het Minerva-team dat exact bij [teamCode] hoort.
-  Widget _buildMatchSummaryText(String summary, {TextStyle? style, String? teamCode}) {
-    final base = style ??
+  Widget _buildMatchSummaryText(
+    String summary, {
+    TextStyle? style,
+    String? teamCode,
+  }) {
+    final base =
+        style ??
         const TextStyle(
           color: AppColors.onBackground,
           fontWeight: FontWeight.w800,
@@ -187,13 +212,22 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       for (var i = 0; i < parts.length; i++) {
         if (i > 0) spans.add(TextSpan(text: sep, style: base));
         final segment = parts[i].trim();
-        final highlight = _segmentMatchesTeamCode(segment, teamCode) ||
-            (isInternalMinervaMatch && segment.toLowerCase().contains('minerva'));
+        final highlight =
+            _segmentMatchesTeamCode(segment, teamCode) ||
+            (isInternalMinervaMatch &&
+                segment.toLowerCase().contains('minerva'));
         if (highlight) anyExactMatch = true;
-        spans.add(TextSpan(
-          text: parts[i],
-          style: highlight ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900) : base,
-        ));
+        spans.add(
+          TextSpan(
+            text: parts[i],
+            style: highlight
+                ? base.copyWith(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w900,
+                  )
+                : base,
+          ),
+        );
       }
       // Fallback: als exacte teamcode niet matcht, highlight alsnog eerste "Minerva"-segment.
       if (!anyExactMatch) {
@@ -202,14 +236,20 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         for (var i = 0; i < parts.length; i++) {
           if (i > 0) spans.add(TextSpan(text: sep, style: base));
           final raw = parts[i];
-          final isMinervaSegment = !highlighted && raw.toLowerCase().contains('minerva');
+          final isMinervaSegment =
+              !highlighted && raw.toLowerCase().contains('minerva');
           if (isMinervaSegment) highlighted = true;
-          spans.add(TextSpan(
-            text: raw,
-            style: isMinervaSegment
-                ? base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)
-                : base,
-          ));
+          spans.add(
+            TextSpan(
+              text: raw,
+              style: isMinervaSegment
+                  ? base.copyWith(
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w900,
+                    )
+                  : base,
+            ),
+          );
         }
       }
       return RichText(
@@ -222,7 +262,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final lower = summary.toLowerCase();
     final idx = lower.indexOf('minerva');
     if (idx < 0) return Text(summary, style: base);
-    final endIdx = summary.indexOf(sep, idx) >= 0 ? summary.indexOf(sep, idx) : summary.length;
+    final endIdx = summary.indexOf(sep, idx) >= 0
+        ? summary.indexOf(sep, idx)
+        : summary.length;
     final before = summary.substring(0, idx);
     final mid = summary.substring(idx, endIdx);
     final after = summary.substring(endIdx);
@@ -231,7 +273,13 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         style: base,
         children: [
           if (before.isNotEmpty) TextSpan(text: before),
-          TextSpan(text: mid, style: base.copyWith(color: AppColors.primary, fontWeight: FontWeight.w900)),
+          TextSpan(
+            text: mid,
+            style: base.copyWith(
+              color: AppColors.primary,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
           if (after.isNotEmpty) TextSpan(text: after),
         ],
       ),
@@ -382,7 +430,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           if (m.matchKey == rowKey) return m;
         }
       }
-      final byKey = _findMatchRefByEquivalentKey(matches: matches, rowKey: rowKey);
+      final byKey = _findMatchRefByEquivalentKey(
+        matches: matches,
+        rowKey: rowKey,
+      );
       if (byKey != null) return byKey;
     }
 
@@ -528,20 +579,29 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   }
 
   bool _profileIdMatches(String profileId, String targetProfileId) {
-    if (profileId.trim().isEmpty || targetProfileId.trim().isEmpty) return false;
-    return profileId.trim().toLowerCase() == targetProfileId.trim().toLowerCase();
+    if (profileId.trim().isEmpty || targetProfileId.trim().isEmpty) {
+      return false;
+    }
+    return profileId.trim().toLowerCase() ==
+        targetProfileId.trim().toLowerCase();
   }
 
-  Future<Map<String, String>> _loadProfileDisplayNames(Set<String> profileIds) async {
+  Future<Map<String, String>> _loadProfileDisplayNames(
+    Set<String> profileIds,
+  ) async {
     if (profileIds.isEmpty) return {};
     final ids = profileIds.toList();
     final me = _client.auth.currentUser;
     final myId = me?.id ?? '';
-    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '').trim();
+    final myMetaName = (me?.userMetadata?['display_name']?.toString() ?? '')
+        .trim();
 
     // Preferred: security definer RPC so names work even with restrictive RLS on profiles.
     try {
-      final res = await _client.rpc('get_profile_display_names', params: {'profile_ids': ids});
+      final res = await _client.rpc(
+        'get_profile_display_names',
+        params: {'profile_ids': ids},
+      );
       final rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
       final map = <String, String>{};
       for (final r in rows) {
@@ -568,7 +628,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       'id, email',
     ]) {
       try {
-        final res = await _client.from('profiles').select(select).inFilter('id', ids);
+        final res = await _client
+            .from('profiles')
+            .select(select)
+            .inFilter('id', ids);
         rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
         break;
       } catch (_) {
@@ -593,7 +656,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     return map;
   }
 
-  Future<void> _loadAvailabilityForMatches(List<_MatchRef> matches) async {
+  Future<void> _loadAvailabilityForMatches(
+    List<_MatchRef> matches,
+    int loadGeneration,
+  ) async {
     final user = _client.auth.currentUser;
     if (user == null) return;
     if (matches.isEmpty) return;
@@ -604,7 +670,11 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final keys = matches.map((m) => m.matchKey).toSet().toList();
     final targets = [
       for (final m in matches)
-        MatchKeyTarget(matchKey: m.matchKey, teamCode: m.teamCode, start: m.start),
+        MatchKeyTarget(
+          matchKey: m.matchKey,
+          teamCode: m.teamCode,
+          start: m.start,
+        ),
     ];
 
     // Fetch availability; match_key strings drift between app versions, so also
@@ -620,7 +690,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
 
     try {
       addRows(
-        await _client.from('match_availability').select(select).inFilter('match_key', keys),
+        await _client
+            .from('match_availability')
+            .select(select)
+            .inFilter('match_key', keys),
       );
     } catch (_) {
       // Table missing or RLS; leave empty unless the broader queries succeed.
@@ -673,6 +746,15 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     // Altijd naam van huidig profiel (zelf of kind) laden, ook als die nog nergens is aangemeld.
     if (targetProfileId.isNotEmpty) profileIds.add(targetProfileId);
     final namesById = await _loadProfileDisplayNames(profileIds);
+    final teamIdByMatchKey = <String, int>{};
+    for (final match in matches) {
+      final teamId = widget.teamIdByCode[match.teamCode.trim().toUpperCase()];
+      if (teamId != null) teamIdByMatchKey[match.matchKey] = teamId;
+    }
+    final memberTags = await loadVisibleTeamMemberTags(
+      client: _client,
+      teamIds: teamIdByMatchKey.values,
+    );
 
     final myStatus = <String, String>{};
     final playingByKey = <String, List<String>>{};
@@ -685,10 +767,20 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       if (key.isEmpty) continue;
       final pid = r['profile_id']?.toString() ?? '';
       final status = (r['status'] ?? '').toString().trim().toLowerCase();
-      final name = pid.isEmpty ? '' : (namesById[pid] ?? unknownUserName);
+      final name = pid.isEmpty
+          ? ''
+          : displayNameWithTeamMemberTag(
+              displayName: namesById[pid] ?? unknownUserName,
+              profileId: pid,
+              teamId: teamIdByMatchKey[key],
+              tagsByTeamAndProfile: memberTags,
+            );
 
       if (_profileIdMatches(pid, targetProfileId) &&
-          (status == 'playing' || status == 'coach' || status == 'not_playing' || status == 'afgemeld')) {
+          (status == 'playing' ||
+              status == 'coach' ||
+              status == 'not_playing' ||
+              status == 'afgemeld')) {
         myStatus[key] = status;
       }
       if (name.trim().isEmpty) continue;
@@ -736,8 +828,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           matchKeyToTeamId[m.matchKey] = tid;
         }
       }
-      final teamMemberIdsByTid =
-          await _loadVisibleTeamMemberIds(teamIds.toList());
+      final teamMemberIdsByTid = await _loadVisibleTeamMemberIds(
+        teamIds.toList(),
+      );
 
       var allNamesById = Map<String, String>.from(namesById);
       final idsToLoad = <String>{};
@@ -764,7 +857,12 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         final names = <String>[];
         for (final pid in members) {
           if (!responded.contains(pid)) {
-            final n = allNamesById[pid] ?? unknownUserName;
+            final n = displayNameWithTeamMemberTag(
+              displayName: allNamesById[pid] ?? unknownUserName,
+              profileId: pid,
+              teamId: tid,
+              tagsByTeamAndProfile: memberTags,
+            );
             if (n.trim().isNotEmpty) names.add(n);
           }
         }
@@ -773,10 +871,11 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
       }
     }
 
-    if (!mounted) return;
+    if (!_isCurrentLoad(loadGeneration)) return;
     final myName = namesById[targetProfileId] ?? unknownUserName;
     setState(() {
       _myDisplayName = myName;
+      _memberTagsByTeamAndProfile = memberTags;
       _myStatusByMatchKey
         ..clear()
         ..addAll(myStatus);
@@ -798,7 +897,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     });
   }
 
-  Future<Map<int, List<String>>> _loadVisibleTeamMemberIds(List<int> teamIds) async {
+  Future<Map<int, List<String>>> _loadVisibleTeamMemberIds(
+    List<int> teamIds,
+  ) async {
     if (teamIds.isEmpty) return {};
     final byTeamId = <int, List<String>>{};
 
@@ -836,27 +937,32 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     return byTeamId;
   }
 
-  Future<void> _loadRefereesForMatches(List<_MatchRef> matches) async {
+  Future<void> _loadRefereesForMatches(
+    List<_MatchRef> matches,
+    int loadGeneration,
+  ) async {
     if (matches.isEmpty) return;
     final keys = matches.map((m) => m.matchKey).toSet().toList();
     if (keys.isEmpty) return;
     final targetProfileId = AppUserContext.of(context).attendanceProfileId;
 
     try {
-      final linksRes = await _client
-          .from('nevobo_home_matches')
-          .select('match_key, fluiten_task_id, tellen_task_id')
-          .inFilter('match_key', keys);
+      final linksRes = await _selectMatchTaskLinksForKeys(keys);
       final linkRows = (linksRes as List<dynamic>).cast<Map<String, dynamic>>();
 
       final refereeTaskIdByKey = <String, int>{};
       final tellerTaskIdByKey = <String, int>{};
+      final tweedeScheidsrechterTaskIdByKey = <String, int>{};
       final taskIds = <int>{};
       for (final row in linkRows) {
         final key = (row['match_key'] ?? '').toString();
         if (key.isEmpty) continue;
-        final fluitenTaskId = (row['fluiten_task_id'] as num?)?.toInt();
-        final tellenTaskId = (row['tellen_task_id'] as num?)?.toInt();
+        final fluitenTaskId = taskIdFromLinkRow(row, kMatchTaskRoleFluiten);
+        final tellenTaskId = taskIdFromLinkRow(row, kMatchTaskRoleTellen);
+        final tweedeTaskId = taskIdFromLinkRow(
+          row,
+          kMatchTaskRoleTweedeScheidsrechter,
+        );
         if (fluitenTaskId != null) {
           refereeTaskIdByKey[key] = fluitenTaskId;
           taskIds.add(fluitenTaskId);
@@ -865,15 +971,22 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           tellerTaskIdByKey[key] = tellenTaskId;
           taskIds.add(tellenTaskId);
         }
+        if (tweedeTaskId != null) {
+          tweedeScheidsrechterTaskIdByKey[key] = tweedeTaskId;
+          taskIds.add(tweedeTaskId);
+        }
       }
 
       if (taskIds.isEmpty) {
-        if (!mounted) return;
+        if (!_isCurrentLoad(loadGeneration)) return;
         setState(() {
           _refereeNamesByMatchKey
             ..clear()
             ..addEntries(keys.map((k) => MapEntry(k, const <String>[])));
           _tellerNamesByMatchKey
+            ..clear()
+            ..addEntries(keys.map((k) => MapEntry(k, const <String>[])));
+          _tweedeScheidsrechterNamesByMatchKey
             ..clear()
             ..addEntries(keys.map((k) => MapEntry(k, const <String>[])));
         });
@@ -884,7 +997,8 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           .from('club_task_signups')
           .select('task_id, profile_id')
           .inFilter('task_id', taskIds.toList());
-      final signupRows = (signupRes as List<dynamic>).cast<Map<String, dynamic>>();
+      final signupRows = (signupRes as List<dynamic>)
+          .cast<Map<String, dynamic>>();
 
       final profileIds = <String>{};
       for (final row in signupRows) {
@@ -909,18 +1023,23 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
 
       final byMatch = <String, List<String>>{};
       final tellerByMatch = <String, List<String>>{};
+      final tweedeByMatch = <String, List<String>>{};
       for (final key in keys) {
         final refereeTaskId = refereeTaskIdByKey[key];
         final tellerTaskId = tellerTaskIdByKey[key];
+        final tweedeTaskId = tweedeScheidsrechterTaskIdByKey[key];
         byMatch[key] = refereeTaskId == null
             ? const []
             : (namesByTaskId[refereeTaskId] ?? const []);
         tellerByMatch[key] = tellerTaskId == null
             ? const []
             : (namesByTaskId[tellerTaskId] ?? const []);
+        tweedeByMatch[key] = tweedeTaskId == null
+            ? const []
+            : (namesByTaskId[tweedeTaskId] ?? const []);
       }
 
-      if (!mounted) return;
+      if (!_isCurrentLoad(loadGeneration)) return;
       setState(() {
         _refereeNamesByMatchKey
           ..clear()
@@ -928,15 +1047,36 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         _tellerNamesByMatchKey
           ..clear()
           ..addAll(tellerByMatch);
+        _tweedeScheidsrechterNamesByMatchKey
+          ..clear()
+          ..addAll(tweedeByMatch);
       });
     } catch (_) {
       // best effort: keep UI working without referee data
     }
   }
 
-  Future<void> _loadCancellationsForMatches(List<_MatchRef> matches) async {
+  Future<Object> _selectMatchTaskLinksForKeys(List<String> keys) async {
+    try {
+      return await _client
+          .from('nevobo_home_matches')
+          .select(kNevoboHomeMatchesTaskKeySelectColumns)
+          .inFilter('match_key', keys);
+    } catch (e) {
+      if (!isMissingTweedeScheidsrechterColumn(e)) rethrow;
+      return await _client
+          .from('nevobo_home_matches')
+          .select(kNevoboHomeMatchesTaskKeySelectColumnsLegacy)
+          .inFilter('match_key', keys);
+    }
+  }
+
+  Future<void> _loadCancellationsForMatches(
+    List<_MatchRef> matches,
+    int loadGeneration,
+  ) async {
     if (matches.isEmpty) {
-      if (!mounted) return;
+      if (!_isCurrentLoad(loadGeneration)) return;
       setState(() {
         _cancelledByMatchKey.clear();
         _cancelReasonByMatchKey.clear();
@@ -966,7 +1106,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           'match_key, team_code, starts_at, is_cancelled, reason';
       final rowsByKey = <String, Map<String, dynamic>>{};
 
-      Future<void> runSelect(String select, Future<dynamic> Function() query) async {
+      Future<void> runSelect(
+        String select,
+        Future<dynamic> Function() query,
+      ) async {
         try {
           final res = await query();
           for (final r in (res as List<dynamic>).cast<Map<String, dynamic>>()) {
@@ -974,13 +1117,18 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
             if (k.isNotEmpty) rowsByKey[k] = r;
           }
         } catch (e) {
-          debugPrint('NevoboWedstrijden: cancellations query failed ($select): $e');
+          debugPrint(
+            'NevoboWedstrijden: cancellations query failed ($select): $e',
+          );
         }
       }
 
       await runSelect(
         selectWithSummary,
-        () => _client.from('match_cancellations').select(selectWithSummary).inFilter('match_key', keys),
+        () => _client
+            .from('match_cancellations')
+            .select(selectWithSummary)
+            .inFilter('match_key', keys),
       );
 
       if (teamCodes.isNotEmpty) {
@@ -1054,13 +1202,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         reasons: reasons,
       );
 
-      _debugLogCancellationMatching(
-        matches: matches,
-        rows: rows,
-        matched: map,
-      );
+      _debugLogCancellationMatching(matches: matches, rows: rows, matched: map);
 
-      if (!mounted) return;
+      if (!_isCurrentLoad(loadGeneration)) return;
       setState(() {
         _cancelledByMatchKey
           ..clear()
@@ -1075,7 +1219,19 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   }
 
   void _applyOptimisticMatchUpdate(String key, String? status) {
-    final me = _myDisplayName ?? 'Ik';
+    final ctx = AppUserContext.of(context);
+    int? teamId;
+    for (final match in _upcomingMatchRefs) {
+      if (match.matchKey != key) continue;
+      teamId = widget.teamIdByCode[match.teamCode.trim().toUpperCase()];
+      break;
+    }
+    final me = displayNameWithTeamMemberTag(
+      displayName: _myDisplayName ?? 'Ik',
+      profileId: ctx.attendanceProfileId,
+      teamId: teamId,
+      tagsByTeamAndProfile: _memberTagsByTeamAndProfile,
+    );
     final playing = List<String>.from(_playingNamesByMatchKey[key] ?? []);
     final coaches = List<String>.from(_coachNamesByMatchKey[key] ?? []);
     final notPlaying = List<String>.from(_notPlayingNamesByMatchKey[key] ?? []);
@@ -1164,10 +1320,13 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final prevStatus = _myStatusByMatchKey[key];
     final prevPlaying = List<String>.from(_playingNamesByMatchKey[key] ?? []);
     final prevCoaches = List<String>.from(_coachNamesByMatchKey[key] ?? []);
-    final prevNotPlaying = List<String>.from(_notPlayingNamesByMatchKey[key] ?? []);
+    final prevNotPlaying = List<String>.from(
+      _notPlayingNamesByMatchKey[key] ?? [],
+    );
     final prevAfgemeld = List<String>.from(_afgemeldNamesByMatchKey[key] ?? []);
-    final prevNietGereageerd =
-        List<String>.from(_nietGereageerdByMatchKey[key] ?? []);
+    final prevNietGereageerd = List<String>.from(
+      _nietGereageerdByMatchKey[key] ?? [],
+    );
 
     _applyOptimisticMatchUpdate(key, status);
     if (!mounted) return;
@@ -1176,18 +1335,15 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     try {
       if (status != null) {
         // status = playing | coach | not_playing | afgemeld
-        await _client.from('match_availability').upsert(
-          {
-            'match_key': key,
-            'team_code': match.teamCode,
-            'starts_at': match.start.toUtc().toIso8601String(),
-            'summary': match.summary,
-            'location': match.location,
-            'profile_id': targetProfileId,
-            'status': status,
-          },
-          onConflict: 'match_key,profile_id',
-        );
+        await _client.from('match_availability').upsert({
+          'match_key': key,
+          'team_code': match.teamCode,
+          'starts_at': match.start.toUtc().toIso8601String(),
+          'summary': match.summary,
+          'location': match.location,
+          'profile_id': targetProfileId,
+          'status': status,
+        }, onConflict: 'match_key,profile_id');
       } else {
         await _client
             .from('match_availability')
@@ -1215,6 +1371,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
 
   Future<void> _loadAll() async {
     if (!mounted) return;
+    final loadGeneration = ++_loadGeneration;
     setState(() {
       _loading = true;
       _error = null;
@@ -1226,18 +1383,17 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     });
 
     try {
-      final codes = widget.teamCodes
-          .map((c) => c.trim().toUpperCase().replaceAll(' ', ''))
-          .where((c) => c.isNotEmpty)
-          .toSet()
-          .toList()
-        ..sort(NevoboApi.compareTeamCodes);
+      final codes =
+          widget.teamCodes
+              .map((c) => c.trim().toUpperCase().replaceAll(' ', ''))
+              .where((c) => c.isNotEmpty)
+              .toSet()
+              .toList()
+            ..sort(NevoboApi.compareTeamCodes);
 
-      final teams = codes
-          .map(NevoboApi.teamFromCode)
-          .whereType<NevoboTeam>()
-          .toList()
-        ..sort(NevoboApi.compareTeams);
+      final teams =
+          codes.map(NevoboApi.teamFromCode).whereType<NevoboTeam>().toList()
+            ..sort(NevoboApi.compareTeams);
 
       setState(() {
         _teams = teams;
@@ -1249,16 +1405,16 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
         teams.map((team) async {
           try {
             final matches = await NevoboApi.fetchMatchesForTeam(team: team);
-            if (!mounted) return;
+            if (!_isCurrentLoad(loadGeneration)) return;
             setState(() => _matchesByTeam[team.code] = matches);
           } catch (e) {
-            if (!mounted) return;
+            if (!_isCurrentLoad(loadGeneration)) return;
             setState(() => _matchErrorByTeam[team.code] = e.toString());
           }
 
           try {
             final standings = await NevoboApi.fetchStandingsForTeam(team: team);
-            if (!mounted) return;
+            if (!_isCurrentLoad(loadGeneration)) return;
             setState(() => _leaderboardByTeam[team.code] = standings);
             // Sync teamnaam uit API naar Supabase (geen team_id in deze tab).
             for (final s in standings) {
@@ -1266,10 +1422,13 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                 final extracted = NevoboApi.extractCodeFromTeamName(s.teamName);
                 if (extracted != null &&
                     (extracted == team.code ||
-                        (extracted.startsWith('XR') && team.code.startsWith('MR') &&
+                        (extracted.startsWith('XR') &&
+                            team.code.startsWith('MR') &&
                             extracted.substring(2) == team.code.substring(2)) ||
-                        (extracted.startsWith('MR') && team.code.startsWith('XR') &&
-                            extracted.substring(2) == team.code.substring(2)))) {
+                        (extracted.startsWith('MR') &&
+                            team.code.startsWith('XR') &&
+                            extracted.substring(2) ==
+                                team.code.substring(2)))) {
                   NevoboApi.syncTeamNameFromNevobo(
                     client: _client,
                     teamId: null,
@@ -1281,11 +1440,13 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
               }
             }
           } catch (e) {
-            if (!mounted) return;
+            if (!_isCurrentLoad(loadGeneration)) return;
             setState(() => _errorByTeam[team.code] = e.toString());
           }
         }),
       );
+
+      if (!_isCurrentLoad(loadGeneration)) return;
 
       // Load availability for upcoming matches
       final now = DateTime.now();
@@ -1307,13 +1468,15 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           );
         }
       }
-      if (mounted) setState(() => _upcomingMatchRefs = matchRefs);
+      if (_isCurrentLoad(loadGeneration)) {
+        setState(() => _upcomingMatchRefs = matchRefs);
+      }
       // Nevobo-wedstrijden blijven de bron; lokale annuleringen overlayen daarna.
-      await _loadCancellationsForMatches(matchRefs);
-      await _loadAvailabilityForMatches(matchRefs);
-      await _loadRefereesForMatches(matchRefs);
+      await _loadCancellationsForMatches(matchRefs, loadGeneration);
+      await _loadAvailabilityForMatches(matchRefs, loadGeneration);
+      await _loadRefereesForMatches(matchRefs, loadGeneration);
     } catch (e) {
-      if (!mounted) return;
+      if (!_isCurrentLoad(loadGeneration)) return;
       setState(() {
         _error = 'Kon Nevobo data niet laden.\n$e';
         _loading = false;
@@ -1332,11 +1495,27 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
   }
 
   static const List<String> _weekdayNames = [
-    'maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag', 'zondag',
+    'maandag',
+    'dinsdag',
+    'woensdag',
+    'donderdag',
+    'vrijdag',
+    'zaterdag',
+    'zondag',
   ];
   static const List<String> _monthNames = [
-    'januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli',
-    'augustus', 'september', 'oktober', 'november', 'december',
+    'januari',
+    'februari',
+    'maart',
+    'april',
+    'mei',
+    'juni',
+    'juli',
+    'augustus',
+    'september',
+    'oktober',
+    'november',
+    'december',
   ];
 
   String _formatDateHeader(DateTime dt) {
@@ -1366,7 +1545,13 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     );
   }
 
-  Widget _buildMatchAttendanceCategory(String label, int count, List<String> names, bool expanded, TextStyle labelStyle) {
+  Widget _buildMatchAttendanceCategory(
+    String label,
+    int count,
+    List<String> names,
+    bool expanded,
+    TextStyle labelStyle,
+  ) {
     if (count == 0) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1377,7 +1562,12 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
             padding: const EdgeInsets.only(left: 12, top: 2),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: names.map((n) => Text('- $n', style: labelStyle.copyWith(fontSize: 12))).toList(),
+              children: names
+                  .map(
+                    (n) =>
+                        Text('- $n', style: labelStyle.copyWith(fontSize: 12)),
+                  )
+                  .toList(),
             ),
           ),
       ],
@@ -1402,20 +1592,22 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
     final nietGereageerd = _nietGereageerdByMatchKey[key] ?? const [];
     final referees = _refereeNamesByMatchKey[key] ?? const [];
     final tellers = _tellerNamesByMatchKey[key] ?? const [];
-    final hasCounts = playing.isNotEmpty ||
+    final tweedeScheidsrechters =
+        _tweedeScheidsrechterNamesByMatchKey[key] ?? const [];
+    final hasCounts =
+        playing.isNotEmpty ||
         coaches.isNotEmpty ||
         notPlaying.isNotEmpty ||
         afgemeld.isNotEmpty ||
         nietGereageerd.isNotEmpty;
     final expanded = _expandedMatchKeys.contains(key);
-    final summaryColor =
-        isCancelled ? AppColors.textSecondary : AppColors.onBackground;
-    final teamLabelColor =
-        isCancelled ? AppColors.textSecondary : AppColors.primary;
-    final metaStyle = TextStyle(
-      color: AppColors.textSecondary,
-      fontSize: 13,
-    );
+    final summaryColor = isCancelled
+        ? AppColors.textSecondary
+        : AppColors.onBackground;
+    final teamLabelColor = isCancelled
+        ? AppColors.textSecondary
+        : AppColors.primary;
+    final metaStyle = TextStyle(color: AppColors.textSecondary, fontSize: 13);
     final disabledMetaStyle = metaStyle.copyWith(
       color: AppColors.textSecondary.withValues(alpha: isCancelled ? 0.85 : 1),
     );
@@ -1459,8 +1651,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
               ),
               if (isCancelled)
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: AppColors.error.withValues(alpha: 0.14),
                     borderRadius: BorderRadius.circular(999),
@@ -1480,10 +1674,7 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           ),
           if (ref.location.isNotEmpty) ...[
             const SizedBox(height: 2),
-            Text(
-              ref.location,
-              style: disabledMetaStyle,
-            ),
+            Text(ref.location, style: disabledMetaStyle),
             MatchTravelRow(
               location: ref.location,
               textDecoration: isCancelled ? TextDecoration.lineThrough : null,
@@ -1496,10 +1687,17 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           ),
           const SizedBox(height: 2),
           Text(
+            '2de scheidsrechter: ${_formatRoleNames(tweedeScheidsrechters)}',
+            style: disabledMetaStyle,
+          ),
+          const SizedBox(height: 2),
+          Text(
             'Teller: ${_formatRoleNames(tellers)}',
             style: disabledMetaStyle,
           ),
-          if (isCancelled && cancelReason != null && cancelReason.trim().isNotEmpty) ...[
+          if (isCancelled &&
+              cancelReason != null &&
+              cancelReason.trim().isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
               'Reden: $cancelReason',
@@ -1515,17 +1713,20 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                       onPressed: isCancelled
                           ? null
                           : () => _setMyStatus(
-                                match: ref,
-                                status: canResetOwnStatus
-                                    ? null
-                                    : (_isTrainerOrCoachForTeamCode(ref.teamCode)
+                              match: ref,
+                              status: canResetOwnStatus
+                                  ? null
+                                  : (_isTrainerOrCoachForTeamCode(ref.teamCode)
                                         ? 'coach'
                                         : 'playing'),
-                              ),
+                            ),
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.success,
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -1535,13 +1736,16 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                       onPressed: isCancelled
                           ? null
                           : () => _setMyStatus(
-                                match: ref,
-                                status: _isTrainerOrCoachForTeamCode(ref.teamCode)
-                                    ? 'coach'
-                                    : 'playing',
-                              ),
+                              match: ref,
+                              status: _isTrainerOrCoachForTeamCode(ref.teamCode)
+                                  ? 'coach'
+                                  : 'playing',
+                            ),
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -1553,13 +1757,16 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                       onPressed: isCancelled
                           ? null
                           : () => _setMyStatus(
-                                match: ref,
-                                status: canResetOwnStatus ? null : 'not_playing',
-                              ),
+                              match: ref,
+                              status: canResetOwnStatus ? null : 'not_playing',
+                            ),
                       style: FilledButton.styleFrom(
                         backgroundColor: Colors.amber.shade600,
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -1568,9 +1775,13 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                   : OutlinedButton(
                       onPressed: isCancelled
                           ? null
-                          : () => _setMyStatus(match: ref, status: 'not_playing'),
+                          : () =>
+                                _setMyStatus(match: ref, status: 'not_playing'),
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -1591,7 +1802,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.error,
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -1602,7 +1816,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                           ? null
                           : () => _confirmAndSetAfwezig(match: ref),
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 12,
+                        ),
                         minimumSize: const Size(0, 44),
                         textStyle: const TextStyle(fontSize: 14),
                       ),
@@ -1641,15 +1858,22 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                     playing.length + coaches.length,
                     [...playing, ...coaches],
                     expanded,
-                    const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                    const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                    ),
                   ),
-                  if (playing.isNotEmpty || coaches.isNotEmpty) const SizedBox(height: 4),
+                  if (playing.isNotEmpty || coaches.isNotEmpty)
+                    const SizedBox(height: 4),
                   _buildMatchAttendanceCategory(
                     'Niet spelend',
                     notPlaying.length,
                     notPlaying,
                     expanded,
-                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.9), fontSize: 13),
+                    TextStyle(
+                      color: AppColors.textSecondary.withValues(alpha: 0.9),
+                      fontSize: 13,
+                    ),
                   ),
                   if (notPlaying.isNotEmpty) const SizedBox(height: 4),
                   _buildMatchAttendanceCategory(
@@ -1657,7 +1881,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                     afgemeld.length,
                     afgemeld,
                     expanded,
-                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.85), fontSize: 13),
+                    TextStyle(
+                      color: AppColors.textSecondary.withValues(alpha: 0.85),
+                      fontSize: 13,
+                    ),
                   ),
                   if (afgemeld.isNotEmpty) const SizedBox(height: 4),
                   _buildMatchAttendanceCategory(
@@ -1665,7 +1892,10 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                     nietGereageerd.length,
                     nietGereageerd,
                     expanded,
-                    TextStyle(color: AppColors.textSecondary.withValues(alpha: 0.7), fontSize: 13),
+                    TextStyle(
+                      color: AppColors.textSecondary.withValues(alpha: 0.7),
+                      fontSize: 13,
+                    ),
                   ),
                 ],
               ),
@@ -1719,9 +1949,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
               Text(
                 hasTeams
                     ? 'Je bent wel gekoppeld aan een team, maar ik kan geen Nevobo-teamcode afleiden uit je teamnaam.\n'
-                        'Laat TC je teamnaam controleren (bijv. “Heren 1” of “HS1”).'
+                          'Laat TC je teamnaam controleren (bijv. “Heren 1” of “HS1”).'
                     : 'Je bent nog niet gekoppeld aan een team.\n'
-                        'Koppel eerst je account aan een team om wedstrijden te zien.',
+                          'Koppel eerst je account aan een team om wedstrijden te zien.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: AppColors.textSecondary),
               ),
@@ -1746,7 +1976,9 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
                             : '(naam ontbreekt)';
                         return Text(
                           '- $naam',
-                          style: const TextStyle(color: AppColors.textSecondary),
+                          style: const TextStyle(
+                            color: AppColors.textSecondary,
+                          ),
                         );
                       }),
                     ],
@@ -1858,36 +2090,41 @@ class _NevoboWedstrijdenTabState extends State<NevoboWedstrijdenTab> {
           ),
         )
       else
-        ...sortedDates.expand((date) => [
-              Padding(
-                padding: const EdgeInsets.only(top: 12, bottom: 6),
-                child: Text(
-                  _formatDateHeader(date),
-                  style: const TextStyle(
-                    color: AppColors.darkBlue,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 16,
-                  ),
+        ...sortedDates.expand(
+          (date) => [
+            Padding(
+              padding: const EdgeInsets.only(top: 12, bottom: 6),
+              child: Text(
+                _formatDateHeader(date),
+                style: const TextStyle(
+                  color: AppColors.darkBlue,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
                 ),
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final ref in matchesByDate[date]!)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: GlassCard(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        child: _buildMatchRow(
-                          ref,
-                          _teamDisplayLabelForCode(ref.teamCode),
-                        ),
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final ref in matchesByDate[date]!)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: GlassCard(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      child: _buildMatchRow(
+                        ref,
+                        _teamDisplayLabelForCode(ref.teamCode),
                       ),
                     ),
-                ],
-              ),
-              const SizedBox(height: 10),
-            ]),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
     ];
 
     return RefreshIndicator(

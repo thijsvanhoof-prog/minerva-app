@@ -25,30 +25,42 @@ create or replace function public.sync_team_name_from_nevobo(
 )
 returns void
 language plpgsql
-security definer
+security invoker
 set search_path = public
 as $$
+declare
+  v_team_name text := trim(p_team_name);
+  v_nevobo_code text := upper(trim(p_nevobo_code));
 begin
-  if coalesce(trim(p_team_name), '') = '' or coalesce(trim(p_nevobo_code), '') = '' then
+  if coalesce(v_team_name, '') = '' or coalesce(v_nevobo_code, '') = '' then
     return;
   end if;
 
   if p_team_id is not null then
     update public.teams
-    set team_name = trim(p_team_name), nevobo_code = trim(p_nevobo_code)
+    set team_name = v_team_name, nevobo_code = v_nevobo_code
     where team_id = p_team_id;
     return;
   end if;
 
-  -- Geen team_id: update bestaande rij met deze nevobo_code, anders insert (als geen conflict op team_name).
+  -- Geen team_id: probeer eerst bestaande rijen op code en daarna op naam.
+  -- Dit vermijdt ON CONFLICT op een constraint die niet in iedere bestaande
+  -- productie-installatie aanwezig is.
   update public.teams
-  set team_name = trim(p_team_name)
-  where nevobo_code is not null and trim(nevobo_code) = trim(p_nevobo_code);
+  set team_name = v_team_name, nevobo_code = v_nevobo_code
+  where upper(trim(coalesce(nevobo_code, ''))) = v_nevobo_code;
+
+  if found then
+    return;
+  end if;
+
+  update public.teams
+  set team_name = v_team_name, nevobo_code = v_nevobo_code
+  where lower(trim(team_name)) = lower(v_team_name);
 
   if not found then
     insert into public.teams (team_name, nevobo_code)
-    values (trim(p_team_name), trim(p_nevobo_code))
-    on conflict (team_name) do update set nevobo_code = excluded.nevobo_code;
+    values (v_team_name, v_nevobo_code);
   end if;
 end;
 $$;

@@ -268,45 +268,10 @@ class _ShellState extends State<Shell> {
             },
           ),
         ),
-        bottomNavigationBar: Theme(
-          data: Theme.of(context).copyWith(
-            navigationBarTheme: NavigationBarTheme.of(context).copyWith(
-              iconTheme: WidgetStateProperty.resolveWith((states) {
-                return IconThemeData(
-                  color: AppColors.primary,
-                  size: 24,
-                );
-              }),
-              labelTextStyle: WidgetStateProperty.resolveWith((states) {
-                return TextStyle(
-                  fontSize: 11,
-                  fontWeight: states.contains(WidgetState.selected)
-                      ? FontWeight.w700
-                      : FontWeight.w500,
-                  color: states.contains(WidgetState.selected)
-                      ? AppColors.primary
-                      : Colors.white,
-                );
-              }),
-            ),
-          ),
-          child: ColoredBox(
-            color: AppColors.darkBlue,
-            child: SafeArea(
-              top: false,
-              child: NavigationBar(
-                backgroundColor: Colors.transparent,
-                elevation: 0,
-                shadowColor: Colors.transparent,
-                surfaceTintColor: Colors.transparent,
-                indicatorColor: Colors.transparent,
-                selectedIndex: selectedIndex,
-                onDestinationSelected: (i) => setState(() => _index = i),
-                labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-                destinations: destinations,
-              ),
-            ),
-          ),
+        bottomNavigationBar: _ShellBottomNavigationBar(
+          selectedIndex: selectedIndex,
+          onDestinationSelected: (i) => setState(() => _index = i),
+          destinations: destinations,
         ),
       ),
     ),
@@ -322,4 +287,73 @@ class _NavItem {
     required this.page,
     required this.destination,
   });
+}
+
+/// Custom bottom bar: [FittedBox] houdt lange labels (bijv. Commissies) op één regel
+/// ook wanneer het geselecteerde label vet/oranje wordt.
+class _ShellBottomNavigationBar extends StatelessWidget {
+  final int selectedIndex;
+  final ValueChanged<int> onDestinationSelected;
+  final List<NavigationDestination> destinations;
+
+  const _ShellBottomNavigationBar({
+    required this.selectedIndex,
+    required this.onDestinationSelected,
+    required this.destinations,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: AppColors.darkBlue,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.only(top: 8, bottom: 4),
+          child: Row(
+            children: List.generate(destinations.length, (index) {
+              final destination = destinations[index];
+              final selected = index == selectedIndex;
+              return Expanded(
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () => onDestinationSelected(index),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        selected
+                            ? (destination.selectedIcon ?? destination.icon)
+                            : destination.icon,
+                        const SizedBox(height: 4),
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            destination.label,
+                            maxLines: 1,
+                            softWrap: false,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: selected
+                                  ? FontWeight.w700
+                                  : FontWeight.w500,
+                              height: 1.0,
+                              color: selected
+                                  ? AppColors.primary
+                                  : Colors.white,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+  }
 }

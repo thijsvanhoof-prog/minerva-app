@@ -14,10 +14,7 @@ import 'package:minerva_app/ui/trainingen_wedstrijden/nevobo_api.dart';
 class TrainingenWedstrijdenTab extends StatefulWidget {
   final List<TeamMembership> manageableTeams;
 
-  const TrainingenWedstrijdenTab({
-    super.key,
-    required this.manageableTeams,
-  });
+  const TrainingenWedstrijdenTab({super.key, required this.manageableTeams});
 
   @override
   State<TrainingenWedstrijdenTab> createState() =>
@@ -29,6 +26,7 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
   late TabController _mainTabController;
   late TabController _subTabController;
   bool _autoSelectedTrainerSubTab = false;
+
   /// Alle teams met team_id (om wedstrijden te filteren op “mijn” teams).
   late final Future<List<({NevoboTeam team, int? teamId})>> _teamsWithIdsFuture;
 
@@ -57,8 +55,14 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
   }
 
   /// Spelers- en trainersteams via gedeelde rol-logica (deterministisch per teamId).
-  TrainingTabTeamSplit _trainingTeamSplit(List<TeamMembership> memberships) {
-    return splitTeamMembershipsForTrainingTabs(memberships);
+  TrainingTabTeamSplit _trainingTeamSplit(
+    List<TeamMembership> memberships, {
+    required String? viewingAsProfileId,
+  }) {
+    return splitTeamMembershipsForTrainingTabs(
+      memberships,
+      viewingAsProfileId: viewingAsProfileId,
+    );
   }
 
   Map<int, String> _codeByTeamIdFromWithIds(
@@ -78,33 +82,54 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
     final userContext = AppUserContext.of(context);
     final isAdmin = userContext.hasFullAdminRights;
     final allMemberships = widget.manageableTeams;
-    final teamSplit = _trainingTeamSplit(allMemberships);
+    final teamSplit = _trainingTeamSplit(
+      allMemberships,
+      viewingAsProfileId: userContext.viewingAsProfileId,
+    );
     var playerTeams = teamSplit.playerTeams
-      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
+      ..sort(
+        (a, b) => NevoboApi.compareTeamNames(
+          a.teamName,
+          b.teamName,
+          volleystarsLast: true,
+        ),
+      );
     var trainerTeams = teamSplit.trainerTeams
-      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
+      ..sort(
+        (a, b) => NevoboApi.compareTeamNames(
+          a.teamName,
+          b.teamName,
+          volleystarsLast: true,
+        ),
+      );
 
     return FutureBuilder<List<({NevoboTeam team, int? teamId})>>(
       future: _teamsWithIdsFuture,
       builder: (context, snapshot) {
         final withIds = snapshot.data ?? const [];
-        final adminAllTeams = withIds
-            .where((e) => e.teamId != null)
-            .map(
-              (e) => TeamMembership(
-                teamId: e.teamId!,
-                role: 'admin',
-                teamName: 'Minerva ${NevoboApi.displayTeamCode(e.team.code)}',
-                nevoboCode: e.team.code,
-              ),
-            )
-            .toList()
-          ..sort(
-            (a, b) => NevoboApi.compareTeamCodes(
-              a.nevoboCode ?? NevoboApi.extractCodeFromTeamName(a.teamName) ?? '',
-              b.nevoboCode ?? NevoboApi.extractCodeFromTeamName(b.teamName) ?? '',
-            ),
-          );
+        final adminAllTeams =
+            withIds
+                .where((e) => e.teamId != null)
+                .map(
+                  (e) => TeamMembership(
+                    teamId: e.teamId!,
+                    role: 'admin',
+                    teamName:
+                        'Minerva ${NevoboApi.displayTeamCode(e.team.code)}',
+                    nevoboCode: e.team.code,
+                  ),
+                )
+                .toList()
+              ..sort(
+                (a, b) => NevoboApi.compareTeamCodes(
+                  a.nevoboCode ??
+                      NevoboApi.extractCodeFromTeamName(a.teamName) ??
+                      '',
+                  b.nevoboCode ??
+                      NevoboApi.extractCodeFromTeamName(b.teamName) ??
+                      '',
+                ),
+              );
         final trainingPlayerTeams = isAdmin ? adminAllTeams : playerTeams;
         final trainingTrainerTeams = isAdmin ? adminAllTeams : trainerTeams;
 
@@ -132,16 +157,19 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                   child: Text(
                     'Teams',
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          color: AppColors.primary,
-                          fontWeight: FontWeight.w800,
-                        ),
+                      color: AppColors.primary,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                 ),
                 // Hoofdtabs: Trainingen | Wedstrijden
                 Padding(
                   padding: AppColors.tabContentPadding,
                   child: GlassCard(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
                     showBorder: false,
                     showShadow: false,
                     child: TabBar(
@@ -151,7 +179,9 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                       dividerColor: Colors.transparent,
                       indicator: BoxDecoration(
                         color: AppColors.darkBlue,
-                        borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                        borderRadius: BorderRadius.circular(
+                          AppColors.cardRadius,
+                        ),
                       ),
                       indicatorSize: TabBarIndicatorSize.tab,
                       labelColor: AppColors.primary,
@@ -168,7 +198,10 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                     child: GlassCard(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
                       showBorder: false,
                       showShadow: false,
                       child: TabBar(
@@ -178,7 +211,9 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                         dividerColor: Colors.transparent,
                         indicator: BoxDecoration(
                           color: AppColors.darkBlue,
-                          borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                          borderRadius: BorderRadius.circular(
+                            AppColors.cardRadius,
+                          ),
                         ),
                         indicatorSize: TabBarIndicatorSize.tab,
                         labelColor: AppColors.primary,
@@ -205,6 +240,7 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                         isAdmin: isAdmin,
                         allMemberships: allMemberships,
                         viewingAsProfileId: userContext.viewingAsProfileId,
+                        attendanceProfileId: userContext.attendanceProfileId,
                         withIds: withIds,
                       ),
                     ],
@@ -244,17 +280,19 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
     required bool isAdmin,
     required List<TeamMembership> allMemberships,
     required String? viewingAsProfileId,
+    required String attendanceProfileId,
     required List<({NevoboTeam team, int? teamId})> withIds,
   }) {
     final codeByTeamId = _codeByTeamIdFromWithIds(withIds);
 
     if (isAdmin) {
-      final adminCodes = withIds
-          .map((e) => e.team.code.trim().toUpperCase())
-          .where((c) => c.isNotEmpty)
-          .toSet()
-          .toList()
-        ..sort(NevoboApi.compareTeamCodes);
+      final adminCodes =
+          withIds
+              .map((e) => e.team.code.trim().toUpperCase())
+              .where((c) => c.isNotEmpty)
+              .toSet()
+              .toList()
+            ..sort(NevoboApi.compareTeamCodes);
       final viewState = resolveMatchWedstrijdenViewState(
         matchTeams: const [],
         resolvedCodes: adminCodes,
@@ -270,6 +308,7 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
         }
       }
       return NevoboWedstrijdenTab(
+        key: ValueKey('admin:$attendanceProfileId:$adminCodes'),
         teamCodes: adminCodes,
         teamIdByCode: teamIdByCode,
       );
@@ -304,6 +343,7 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
           }
         }
         return NevoboWedstrijdenTab(
+          key: ValueKey('$attendanceProfileId:${resolution.codes}'),
           teamCodes: resolution.codes,
           teamIdByCode: teamIdByCode,
         );
@@ -340,9 +380,9 @@ class _MatchAccessEmptyContent extends StatelessWidget {
             matchAccessEmptyMessage,
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: AppColors.onBackground,
-                  fontWeight: FontWeight.w600,
-                ),
+              color: AppColors.onBackground,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 12),
           Center(
@@ -374,7 +414,13 @@ class _MatchTeamCodeMissingContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final sortedTeams = List<TeamMembership>.from(matchTeams)
-      ..sort((a, b) => NevoboApi.compareTeamNames(a.teamName, b.teamName, volleystarsLast: true));
+      ..sort(
+        (a, b) => NevoboApi.compareTeamNames(
+          a.teamName,
+          b.teamName,
+          volleystarsLast: true,
+        ),
+      );
 
     return RefreshIndicator(
       color: AppColors.primary,
@@ -394,9 +440,9 @@ class _MatchTeamCodeMissingContent extends StatelessWidget {
             matchTeamCodeMissingHeadline(sortedTeams.length),
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: AppColors.onBackground,
-                  fontWeight: FontWeight.w600,
-                ),
+              color: AppColors.onBackground,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 12),
           ...sortedTeams.map(
@@ -466,9 +512,9 @@ class _MatchAdminNoCodesContent extends StatelessWidget {
             matchAdminNoValidCodesMessage,
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: AppColors.onBackground,
-                  fontWeight: FontWeight.w600,
-                ),
+              color: AppColors.onBackground,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 12),
           Center(

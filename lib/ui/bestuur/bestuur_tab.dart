@@ -6,7 +6,9 @@ import 'package:minerva_app/ui/app_user_context.dart';
 import 'package:minerva_app/ui/committees/committee_normalization.dart';
 import 'package:minerva_app/ui/components/glass_card.dart';
 import 'package:minerva_app/ui/components/top_message.dart';
-import 'package:minerva_app/ui/display_name_overrides.dart' show applyDisplayNameOverrides, unknownUserName;
+import 'package:minerva_app/ui/bestuur/committee_profile_candidates.dart';
+import 'package:minerva_app/ui/display_name_overrides.dart'
+    show applyDisplayNameOverrides, unknownUserName;
 import 'package:minerva_app/ui/commissies/commissies_tab.dart'
     show CommitteeAgendaRsvpsView;
 import 'package:minerva_app/ui/notifications/notification_service.dart';
@@ -20,7 +22,8 @@ class BestuurTab extends StatefulWidget {
   State<BestuurTab> createState() => _BestuurTabState();
 }
 
-class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateMixin {
+class _BestuurTabState extends State<BestuurTab>
+    with SingleTickerProviderStateMixin {
   late final TabController _tabController;
 
   @override
@@ -69,7 +72,10 @@ class _BestuurTabState extends State<BestuurTab> with SingleTickerProviderStateM
             Padding(
               padding: AppColors.tabContentPadding,
               child: GlassCard(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 showBorder: false,
                 showShadow: false,
                 child: TabBar(
@@ -253,8 +259,12 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
         rows.sort((a, b) {
           final rawA = a['start_datetime'] ?? a['start_timestamp'];
           final rawB = b['start_datetime'] ?? b['start_timestamp'];
-          final startA = rawA is DateTime ? rawA : DateTime.tryParse(rawA?.toString() ?? '');
-          final startB = rawB is DateTime ? rawB : DateTime.tryParse(rawB?.toString() ?? '');
+          final startA = rawA is DateTime
+              ? rawA
+              : DateTime.tryParse(rawA?.toString() ?? '');
+          final startB = rawB is DateTime
+              ? rawB
+              : DateTime.tryParse(rawB?.toString() ?? '');
           if (startA == null && startB == null) return 0;
           if (startA == null) return 1;
           if (startB == null) return -1;
@@ -267,12 +277,13 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
           return startB.compareTo(startA);
         });
       }
-      final teamIds = rows
-          .map((r) => (r['team_id'] as num?)?.toInt())
-          .whereType<int>()
-          .toSet()
-          .toList()
-        ..sort();
+      final teamIds =
+          rows
+              .map((r) => (r['team_id'] as num?)?.toInt())
+              .whereType<int>()
+              .toSet()
+              .toList()
+            ..sort();
 
       final teamNames = await _loadTeamNames(teamIds);
 
@@ -314,7 +325,10 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
       if (!mounted) return;
       await _load();
       if (!mounted) return;
-      showTopMessage(context, cancelled ? 'Training geannuleerd.' : 'Training weer actief.');
+      showTopMessage(
+        context,
+        cancelled ? 'Training geannuleerd.' : 'Training weer actief.',
+      );
     } catch (e) {
       if (!mounted) return;
       showTopMessage(context, 'Kon training niet aanpassen: $e', isError: true);
@@ -390,7 +404,9 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
               builder: (context) {
                 final now = DateTime.now();
                 final visible = _sessions.where((s) {
-                  final start = _parseDate(s['start_datetime'] ?? s['start_timestamp']);
+                  final start = _parseDate(
+                    s['start_datetime'] ?? s['start_timestamp'],
+                  );
                   final end = _parseDate(s['end_timestamp']);
                   final einde = end ?? start?.add(const Duration(hours: 2));
                   return einde != null && einde.isAfter(now);
@@ -406,113 +422,142 @@ class _BestuurTrainingenViewState extends State<_BestuurTrainingenView> {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: visible.map((s) {
-              final id = (s['session_id'] as num).toInt();
-              final teamId = (s['team_id'] as num?)?.toInt();
-              final teamLabel = teamId == null
-                  ? 'Team'
-                  : (_teamNameById[teamId]?.trim().isNotEmpty == true
-                      ? NevoboApi.displayTeamName(_teamNameById[teamId]!.trim())
-                      : '(naam ontbreekt)');
-              final title = (s['title'] ?? 'Training').toString().trim();
-              final loc = (s['location'] ?? '').toString().trim();
-              final start = _parseDate(s['start_datetime'] ?? s['start_timestamp']);
-              final end = _parseDate(s['end_timestamp']);
-              final cancelled = s['is_cancelled'] == true;
+                    final id = (s['session_id'] as num).toInt();
+                    final teamId = (s['team_id'] as num?)?.toInt();
+                    final teamLabel = teamId == null
+                        ? 'Team'
+                        : (_teamNameById[teamId]?.trim().isNotEmpty == true
+                              ? NevoboApi.displayTeamName(
+                                  _teamNameById[teamId]!.trim(),
+                                )
+                              : '(naam ontbreekt)');
+                    final title = (s['title'] ?? 'Training').toString().trim();
+                    final loc = (s['location'] ?? '').toString().trim();
+                    final start = _parseDate(
+                      s['start_datetime'] ?? s['start_timestamp'],
+                    );
+                    final end = _parseDate(s['end_timestamp']);
+                    final cancelled = s['is_cancelled'] == true;
 
-              return GlassCard(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            teamLabel,
-                            style: const TextStyle(
-                              color: AppColors.onBackground,
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                        ),
-                        if (cancelled)
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: AppColors.error.withValues(alpha: 0.14),
-                              borderRadius: BorderRadius.circular(999),
-                              border: Border.all(
-                                color: AppColors.error.withValues(alpha: 0.35),
-                              ),
-                            ),
-                            child: const Text(
-                              'Geannuleerd',
-                              style: TextStyle(
-                                color: AppColors.error,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      title,
-                      style: TextStyle(
-                        color: AppColors.onBackground,
-                        fontWeight: FontWeight.w800,
-                        decoration: cancelled ? TextDecoration.lineThrough : TextDecoration.none,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _formatRange(start, end),
-                      style: TextStyle(
-                        color: AppColors.textSecondary,
-                        decoration: cancelled ? TextDecoration.lineThrough : TextDecoration.none,
-                      ),
-                    ),
-                    if (loc.isNotEmpty) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        loc,
-                        style: TextStyle(
-                          color: AppColors.textSecondary,
-                          decoration: cancelled ? TextDecoration.lineThrough : TextDecoration.none,
-                        ),
-                      ),
-                    ],
-                    if (AppUserContext.of(context).canManageBestuur) ...[
-                      const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 10,
+                    return GlassCard(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          ElevatedButton.icon(
-                            onPressed: () => _setCancelled(
-                              sessionId: id,
-                              cancelled: !cancelled,
-                              trainingLabel: '$teamLabel - $title',
-                              teamId: teamId,
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: cancelled ? AppColors.card : AppColors.error,
-                              foregroundColor: cancelled ? AppColors.onBackground : Colors.white,
-                              side: cancelled
-                                  ? BorderSide(color: AppColors.primary.withValues(alpha: 0.35))
-                                  : BorderSide.none,
-                            ),
-                            icon: Icon(cancelled ? Icons.undo : Icons.event_busy),
-                            label: Text(cancelled ? 'Herstellen' : 'Annuleren'),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  teamLabel,
+                                  style: const TextStyle(
+                                    color: AppColors.onBackground,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                              if (cancelled)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.error.withValues(
+                                      alpha: 0.14,
+                                    ),
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(
+                                      color: AppColors.error.withValues(
+                                        alpha: 0.35,
+                                      ),
+                                    ),
+                                  ),
+                                  child: const Text(
+                                    'Geannuleerd',
+                                    style: TextStyle(
+                                      color: AppColors.error,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                            ],
                           ),
+                          const SizedBox(height: 6),
+                          Text(
+                            title,
+                            style: TextStyle(
+                              color: AppColors.onBackground,
+                              fontWeight: FontWeight.w800,
+                              decoration: cancelled
+                                  ? TextDecoration.lineThrough
+                                  : TextDecoration.none,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            _formatRange(start, end),
+                            style: TextStyle(
+                              color: AppColors.textSecondary,
+                              decoration: cancelled
+                                  ? TextDecoration.lineThrough
+                                  : TextDecoration.none,
+                            ),
+                          ),
+                          if (loc.isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              loc,
+                              style: TextStyle(
+                                color: AppColors.textSecondary,
+                                decoration: cancelled
+                                    ? TextDecoration.lineThrough
+                                    : TextDecoration.none,
+                              ),
+                            ),
+                          ],
+                          if (AppUserContext.of(context).canManageBestuur) ...[
+                            const SizedBox(height: 10),
+                            Wrap(
+                              spacing: 10,
+                              runSpacing: 10,
+                              children: [
+                                ElevatedButton.icon(
+                                  onPressed: () => _setCancelled(
+                                    sessionId: id,
+                                    cancelled: !cancelled,
+                                    trainingLabel: '$teamLabel - $title',
+                                    teamId: teamId,
+                                  ),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: cancelled
+                                        ? AppColors.card
+                                        : AppColors.error,
+                                    foregroundColor: cancelled
+                                        ? AppColors.onBackground
+                                        : Colors.white,
+                                    side: cancelled
+                                        ? BorderSide(
+                                            color: AppColors.primary.withValues(
+                                              alpha: 0.35,
+                                            ),
+                                          )
+                                        : BorderSide.none,
+                                  ),
+                                  icon: Icon(
+                                    cancelled ? Icons.undo : Icons.event_busy,
+                                  ),
+                                  label: Text(
+                                    cancelled ? 'Herstellen' : 'Annuleren',
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ],
                       ),
-                    ],
-                  ],
-                ),
-              );
-            }).toList(),
+                    );
+                  }).toList(),
                 );
               },
             ),
@@ -529,7 +574,8 @@ class _BestuurWedstrijdenView extends StatefulWidget {
   const _BestuurWedstrijdenView();
 
   @override
-  State<_BestuurWedstrijdenView> createState() => _BestuurWedstrijdenViewState();
+  State<_BestuurWedstrijdenView> createState() =>
+      _BestuurWedstrijdenViewState();
 }
 
 class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
@@ -609,7 +655,9 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
       _errorByTeam.remove(code);
     });
     try {
-      final matches = await NevoboApi.fetchMatchesForTeamViaCompetitionApi(team: team);
+      final matches = await NevoboApi.fetchMatchesForTeamViaCompetitionApi(
+        team: team,
+      );
       final upcoming = matches.where((m) {
         final start = m.start;
         if (start == null) return false;
@@ -633,7 +681,10 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
     }
   }
 
-  Future<void> _loadCancellations(List<NevoboMatch> matches, {required String teamCode}) async {
+  Future<void> _loadCancellations(
+    List<NevoboMatch> matches, {
+    required String teamCode,
+  }) async {
     final keys = <String>[];
     for (final m in matches) {
       final start = m.start;
@@ -715,19 +766,16 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
     }
 
     try {
-      await _client.from('match_cancellations').upsert(
-        {
-          'match_key': key,
-          'team_code': team.code,
-          'starts_at': start.toUtc().toIso8601String(),
-          'summary': match.summary,
-          'location': (match.location ?? '').trim(),
-          'is_cancelled': cancelled,
-          'reason': reason,
-          'updated_by': _client.auth.currentUser?.id,
-        },
-        onConflict: 'match_key',
-      );
+      await _client.from('match_cancellations').upsert({
+        'match_key': key,
+        'team_code': team.code,
+        'starts_at': start.toUtc().toIso8601String(),
+        'summary': match.summary,
+        'location': (match.location ?? '').trim(),
+        'is_cancelled': cancelled,
+        'reason': reason,
+        'updated_by': _client.auth.currentUser?.id,
+      }, onConflict: 'match_key');
       if (cancelled) {
         final matchName = NevoboApi.displayTeamName(match.summary);
         final pushBody = reason != null && reason.trim().isNotEmpty
@@ -761,11 +809,15 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
         _cancelledByMatchKey[key] = cancelled;
         _reasonByMatchKey[key] = reason;
       });
-      showTopMessage(context, cancelled ? 'Wedstrijd geannuleerd.' : 'Annulering verwijderd.');
+      showTopMessage(
+        context,
+        cancelled ? 'Wedstrijd geannuleerd.' : 'Annulering verwijderd.',
+      );
     } on PostgrestException catch (e) {
       if (!mounted) return;
       // Helpful hint when the table isn't installed.
-      if (e.code == '42P01' || e.message.toLowerCase().contains('does not exist')) {
+      if (e.code == '42P01' ||
+          e.message.toLowerCase().contains('does not exist')) {
         showTopMessage(
           context,
           'Tabel `match_cancellations` ontbreekt in Supabase. Voeg hem toe via SQL (zie supabase/).',
@@ -789,7 +841,9 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
   @override
   Widget build(BuildContext context) {
     if (_loadingTeams && _teams.isEmpty) {
-      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const Center(
+        child: CircularProgressIndicator(color: AppColors.primary),
+      );
     }
 
     if (_error != null) {
@@ -838,14 +892,20 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                     child: Row(
                       children: [
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
                           decoration: BoxDecoration(
                             color: AppColors.darkBlue,
-                            borderRadius: BorderRadius.circular(AppColors.cardRadius),
+                            borderRadius: BorderRadius.circular(
+                              AppColors.cardRadius,
+                            ),
                           ),
                           child: Text(
                             NevoboApi.displayTeamCode(team.code),
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(
                                   color: AppColors.primary,
                                   fontWeight: FontWeight.w900,
                                 ),
@@ -856,7 +916,10 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                           const SizedBox(
                             height: 16,
                             width: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppColors.primary,
+                            ),
                           )
                         else
                           Icon(
@@ -867,7 +930,9 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                     ),
                   ),
                 ),
-                if (!expanded) const SizedBox.shrink() else ...[
+                if (!expanded)
+                  const SizedBox.shrink()
+                else ...[
                   const SizedBox(height: 12),
                   if (err != null)
                     Text(err, style: const TextStyle(color: AppColors.error))
@@ -903,12 +968,21 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                                   ),
                                   if (cancelled)
                                     Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
                                       decoration: BoxDecoration(
-                                        color: AppColors.error.withValues(alpha: 0.14),
-                                        borderRadius: BorderRadius.circular(999),
+                                        color: AppColors.error.withValues(
+                                          alpha: 0.14,
+                                        ),
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
                                         border: Border.all(
-                                          color: AppColors.error.withValues(alpha: 0.35),
+                                          color: AppColors.error.withValues(
+                                            alpha: 0.35,
+                                          ),
                                         ),
                                       ),
                                       child: const Text(
@@ -927,7 +1001,9 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                                 style: TextStyle(
                                   color: AppColors.onBackground,
                                   fontWeight: FontWeight.w800,
-                                  decoration: cancelled ? TextDecoration.lineThrough : TextDecoration.none,
+                                  decoration: cancelled
+                                      ? TextDecoration.lineThrough
+                                      : TextDecoration.none,
                                 ),
                               ),
                               if ((m.location ?? '').trim().isNotEmpty) ...[
@@ -936,22 +1012,32 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                                   (m.location ?? '').trim(),
                                   style: TextStyle(
                                     color: AppColors.textSecondary,
-                                    decoration: cancelled ? TextDecoration.lineThrough : TextDecoration.none,
+                                    decoration: cancelled
+                                        ? TextDecoration.lineThrough
+                                        : TextDecoration.none,
                                   ),
                                 ),
                                 MatchTravelRow(
                                   location: m.location,
-                                  textDecoration: cancelled ? TextDecoration.lineThrough : null,
+                                  textDecoration: cancelled
+                                      ? TextDecoration.lineThrough
+                                      : null,
                                 ),
                               ],
-                              if (cancelled && reason != null && reason.trim().isNotEmpty) ...[
+                              if (cancelled &&
+                                  reason != null &&
+                                  reason.trim().isNotEmpty) ...[
                                 const SizedBox(height: 8),
                                 Text(
                                   'Reden: $reason',
-                                  style: const TextStyle(color: AppColors.textSecondary),
+                                  style: const TextStyle(
+                                    color: AppColors.textSecondary,
+                                  ),
                                 ),
                               ],
-                              if (AppUserContext.of(context).canManageBestuur) ...[
+                              if (AppUserContext.of(
+                                context,
+                              ).canManageBestuur) ...[
                                 const SizedBox(height: 10),
                                 ElevatedButton.icon(
                                   onPressed: () => _setMatchCancelled(
@@ -960,14 +1046,26 @@ class _BestuurWedstrijdenViewState extends State<_BestuurWedstrijdenView> {
                                     cancelled: !cancelled,
                                   ),
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: cancelled ? AppColors.card : AppColors.error,
-                                    foregroundColor: cancelled ? AppColors.onBackground : Colors.white,
+                                    backgroundColor: cancelled
+                                        ? AppColors.card
+                                        : AppColors.error,
+                                    foregroundColor: cancelled
+                                        ? AppColors.onBackground
+                                        : Colors.white,
                                     side: cancelled
-                                        ? BorderSide(color: AppColors.primary.withValues(alpha: 0.35))
+                                        ? BorderSide(
+                                            color: AppColors.primary.withValues(
+                                              alpha: 0.35,
+                                            ),
+                                          )
                                         : BorderSide.none,
                                   ),
-                                  icon: Icon(cancelled ? Icons.undo : Icons.event_busy),
-                                  label: Text(cancelled ? 'Herstellen' : 'Annuleren'),
+                                  icon: Icon(
+                                    cancelled ? Icons.undo : Icons.event_busy,
+                                  ),
+                                  label: Text(
+                                    cancelled ? 'Herstellen' : 'Annuleren',
+                                  ),
                                 ),
                               ],
                             ],
@@ -1004,7 +1102,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
   final Map<String, List<_CommitteeMember>> _membersByCommittee = {};
   final Map<String, _CommitteeContactSettings> _committeeContactSettings = {};
 
-  List<_ProfileOption> _allProfiles = const [];
+  List<CommitteeProfileCandidate> _allProfiles = const [];
   bool _loadingProfiles = false;
   bool _savingOrder = false;
 
@@ -1082,7 +1180,8 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     return int.tryParse(raw.toString().trim());
   }
 
-  Future<Map<String, _CommitteeContactSettings>> _loadCommitteeContactSettings() async {
+  Future<Map<String, _CommitteeContactSettings>>
+  _loadCommitteeContactSettings() async {
     List<Map<String, dynamic>> rows = const [];
     for (final select in const [
       'committee_key, display_name, show_in_contact, contact_emails, sort_order',
@@ -1094,7 +1193,9 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       'committee_key',
     ]) {
       try {
-        final res = await _client.from('committee_contact_settings').select(select);
+        final res = await _client
+            .from('committee_contact_settings')
+            .select(select);
         rows = (res as List<dynamic>).cast<Map<String, dynamic>>();
         break;
       } on PostgrestException catch (e) {
@@ -1113,9 +1214,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       final key = normalizeCommitteeKey(rawName);
       if (key.isEmpty) continue;
 
-      final emails = <String>{
-        ..._parseEmails(row['contact_emails']),
-      }.toList()
+      final emails = <String>{..._parseEmails(row['contact_emails'])}.toList()
         ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
       settings[key] = _CommitteeContactSettings(
@@ -1149,7 +1248,10 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     }
   }
 
-  Future<void> _persistCommitteeDisplayName(String committeeKey, String label) async {
+  Future<void> _persistCommitteeDisplayName(
+    String committeeKey,
+    String label,
+  ) async {
     if (label.trim().isEmpty) return;
     await _client.from('committee_contact_settings').upsert({
       'committee_key': committeeKey,
@@ -1164,8 +1266,10 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       await _client.from('committee_contact_settings').upsert({
         'committee_key': key,
         'display_name': _committeeLabel(key),
-        'show_in_contact': _committeeContactSettings[key]?.showInContact ?? true,
-        'contact_emails': _committeeContactSettings[key]?.emails ?? const <String>[],
+        'show_in_contact':
+            _committeeContactSettings[key]?.showInContact ?? true,
+        'contact_emails':
+            _committeeContactSettings[key]?.emails ?? const <String>[],
         'sort_order': i,
       });
     }
@@ -1203,7 +1307,9 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
   Future<void> _openCommitteeContactSettingsDialog(String committeeKey) async {
     final existing = _committeeContactSettings[committeeKey];
     var showInContact = existing?.showInContact ?? true;
-    final controller = TextEditingController(text: (existing?.emails ?? const []).join('\n'));
+    final controller = TextEditingController(
+      text: (existing?.emails ?? const []).join('\n'),
+    );
     final saved = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -1229,7 +1335,8 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
                     style: TextStyle(fontSize: 12),
                   ),
                   value: showInContact,
-                  onChanged: (value) => setDialogState(() => showInContact = value),
+                  onChanged: (value) =>
+                      setDialogState(() => showInContact = value),
                 ),
                 const SizedBox(height: 8),
                 TextField(
@@ -1258,13 +1365,14 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     );
     if (saved != true) return;
 
-    final emails = controller.text
-        .split(RegExp(r'[\n,;]'))
-        .map((e) => e.trim())
-        .where((e) => e.contains('@'))
-        .toSet()
-        .toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    final emails =
+        controller.text
+            .split(RegExp(r'[\n,;]'))
+            .map((e) => e.trim())
+            .where((e) => e.contains('@'))
+            .toSet()
+            .toList()
+          ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 
     try {
       final error = await _persistCommitteeSettings(
@@ -1275,11 +1383,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       );
       if (!mounted) return;
       if (error != null) {
-        showTopMessage(
-          context,
-          'Opslaan mislukt: $error',
-          isError: true,
-        );
+        showTopMessage(context, 'Opslaan mislukt: $error', isError: true);
         return;
       }
       showTopMessage(context, 'Contact-instellingen opgeslagen.');
@@ -1357,11 +1461,7 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       );
       if (error != null) {
         if (!mounted) return;
-        showTopMessage(
-          context,
-          'Toevoegen mislukt: $error',
-          isError: true,
-        );
+        showTopMessage(context, 'Toevoegen mislukt: $error', isError: true);
         return;
       }
       if (label.isNotEmpty) {
@@ -1447,7 +1547,9 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
     }
   }
 
-  Future<Map<String, String>> _loadProfileNames({required List<String> profileIds}) async {
+  Future<Map<String, String>> _loadProfileNames({
+    required List<String> profileIds,
+  }) async {
     if (profileIds.isEmpty) return {};
     try {
       final res = await _client
@@ -1458,7 +1560,9 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       final map = <String, String>{};
       for (final row in rows) {
         final id = row['id']?.toString() ?? '';
-        final name = (row['display_name'] ?? row['full_name'] ?? row['email'] ?? '').toString();
+        final name =
+            (row['display_name'] ?? row['full_name'] ?? row['email'] ?? '')
+                .toString();
         if (id.isNotEmpty) map[id] = applyDisplayNameOverrides(name);
       }
       return map;
@@ -1469,61 +1573,39 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
 
   Future<void> _loadAllProfilesForManagement() async {
     setState(() => _loadingProfiles = true);
-    List<_ProfileOption> list = [];
-    List<_ProfileOption> normalizeRows(List<dynamic>? rawRows) {
-      final rows = rawRows?.cast<Map<String, dynamic>>() ?? const <Map<String, dynamic>>[];
-      final out = <_ProfileOption>[];
-      for (final p in rows) {
-        final id = (p['profile_id'] ?? p['id'])?.toString() ?? '';
-        if (id.isEmpty) continue;
-        final rawName = (p['display_name'] ?? p['full_name'] ?? p['name'] ?? '').toString().trim();
-        final name = applyDisplayNameOverrides(rawName);
-        final email = (p['email'] ?? '').toString().trim();
-        out.add(_ProfileOption(
-          profileId: id,
-          name: name.isNotEmpty ? name : (email.isNotEmpty ? email : unknownUserName),
-          email: email.isNotEmpty ? email : null,
-        ));
-      }
-      out.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-      return out;
-    }
-
-    // 1) Preferred for bestuur
-    for (final rpc in const [
-      'list_profiles_for_committee_management',
-      // Extra fallbacks (same shape) in case one RPC is missing/broken in DB.
-      'admin_list_profiles',
-      'get_profiles_for_tc',
-    ]) {
+    final rpcResults = <List<dynamic>?>[];
+    for (final rpc in kCommitteeManagementProfileRpcs) {
       try {
         final res = await _client.rpc(rpc);
-        final parsed = normalizeRows(res as List<dynamic>?);
-        if (parsed.isNotEmpty) {
-          list = parsed;
-          break;
-        }
+        rpcResults.add(res as List<dynamic>?);
       } catch (_) {}
     }
 
-    // 2) Last fallback: direct profiles select (werkt alleen als RLS het toelaat).
-    if (list.isEmpty) {
-      List<Map<String, dynamic>> raw = const [];
-      for (final select in const [
-        'id, display_name, full_name, email',
-        'id, display_name, email',
-        'id, full_name, email',
-        'id, name, email',
-        'id, email',
-      ]) {
-        try {
-          final res = await _client.from('profiles').select(select);
-          raw = (res as List<dynamic>).cast<Map<String, dynamic>>();
-          break;
-        } catch (_) {}
-      }
-      list = normalizeRows(raw);
+    var list = mergeCommitteeProfileRowsFromRpcResults(rpcResults);
+
+    // Extra fallback: direct profiles select (RLS kan beperkt zijn; wel merge toevoegen).
+    List<Map<String, dynamic>> raw = const [];
+    for (final select in const [
+      'id, display_name, full_name, email',
+      'id, display_name, email',
+      'id, full_name, email',
+      'id, name, email',
+      'id, email',
+    ]) {
+      try {
+        final res = await _client.from('profiles').select(select);
+        raw = (res as List<dynamic>).cast<Map<String, dynamic>>();
+        break;
+      } catch (_) {}
     }
+    if (raw.isNotEmpty) {
+      list = mergeCommitteeProfileCandidates([
+        list,
+        parseCommitteeProfileRows(raw),
+      ]);
+      list = filterVisibleCommitteeCandidates(list);
+    }
+
     if (!mounted) return;
     setState(() {
       _allProfiles = list;
@@ -1567,32 +1649,47 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       final committeeKeys = <String>{...contactSettings.keys};
       final profileIds = <String>{};
       for (final row in rows) {
-        final key = normalizeCommitteeKey(row['committee_name']?.toString() ?? '');
+        final key = normalizeCommitteeKey(
+          row['committee_name']?.toString() ?? '',
+        );
         if (key.isEmpty) continue;
         committeeKeys.add(key);
         final pid = row['profile_id']?.toString() ?? '';
         if (pid.isNotEmpty) profileIds.add(pid);
       }
 
-      final nameByProfileId = await _loadProfileNames(profileIds: profileIds.toList());
+      final nameByProfileId = await _loadProfileNames(
+        profileIds: profileIds.toList(),
+      );
 
       for (final row in rows) {
-        final key = normalizeCommitteeKey(row['committee_name']?.toString() ?? '');
+        final key = normalizeCommitteeKey(
+          row['committee_name']?.toString() ?? '',
+        );
         if (key.isEmpty) continue;
 
         final pid = row['profile_id']?.toString() ?? '';
-        final displayNameFromRow = (row['display_name'] ?? row['name'])?.toString().trim();
+        final displayNameFromRow = (row['display_name'] ?? row['name'])
+            ?.toString()
+            .trim();
         final memberName = (displayNameFromRow?.isNotEmpty == true)
             ? applyDisplayNameOverrides(displayNameFromRow!)
             : applyDisplayNameOverrides((nameByProfileId[pid] ?? '').trim());
-        final displayName = memberName.isNotEmpty ? memberName : unknownUserName;
+        final displayName = memberName.isNotEmpty
+            ? memberName
+            : unknownUserName;
 
-        final function = (row['function'] ?? row['role'] ?? row['title'])?.toString();
-        _membersByCommittee.putIfAbsent(key, () => []).add(
+        final function = (row['function'] ?? row['role'] ?? row['title'])
+            ?.toString();
+        _membersByCommittee
+            .putIfAbsent(key, () => [])
+            .add(
               _CommitteeMember(
                 profileId: pid,
                 name: displayName,
-                function: function?.trim().isEmpty == true ? null : function?.trim(),
+                function: function?.trim().isEmpty == true
+                    ? null
+                    : function?.trim(),
               ),
             );
       }
@@ -1606,11 +1703,15 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
           final vb = sb ?? 999999;
           if (va != vb) return va.compareTo(vb);
         }
-        return _committeeLabel(a).toLowerCase().compareTo(_committeeLabel(b).toLowerCase());
+        return _committeeLabel(
+          a,
+        ).toLowerCase().compareTo(_committeeLabel(b).toLowerCase());
       });
       for (final k in list) {
         final members = _membersByCommittee[k] ?? [];
-        members.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        members.sort(
+          (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+        );
         _membersByCommittee[k] = members;
       }
 
@@ -1652,13 +1753,15 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
             .eq('committee_name', committeeKey)
             .eq('profile_id', profileId)
             .select('profile_id');
-        final rows = (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? const [];
+        final rows =
+            (res as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? const [];
         if (rows.isEmpty) throw StateError('Geen rij bijgewerkt.');
         return true;
       } on PostgrestException catch (e) {
         lastError = e;
         if (e.code == 'PGRST204' ||
-            (e.message.contains("Could not find the '") && e.message.contains("column"))) {
+            (e.message.contains("Could not find the '") &&
+                e.message.contains("column"))) {
           continue;
         }
         rethrow;
@@ -1677,10 +1780,13 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
       await _loadAllProfilesForManagement();
       if (!mounted) return;
     }
-    final alreadyIn =
-        (_membersByCommittee[committeeKey] ?? []).map((m) => m.profileId).toSet();
-    final available =
-        _allProfiles.where((p) => !alreadyIn.contains(p.profileId)).toList();
+    final alreadyIn = (_membersByCommittee[committeeKey] ?? [])
+        .map((m) => m.profileId)
+        .toSet();
+    final available = availableCommitteeCandidates(
+      allCandidates: _allProfiles,
+      existingMemberProfileIds: alreadyIn,
+    );
     if (available.isEmpty) {
       if (_allProfiles.isEmpty) {
         showTopMessage(
@@ -1689,23 +1795,20 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
           isError: true,
         );
       } else {
-        showTopMessage(context, 'Iedereen zit al in deze commissie.', isError: true);
+        showTopMessage(
+          context,
+          'Iedereen zit al in deze commissie.',
+          isError: true,
+        );
       }
       return;
     }
     var search = '';
-    final chosen = await showDialog<_ProfileOption>(
+    final chosen = await showDialog<CommitteeProfileCandidate>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) {
-          final q = search.trim().toLowerCase();
-          final list = q.isEmpty
-              ? available
-              : available
-                  .where((p) =>
-                      p.name.toLowerCase().contains(q) ||
-                      (p.email?.toLowerCase().contains(q) ?? false))
-                  .toList();
+          final list = searchCommitteeCandidates(available, search);
           return AlertDialog(
             title: Text('Lid toevoegen aan ${_committeeLabel(committeeKey)}'),
             content: Container(
@@ -1737,7 +1840,9 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
                           ? const Center(
                               child: Text(
                                 'Geen leden gevonden.',
-                                style: TextStyle(color: AppColors.textSecondary),
+                                style: TextStyle(
+                                  color: AppColors.textSecondary,
+                                ),
                               ),
                             )
                           : ListView.builder(
@@ -1748,7 +1853,9 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
                                   dense: true,
                                   title: Text(
                                     p.name,
-                                    style: const TextStyle(fontWeight: FontWeight.w600),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
                                   subtitle: p.email != null
                                       ? Text(
@@ -1799,12 +1906,18 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(chosen.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                Text(
+                  chosen.name,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
                 if (chosen.email != null) ...[
                   const SizedBox(height: 4),
                   Text(
                     chosen.email!,
-                    style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                    ),
                   ),
                 ],
                 const SizedBox(height: 16),
@@ -1884,11 +1997,16 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(member.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                Text(
+                  member.name,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
                 const SizedBox(height: 16),
                 TextFormField(
                   initialValue: draftFunction,
-                  decoration: const InputDecoration(labelText: 'Functie of rol'),
+                  decoration: const InputDecoration(
+                    labelText: 'Functie of rol',
+                  ),
                   onChanged: (v) => setDialogState(() => draftFunction = v),
                 ),
               ],
@@ -1897,7 +2015,10 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop('remove'),
-              child: Text('Uit commissie halen', style: TextStyle(color: AppColors.error)),
+              child: Text(
+                'Uit commissie halen',
+                style: TextStyle(color: AppColors.error),
+              ),
             ),
             TextButton(
               onPressed: () => Navigator.of(context).pop(null),
@@ -2014,7 +2135,10 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
                 padding: EdgeInsets.fromLTRB(16, 8, 16, 16),
                 child: Text(
                   'Geen leden in deze commissie.',
-                  style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 13,
+                  ),
                 ),
               )
             else
@@ -2042,7 +2166,9 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
                     color: canManage ? AppColors.primary : AppColors.iconMuted,
                     size: 20,
                   ),
-                  onTap: canManage ? () => _editOrRemoveCommitteeMember(c, m) : null,
+                  onTap: canManage
+                      ? () => _editOrRemoveCommitteeMember(c, m)
+                      : null,
                 );
               }),
             if (canManage)
@@ -2095,7 +2221,11 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
             if (canManage)
               ListTile(
                 dense: true,
-                leading: const Icon(Icons.person_add_outlined, color: AppColors.primary, size: 22),
+                leading: const Icon(
+                  Icons.person_add_outlined,
+                  color: AppColors.primary,
+                  size: 22,
+                ),
                 title: const Text(
                   'Lid toevoegen aan deze commissie',
                   style: TextStyle(
@@ -2164,7 +2294,10 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
           ),
           const SizedBox(height: 12),
           if (_committeeError != null)
-            Text(_committeeError!, style: const TextStyle(color: AppColors.error))
+            Text(
+              _committeeError!,
+              style: const TextStyle(color: AppColors.error),
+            )
           else if (_loadingCommittees)
             const Center(
               child: Padding(
@@ -2186,7 +2319,11 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
               onReorder: _reorderCommittees,
               itemBuilder: (context, index) {
                 final c = _committees[index];
-                return _buildCommitteeCard(c, canManage: canManage, dragIndex: index);
+                return _buildCommitteeCard(
+                  c,
+                  canManage: canManage,
+                  dragIndex: index,
+                );
               },
             ),
             if (_savingOrder)
@@ -2194,11 +2331,16 @@ class _BestuurCommissiesViewState extends State<_BestuurCommissiesView> {
                 padding: EdgeInsets.only(top: 4, bottom: 8),
                 child: Text(
                   'Volgorde opslaan...',
-                  style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                  ),
                 ),
               ),
           ] else
-            ..._committees.map((c) => _buildCommitteeCard(c, canManage: canManage)),
+            ..._committees.map(
+              (c) => _buildCommitteeCard(c, canManage: canManage),
+            ),
         ],
       ),
     );
@@ -2217,18 +2359,6 @@ class _CommitteeMember {
   });
 }
 
-class _ProfileOption {
-  final String profileId;
-  final String name;
-  final String? email;
-
-  const _ProfileOption({
-    required this.profileId,
-    required this.name,
-    this.email,
-  });
-}
-
 class _CommitteeContactSettings {
   final bool showInContact;
   final List<String> emails;
@@ -2240,4 +2370,3 @@ class _CommitteeContactSettings {
     this.sortOrder,
   });
 }
-

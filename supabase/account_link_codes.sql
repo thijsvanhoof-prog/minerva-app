@@ -36,19 +36,33 @@ declare
   uid uuid;
   code text;
   expires timestamptz;
+  attempt integer;
 begin
   uid := auth.uid();
   if uid is null then
     raise exception 'Not authenticated';
   end if;
 
-  -- 6 tekens [0-9A-F] zonder pgcrypto (md5 + random zijn standaard in PostgreSQL)
-  code := upper(substring(md5(random()::text || clock_timestamp()::text) from 1 for 6));
-
   expires := now() + interval '15 minutes';
 
-  insert into public.account_link_codes (code, profile_id, is_parent, expires_at)
-  values (code, uid, p_is_parent, expires);
+  -- Eén actuele code per account voorkomt verwarring door oude codes.
+  delete from public.account_link_codes where profile_id = uid;
+
+  -- Een botsing is zeldzaam, maar mag het genereren niet laten mislukken.
+  for attempt in 1..10 loop
+    code := upper(substring(md5(random()::text || clock_timestamp()::text) from 1 for 6));
+    begin
+      insert into public.account_link_codes (code, profile_id, is_parent, expires_at)
+      values (code, uid, p_is_parent, expires);
+      exit;
+    exception when unique_violation then
+      code := null;
+    end;
+  end loop;
+
+  if code is null then
+    raise exception 'Kon geen unieke koppelcode maken. Probeer het opnieuw.';
+  end if;
 
   return jsonb_build_object(
     'code', code,
@@ -85,9 +99,10 @@ begin
   into row
   from public.account_link_codes c
   where c.code = p_code
-  limit 1;
+  limit 1
+  for update;
 
-  if row.profile_id is null then
+  if not found then
     raise exception 'Code niet gevonden. Controleer de code of vraag een nieuwe aan.';
   end if;
 

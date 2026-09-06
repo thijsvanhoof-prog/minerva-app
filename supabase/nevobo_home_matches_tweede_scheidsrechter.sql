@@ -1,19 +1,12 @@
--- Sheet export RPC for "B" (includes signup names).
---
--- Use-case:
--- - Google Sheet should always reflect the latest state:
---   - upcoming home matches
---   - linked team (team_id)
---   - task ids (fluiten/tellen/2de scheidsrechter)
---   - signup counts + signup names
---
--- NOTE:
--- - This function uses SECURITY DEFINER so it can read names even if RLS on
---   `profiles` is restrictive for normal clients.
--- - Do NOT expose this directly to the public internet with anon access.
---   Use an Edge Function bridge (recommended) and secure it with a secret.
--- - Returntype-wijzigingen vereisen DROP + CREATE (zie nevobo_home_matches_tweede_scheidsrechter.sql).
+-- Idempotent live deployment: 2de scheidsrechter per thuiswedstrijd.
+-- Voer uit in Supabase SQL Editor vóór app-update 4.4.4+.
+-- Daarna optioneel: supabase/scripts/backfill_tweede_scheidsrechter_tasks.sql
 
+alter table public.nevobo_home_matches
+  add column if not exists tweede_scheidsrechter_task_id bigint null
+    references public.club_tasks(task_id) on delete set null;
+
+-- Returntype wijzigt: veilig droppen en opnieuw aanmaken.
 drop function if exists public.get_sheet_home_matches();
 
 create or replace function public.get_sheet_home_matches()
