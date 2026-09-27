@@ -80,7 +80,6 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
   @override
   Widget build(BuildContext context) {
     final userContext = AppUserContext.of(context);
-    final isAdmin = userContext.hasFullAdminRights;
     final allMemberships = widget.manageableTeams;
     final teamSplit = _trainingTeamSplit(
       allMemberships,
@@ -107,37 +106,12 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
       future: _teamsWithIdsFuture,
       builder: (context, snapshot) {
         final withIds = snapshot.data ?? const [];
-        final adminAllTeams =
-            withIds
-                .where((e) => e.teamId != null)
-                .map(
-                  (e) => TeamMembership(
-                    teamId: e.teamId!,
-                    role: 'admin',
-                    teamName:
-                        'Minerva ${NevoboApi.displayTeamCode(e.team.code)}',
-                    nevoboCode: e.team.code,
-                  ),
-                )
-                .toList()
-              ..sort(
-                (a, b) => NevoboApi.compareTeamCodes(
-                  a.nevoboCode ??
-                      NevoboApi.extractCodeFromTeamName(a.teamName) ??
-                      '',
-                  b.nevoboCode ??
-                      NevoboApi.extractCodeFromTeamName(b.teamName) ??
-                      '',
-                ),
-              );
-        final trainingPlayerTeams = isAdmin ? adminAllTeams : playerTeams;
-        final trainingTrainerTeams = isAdmin ? adminAllTeams : trainerTeams;
 
+        // Teams-tab toont altijd jouw gekoppelde teams (niet alle clubteams),
+        // ook voor global admins. Clubbreed teambeheer blijft in TC.
         if (playerTeams.isNotEmpty) {
           _autoSelectedTrainerSubTab = false;
-        } else if (!isAdmin &&
-            trainerTeams.isNotEmpty &&
-            !_autoSelectedTrainerSubTab) {
+        } else if (trainerTeams.isNotEmpty && !_autoSelectedTrainerSubTab) {
           _autoSelectedTrainerSubTab = true;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted && _subTabController.index != 1) {
@@ -231,13 +205,11 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
                     children: [
                       // Trainingen
                       _buildTrainingenContent(
-                        isAdmin: isAdmin,
-                        playerTeams: trainingPlayerTeams,
-                        trainerTeams: trainingTrainerTeams,
+                        playerTeams: playerTeams,
+                        trainerTeams: trainerTeams,
                       ),
                       // Wedstrijden
                       _buildWedstrijdenContent(
-                        isAdmin: isAdmin,
                         allMemberships: allMemberships,
                         viewingAsProfileId: userContext.viewingAsProfileId,
                         attendanceProfileId: userContext.attendanceProfileId,
@@ -255,7 +227,6 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
   }
 
   Widget _buildTrainingenContent({
-    required bool isAdmin,
     required List<TeamMembership> playerTeams,
     required List<TeamMembership> trainerTeams,
   }) {
@@ -265,54 +236,22 @@ class _TrainingenWedstrijdenTabState extends State<TrainingenWedstrijdenTab>
         TrainingsTab(
           manageableTeams: playerTeams,
           viewRole: TrainingTabViewRole.player,
-          suppressRoleEmptyState: isAdmin,
         ),
         TrainingsTab(
           manageableTeams: trainerTeams,
           viewRole: TrainingTabViewRole.trainer,
-          suppressRoleEmptyState: isAdmin,
         ),
       ],
     );
   }
 
   Widget _buildWedstrijdenContent({
-    required bool isAdmin,
     required List<TeamMembership> allMemberships,
     required String? viewingAsProfileId,
     required String attendanceProfileId,
     required List<({NevoboTeam team, int? teamId})> withIds,
   }) {
     final codeByTeamId = _codeByTeamIdFromWithIds(withIds);
-
-    if (isAdmin) {
-      final adminCodes =
-          withIds
-              .map((e) => e.team.code.trim().toUpperCase())
-              .where((c) => c.isNotEmpty)
-              .toSet()
-              .toList()
-            ..sort(NevoboApi.compareTeamCodes);
-      final viewState = resolveMatchWedstrijdenViewState(
-        matchTeams: const [],
-        resolvedCodes: adminCodes,
-        isGlobalAdmin: true,
-      );
-      if (viewState == MatchWedstrijdenViewState.adminNoValidCodes) {
-        return const _MatchAdminNoCodesContent();
-      }
-      final teamIdByCode = <String, int>{};
-      for (final e in withIds) {
-        if (e.teamId != null) {
-          teamIdByCode[e.team.code.trim().toUpperCase()] = e.teamId!;
-        }
-      }
-      return NevoboWedstrijdenTab(
-        key: ValueKey('admin:$attendanceProfileId:$adminCodes'),
-        teamCodes: adminCodes,
-        teamIdByCode: teamIdByCode,
-      );
-    }
 
     final matchTeams = matchAccessTeamMemberships(
       allMemberships,
